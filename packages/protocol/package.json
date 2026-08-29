@@ -9,6 +9,9 @@
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "typecheck": "tsc -p ./tsconfig.json"
   },
+  "dependencies": {
+    "valibot": "1.4.2"
+  },
   "devDependencies": {
     "typescript": "catalog:"
   }
