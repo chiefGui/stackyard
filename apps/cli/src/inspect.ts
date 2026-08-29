@@ -4,7 +4,7 @@ import {
   type Diagnostic,
   type DiagnosticSink,
 } from "@stackyard/diagnostics";
-import type { ProjectLoadOutcome } from "@stackyard/project-loader";
+import type { CapturedProcessOutput, ProjectLoadOutcome } from "@stackyard/project-loader";
 
 import type { CliCommand } from "./cli.ts";
 
@@ -93,15 +93,25 @@ function invalidArguments(message: string): InvalidInspectOptions {
 }
 
 function writeProjectOutput(
-  stdout: string,
-  stderr: string,
+  stdout: CapturedProcessOutput,
+  stderr: CapturedProcessOutput,
   dependencies: InspectCommandDependencies,
 ): void {
-  if (stdout.length > 0) {
-    dependencies.writeError(stdout);
+  writeCapturedOutput(stdout, "stdout", dependencies);
+  writeCapturedOutput(stderr, "stderr", dependencies);
+}
+
+function writeCapturedOutput(
+  output: CapturedProcessOutput,
+  name: "stderr" | "stdout",
+  dependencies: InspectCommandDependencies,
+): void {
+  if (output.text.length > 0) {
+    dependencies.writeError(output.text);
   }
 
-  if (stderr.length > 0) {
-    dependencies.writeError(stderr);
+  if (output.truncated) {
+    const separator = output.text.length > 0 && !output.text.endsWith("\n") ? "\n" : "";
+    dependencies.writeError(`${separator}[Stackyard truncated project ${name}.]\n`);
   }
 }

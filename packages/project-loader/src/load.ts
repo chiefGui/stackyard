@@ -3,6 +3,7 @@ import type { ProjectSpec } from "@stackyard/protocol";
 
 import { discoverProject, type ProjectLocation } from "./discovery.ts";
 import { evaluateProject } from "./evaluation.ts";
+import { emptyCapturedProcessOutput, type CapturedProcessOutput } from "./process-output.ts";
 
 export interface LoadProjectOptions {
   readonly currentDirectory: string;
@@ -17,15 +18,19 @@ export interface LoadedProject {
 
 export interface ProjectLoadOutcome {
   readonly result: Result<LoadedProject>;
-  readonly stderr: string;
-  readonly stdout: string;
+  readonly stderr: CapturedProcessOutput;
+  readonly stdout: CapturedProcessOutput;
 }
 
 export async function loadProject(options: LoadProjectOptions): Promise<ProjectLoadOutcome> {
   const location = await discoverProject(options.path, options.currentDirectory);
 
   if (!location.success) {
-    return { result: location, stderr: "", stdout: "" };
+    return {
+      result: location,
+      stderr: emptyCapturedProcessOutput(),
+      stdout: emptyCapturedProcessOutput(),
+    };
   }
 
   const evaluation = await evaluateProject(

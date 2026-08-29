@@ -1,5 +1,5 @@
-import { isDiagnostic, type Diagnostic } from "./diagnostic.ts";
-import { failure, type NonEmptyDiagnostics } from "./result.ts";
+import type { Diagnostic } from "./diagnostic.ts";
+import { failure, isNonEmptyDiagnostics, type NonEmptyDiagnostics } from "./result.ts";
 
 const diagnosticErrorSymbol = Symbol.for("stackyard.diagnostic-error.v1");
 
@@ -22,7 +22,6 @@ export function isDiagnosticError(error: unknown): error is DiagnosticError {
     typeof error === "object" &&
     error !== null &&
     Reflect.get(error, diagnosticErrorSymbol) === true &&
-    Array.isArray(diagnostics) &&
-    diagnostics.every(isDiagnostic)
+    isNonEmptyDiagnostics(diagnostics)
   );
 }

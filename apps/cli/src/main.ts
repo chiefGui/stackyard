@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
   loadProject as loadProjectDefinition,
+  projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
 
@@ -20,7 +21,7 @@ const diagnostics: DiagnosticSink = {
 };
 
 process.exitCode =
-  command === "__stackyard_evaluate__"
+  command === projectEvaluatorCommand
     ? await runProjectEvaluator(args[0] ?? "")
     : await runCli(Bun.argv.slice(2), {
         commands: [

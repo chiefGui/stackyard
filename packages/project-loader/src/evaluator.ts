@@ -13,16 +13,19 @@ export async function runProjectEvaluator(entrypoint: string): Promise<number> {
     const module = (await import(pathToFileURL(entrypoint).href)) as { default?: unknown };
     result = readProjectDefinition(module.default);
   } catch (error) {
-    result = isDiagnosticError(error)
-      ? { diagnostics: error.diagnostics, success: false }
-      : failure(
-          createDiagnostic(
-            "SYD2003",
-            error instanceof Error
-              ? error.message
-              : "Project evaluation failed with an unknown error.",
-          ),
-        );
+    if (isDiagnosticError(error)) {
+      const [diagnostic, ...additionalDiagnostics] = error.diagnostics;
+      result = failure(diagnostic, ...additionalDiagnostics);
+    } else {
+      result = failure(
+        createDiagnostic(
+          "SYD2003",
+          error instanceof Error
+            ? error.message
+            : "Project evaluation failed with an unknown error.",
+        ),
+      );
+    }
   }
 
   await sendResult(result);

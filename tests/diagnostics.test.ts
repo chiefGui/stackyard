@@ -5,7 +5,9 @@ import {
   DiagnosticCollector,
   DiagnosticError,
   formatDiagnostic,
+  isDiagnostic,
   isDiagnosticError,
+  isNonEmptyDiagnostics,
   reportDiagnostics,
 } from "../packages/diagnostics/src/index.ts";
 
@@ -14,6 +16,8 @@ describe("diagnostics", () => {
     const diagnostic = createDiagnostic("SYD1000", "Invalid command.", {
       path: ["resources", "api", "command"],
     });
+    const sparsePath: unknown[] = [];
+    sparsePath.length = 1;
 
     expect(diagnostic).toEqual({
       code: "SYD1000",
@@ -23,6 +27,14 @@ describe("diagnostics", () => {
     });
     expect(Object.isFrozen(diagnostic)).toBeTrue();
     expect(Object.isFrozen(diagnostic.path)).toBeTrue();
+    expect(
+      isDiagnostic({
+        code: "SYD1000",
+        message: "Invalid command.",
+        path: sparsePath,
+        severity: "error",
+      }),
+    ).toBeFalse();
   });
 
   test("bounds collected diagnostics and reports truncation", () => {
@@ -76,7 +88,18 @@ describe("diagnostics", () => {
 
   test("recognizes errors carrying diagnostic payloads", () => {
     const error = new DiagnosticError(createDiagnostic("SYD1000", "Invalid project."));
+    const sparseDiagnostics: unknown[] = [];
+    sparseDiagnostics.length = 1;
 
     expect(isDiagnosticError(error)).toBeTrue();
+    expect(
+      isDiagnosticError({
+        [Symbol.for("stackyard.diagnostic-error.v1")]: true,
+        diagnostics: [],
+      }),
+    ).toBeFalse();
+    expect(isNonEmptyDiagnostics(error.diagnostics)).toBeTrue();
+    expect(isNonEmptyDiagnostics([])).toBeFalse();
+    expect(isNonEmptyDiagnostics(sparseDiagnostics)).toBeFalse();
   });
 });

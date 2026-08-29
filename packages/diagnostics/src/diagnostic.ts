@@ -45,11 +45,24 @@ export function isDiagnostic(value: unknown): value is Diagnostic {
     typeof value.message === "string" &&
     value.message.length > 0 &&
     "path" in value &&
-    Array.isArray(value.path) &&
-    value.path.every((segment) => typeof segment === "string" || typeof segment === "number") &&
+    isDiagnosticPath(value.path) &&
     "severity" in value &&
     (value.severity === "error" || value.severity === "warning")
   );
+}
+
+function isDiagnosticPath(value: unknown): value is DiagnosticPath {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+
+  for (const segment of value) {
+    if (typeof segment !== "string" && typeof segment !== "number") {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function formatDiagnostic(diagnostic: Diagnostic): string {

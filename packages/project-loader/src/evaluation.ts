@@ -1,13 +1,25 @@
-import { createDiagnostic, failure, isDiagnostic, type Result } from "@stackyard/diagnostics";
+import {
+  createDiagnostic,
+  failure,
+  isNonEmptyDiagnostics,
+  type Result,
+} from "@stackyard/diagnostics";
 import { parseProjectSpec, type ProjectSpec } from "@stackyard/protocol";
+
+import {
+  captureProcessOutput,
+  emptyCapturedProcessOutput,
+  type CapturedProcessOutput,
+} from "./process-output.ts";
+import { projectEvaluatorCommand } from "./worker-command.ts";
 
 const evaluationTimeoutMilliseconds = 10_000;
 const evaluationMessageType = "stackyard:evaluation";
 
 export interface EvaluationOutput {
   readonly result: Result<ProjectSpec>;
-  readonly stderr: string;
-  readonly stdout: string;
+  readonly stderr: CapturedProcessOutput;
+  readonly stdout: CapturedProcessOutput;
 }
 
 interface EvaluationMessage {
@@ -21,66 +33,123 @@ export async function evaluateProject(
   projectRoot: string,
 ): Promise<EvaluationOutput> {
   let message: EvaluationMessage | undefined;
+  let subprocess: ReturnType<typeof spawnEvaluator> | undefined;
+  let stderrPromise: Promise<CapturedProcessOutput> | undefined;
+  let stdoutPromise: Promise<CapturedProcessOutput> | undefined;
 
-  const subprocess = Bun.spawn({
-    cmd: [process.execPath, evaluatorEntrypoint, "__stackyard_evaluate__", entrypoint],
-    cwd: projectRoot,
-    ipc(value) {
+  try {
+    subprocess = spawnEvaluator(evaluatorEntrypoint, entrypoint, projectRoot, (value) => {
       if (isEvaluationMessage(value)) {
         message = value;
       }
-    },
+    });
+
+    stderrPromise = captureProcessOutput(subprocess.stderr);
+    stdoutPromise = captureProcessOutput(subprocess.stdout);
+    const timedOut = await didTimeOut(subprocess);
+
+    if (timedOut) {
+      subprocess.kill("SIGKILL");
+    }
+
+    const exitCode = await subprocess.exited;
+    const [stderr, stdout] = await Promise.all([stderrPromise, stdoutPromise]);
+
+    if (timedOut) {
+      return {
+        result: failure(
+          createDiagnostic(
+            "SYD2001",
+            `Project evaluation exceeded ${evaluationTimeoutMilliseconds / 1_000} seconds.`,
+          ),
+        ),
+        stderr,
+        stdout,
+      };
+    }
+
+    if (!message) {
+      return {
+        result: failure(
+          createDiagnostic(
+            "SYD2002",
+            `Project evaluator exited with code ${exitCode} without returning a result.`,
+          ),
+        ),
+        stderr,
+        stdout,
+      };
+    }
+
+    if (!message.result.success) {
+      return { result: message.result, stderr, stdout };
+    }
+
+    return {
+      result: parseProjectSpec(message.result.output),
+      stderr,
+      stdout,
+    };
+  } catch (error) {
+    await terminateSubprocess(subprocess);
+    const [stderr, stdout] = await Promise.all([
+      recoverCapturedOutput(stderrPromise),
+      recoverCapturedOutput(stdoutPromise),
+    ]);
+
+    return {
+      result: failure(
+        createDiagnostic(
+          "SYD2007",
+          error instanceof Error
+            ? `Project evaluator failed: ${error.message}`
+            : "Project evaluator failed with an unknown infrastructure error.",
+        ),
+      ),
+      stderr,
+      stdout,
+    };
+  }
+}
+
+async function recoverCapturedOutput(
+  output: Promise<CapturedProcessOutput> | undefined,
+): Promise<CapturedProcessOutput> {
+  return output ? output.catch(() => emptyCapturedProcessOutput()) : emptyCapturedProcessOutput();
+}
+
+function spawnEvaluator(
+  evaluatorEntrypoint: string,
+  entrypoint: string,
+  projectRoot: string,
+  receiveMessage: (value: unknown) => void,
+) {
+  return Bun.spawn({
+    cmd: [process.execPath, evaluatorEntrypoint, projectEvaluatorCommand, entrypoint],
+    cwd: projectRoot,
+    ipc: receiveMessage,
     stderr: "pipe",
     stdout: "pipe",
     windowsHide: true,
   });
+}
 
-  const stderrPromise = new Response(subprocess.stderr).text();
-  const stdoutPromise = new Response(subprocess.stdout).text();
-  const timedOut = await didTimeOut(subprocess);
-
-  if (timedOut) {
-    subprocess.kill("SIGKILL");
+async function terminateSubprocess(
+  subprocess: ReturnType<typeof spawnEvaluator> | undefined,
+): Promise<void> {
+  if (!subprocess) {
+    return;
   }
 
-  const exitCode = await subprocess.exited;
-  const [stderr, stdout] = await Promise.all([stderrPromise, stdoutPromise]);
-
-  if (timedOut) {
-    return {
-      result: failure(
-        createDiagnostic(
-          "SYD2001",
-          `Project evaluation exceeded ${evaluationTimeoutMilliseconds / 1_000} seconds.`,
-        ),
-      ),
-      stderr,
-      stdout,
-    };
+  try {
+    if (subprocess.exitCode === null) {
+      subprocess.kill("SIGKILL");
+    }
+  } catch {
+    // The process may have become unavailable between inspection and termination.
   }
 
-  if (!message) {
-    return {
-      result: failure(
-        createDiagnostic(
-          "SYD2002",
-          `Project evaluator exited with code ${exitCode} without returning a result.`,
-        ),
-      ),
-      stderr,
-      stdout,
-    };
-  }
-
-  if (!message.result.success) {
-    return { result: message.result, stderr, stdout };
-  }
-
-  return {
-    result: parseProjectSpec(message.result.output),
-    stderr,
-    stdout,
-  };
+  await subprocess.exited.catch(() => undefined);
 }
 
 export function createEvaluationMessage(result: Result<ProjectSpec>): EvaluationMessage {
@@ -109,25 +178,23 @@ function isEvaluationResult(value: unknown): value is Result<ProjectSpec> {
   }
 
   return (
-    value.success === false &&
-    "diagnostics" in value &&
-    Array.isArray(value.diagnostics) &&
-    value.diagnostics.every(isDiagnostic)
+    value.success === false && "diagnostics" in value && isNonEmptyDiagnostics(value.diagnostics)
   );
 }
 
 async function didTimeOut(subprocess: Bun.Subprocess): Promise<boolean> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
-  const timedOut = new Promise<true>((resolveTimeout) => {
-    timeout = setTimeout(() => resolveTimeout(true), evaluationTimeoutMilliseconds);
-  });
-  const exited = subprocess.exited.then(() => false as const);
-  const result = await Promise.race([exited, timedOut]);
+  try {
+    const timedOut = new Promise<true>((resolveTimeout) => {
+      timeout = setTimeout(() => resolveTimeout(true), evaluationTimeoutMilliseconds);
+    });
+    const exited = subprocess.exited.then(() => false as const);
 
-  if (timeout) {
-    clearTimeout(timeout);
+    return await Promise.race([exited, timedOut]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
-
-  return result;
 }

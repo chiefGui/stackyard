@@ -1,4 +1,4 @@
-import type { Diagnostic } from "./diagnostic.ts";
+import { isDiagnostic, type Diagnostic } from "./diagnostic.ts";
 
 export type NonEmptyDiagnostics = readonly [Diagnostic, ...Diagnostic[]];
 
@@ -27,4 +27,18 @@ export function failure(
 
 export function success<T>(output: T): Success<T> {
   return Object.freeze({ output, success: true });
+}
+
+export function isNonEmptyDiagnostics(value: unknown): value is NonEmptyDiagnostics {
+  if (!Array.isArray(value) || value.length === 0) {
+    return false;
+  }
+
+  for (const diagnostic of value) {
+    if (!isDiagnostic(diagnostic)) {
+      return false;
+    }
+  }
+
+  return true;
 }
