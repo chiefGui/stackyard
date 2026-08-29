@@ -1,0 +1,19 @@
+{
+  "name": "@stackyard/cli",
+  "private": true,
+  "bin": {
+    "stackyard": "./src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "bun build ./src/main.ts --outdir ./dist --target bun",
+    "typecheck": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@stackyard/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

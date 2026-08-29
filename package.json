@@ -1,0 +1,29 @@
+{
+  "name": "stackyard-workspace",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*",
+      "examples/*"
+    ],
+    "catalog": {
+      "@types/bun": "1.4.0",
+      "typescript": "7.0.2"
+    }
+  },
+  "scripts": {
+    "build": "bun run --workspaces --if-present build",
+    "typecheck": "bun run --workspaces --if-present typecheck",
+    "test": "bun test",
+    "lint": "oxlint --deny-warnings .",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build"
+  },
+  "devDependencies": {
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0"
+  },
+  "packageManager": "bun@1.4.0"
+}

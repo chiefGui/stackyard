@@ -1,0 +1,19 @@
+{
+  "name": "@stackyard/control-plane",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "typecheck": "tsc -p ./tsconfig.json"
+  },
+  "dependencies": {
+    "@stackyard/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}
