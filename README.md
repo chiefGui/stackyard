@@ -28,7 +28,7 @@ bun install
 bun run check
 ```
 
-The complete check formats, lints, type-checks, tests, and builds every workspace.
+The complete check verifies formatting, lints, type-checks, tests, and builds every workspace.
 
 ## Dependency direction
 

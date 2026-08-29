@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 type Manifest = {
@@ -9,6 +10,7 @@ type Manifest = {
 };
 
 const repositoryRoot = resolve(import.meta.dir, "..");
+const workspaceDirectories = ["apps", "packages", "examples"] as const;
 
 const workspaceBoundaries = {
   "apps/cli": {
@@ -40,6 +42,26 @@ const workspaceBoundaries = {
     internalDependencies: ["@stackyard/sdk"],
   },
 } as const;
+
+test("every workspace has an explicit boundary", async () => {
+  const discoveredWorkspaces = (
+    await Promise.all(
+      workspaceDirectories.map(async (workspaceDirectory) => {
+        const entries = await readdir(resolve(repositoryRoot, workspaceDirectory), {
+          withFileTypes: true,
+        });
+
+        return entries
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => `${workspaceDirectory}/${entry.name}`);
+      }),
+    )
+  )
+    .flat()
+    .sort();
+
+  expect(discoveredWorkspaces).toEqual(Object.keys(workspaceBoundaries).sort());
+});
 
 for (const [workspacePath, boundary] of Object.entries(workspaceBoundaries)) {
   test(`${boundary.name} respects its workspace boundary`, async () => {

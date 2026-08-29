@@ -13,7 +13,6 @@
     "@stackyard/protocol": "workspace:*"
   },
   "devDependencies": {
-    "@types/bun": "catalog:",
     "typescript": "catalog:"
   }
 }
