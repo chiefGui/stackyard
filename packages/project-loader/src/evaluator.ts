@@ -1,32 +1,28 @@
 import { pathToFileURL } from "node:url";
 
-import { type ProjectSpec, type Result } from "@stackyard/protocol";
-import { isProjectDefinitionError, readProjectDefinition } from "@stackyard/sdk";
+import { createDiagnostic, failure, isDiagnosticError, type Result } from "@stackyard/diagnostics";
+import type { ProjectSpec } from "@stackyard/protocol";
+import { readProjectDefinition } from "@stackyard/sdk";
 
 import { createEvaluationMessage } from "./evaluation.ts";
 
-export async function runEvaluator(entrypoint: string): Promise<number> {
+export async function runProjectEvaluator(entrypoint: string): Promise<number> {
   let result: Result<ProjectSpec>;
 
   try {
     const module = (await import(pathToFileURL(entrypoint).href)) as { default?: unknown };
     result = readProjectDefinition(module.default);
   } catch (error) {
-    result = {
-      diagnostics: isProjectDefinitionError(error)
-        ? error.diagnostics
-        : [
-            {
-              code: "SYD2003",
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "Project evaluation failed with an unknown error.",
-              path: [],
-            },
-          ],
-      success: false,
-    };
+    result = isDiagnosticError(error)
+      ? { diagnostics: error.diagnostics, success: false }
+      : failure(
+          createDiagnostic(
+            "SYD2003",
+            error instanceof Error
+              ? error.message
+              : "Project evaluation failed with an unknown error.",
+          ),
+        );
   }
 
   await sendResult(result);

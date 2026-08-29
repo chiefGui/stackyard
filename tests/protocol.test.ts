@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { formatDiagnostic, parseProjectSpec } from "../packages/protocol/src/index.ts";
+import { parseProjectSpec } from "../packages/protocol/src/index.ts";
 
 const validSpec = {
   name: "example",
@@ -48,15 +48,5 @@ describe("ProjectSpec", () => {
     if (!result.success) {
       expect(result.diagnostics[0]?.path).toEqual(["resources", "api", "cwd"]);
     }
-  });
-
-  test("formats structural paths for people", () => {
-    expect(
-      formatDiagnostic({
-        code: "SYD1000",
-        message: "Invalid value.",
-        path: ["resources", "api", "command", "args", 0],
-      }),
-    ).toBe("SYD1000 at resources.api.command.args[0]: Invalid value.");
   });
 });

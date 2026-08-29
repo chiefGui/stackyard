@@ -1,5 +1,5 @@
 {
-  "name": "@stackyard/sdk",
+  "name": "@stackyard/diagnostics",
   "private": true,
   "type": "module",
   "exports": {
@@ -8,10 +8,6 @@
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "typecheck": "tsc -p ./tsconfig.json"
-  },
-  "dependencies": {
-    "@stackyard/diagnostics": "workspace:*",
-    "@stackyard/protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:"

@@ -1,119 +1,48 @@
-import { formatDiagnostic, type Diagnostic, type ProjectSpec } from "@stackyard/protocol";
+import { createDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 
-import { discoverProject } from "./discovery.ts";
-import { evaluateProject } from "./evaluation.ts";
+export interface CliCommand {
+  readonly description: string;
+  readonly name: string;
+  readonly usage: string;
+  run(args: readonly string[]): Promise<number>;
+}
 
-export async function runCli(cliEntrypoint: string, args: readonly string[]): Promise<number> {
-  const [command, ...commandArgs] = args;
+export interface CliDependencies {
+  readonly commands: readonly CliCommand[];
+  readonly diagnostics: DiagnosticSink;
+  writeOutput(output: string): void;
+}
 
-  if (!command || command === "help" || command === "--help" || command === "-h") {
-    printHelp();
+export async function runCli(
+  args: readonly string[],
+  dependencies: CliDependencies,
+): Promise<number> {
+  const [commandName, ...commandArgs] = args;
+
+  if (!commandName || commandName === "help" || commandName === "--help" || commandName === "-h") {
+    printHelp(dependencies);
     return 0;
   }
 
-  if (command !== "inspect") {
-    printDiagnostics([
-      {
-        code: "SYD2004",
-        message: `Unknown command '${command}'.`,
-        path: [],
-      },
-    ]);
+  const command = dependencies.commands.find((candidate) => candidate.name === commandName);
+  if (!command) {
+    dependencies.diagnostics.report(
+      createDiagnostic("SYD2004", `Unknown command '${commandName}'.`),
+    );
     return 1;
   }
 
-  const options = parseInspectArguments(commandArgs);
-  if (!options.success) {
-    printDiagnostics(options.diagnostics);
-    return 1;
-  }
+  return command.run(commandArgs);
+}
 
-  const location = await discoverProject(options.path);
-  if (!location.success) {
-    printDiagnostics(location.diagnostics);
-    return 1;
-  }
-
-  const evaluation = await evaluateProject(
-    cliEntrypoint,
-    location.output.entrypoint,
-    location.output.root,
+function printHelp(dependencies: CliDependencies): void {
+  const commandWidth = dependencies.commands.reduce(
+    (width, command) => Math.max(width, command.usage.length),
+    0,
   );
-  writeEvaluationOutput(evaluation.stdout, evaluation.stderr);
+  const commands = dependencies.commands
+    .map((command) => `  ${command.usage.padEnd(commandWidth)}  ${command.description}`)
+    .join("\n");
 
-  if (!evaluation.result.success) {
-    printDiagnostics(evaluation.result.diagnostics);
-    return 1;
-  }
-
-  printProject(evaluation.result.output, options.json);
-  return 0;
-}
-
-interface InspectOptions {
-  readonly json: boolean;
-  readonly path: string | undefined;
-  readonly success: true;
-}
-
-interface InvalidInspectOptions {
-  readonly diagnostics: readonly Diagnostic[];
-  readonly success: false;
-}
-
-function parseInspectArguments(args: readonly string[]): InspectOptions | InvalidInspectOptions {
-  let json = false;
-  let path: string | undefined;
-
-  for (const argument of args) {
-    if (argument === "--json") {
-      json = true;
-      continue;
-    }
-
-    if (argument.startsWith("-")) {
-      return invalidArguments(`Unknown option '${argument}'.`);
-    }
-
-    if (path) {
-      return invalidArguments("Inspect accepts at most one project path.");
-    }
-
-    path = argument;
-  }
-
-  return { json, path, success: true };
-}
-
-function invalidArguments(message: string): InvalidInspectOptions {
-  return {
-    diagnostics: [{ code: "SYD2005", message, path: [] }],
-    success: false,
-  };
-}
-
-function printProject(spec: ProjectSpec, compact: boolean): void {
-  process.stdout.write(`${JSON.stringify(spec, undefined, compact ? undefined : 2)}\n`);
-}
-
-function printDiagnostics(diagnostics: readonly Diagnostic[]): void {
-  for (const diagnostic of diagnostics) {
-    process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
-  }
-}
-
-function writeEvaluationOutput(stdout: string, stderr: string): void {
-  if (stdout.length > 0) {
-    process.stderr.write(stdout);
-  }
-
-  if (stderr.length > 0) {
-    process.stderr.write(stderr);
-  }
-}
-
-function printHelp(): void {
-  process.stdout.write(
-    `Usage: stackyard <command>\n\nCommands:\n  inspect [path] [--json]  Evaluate and print a project definition\n`,
-  );
+  dependencies.writeOutput(`Usage: stackyard <command>\n\nCommands:\n${commands}\n`);
 }

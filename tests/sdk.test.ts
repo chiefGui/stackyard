@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
+import { DiagnosticError } from "../packages/diagnostics/src/index.ts";
 import {
   defineProject,
   endpoint,
-  ProjectDefinitionError,
   readProjectDefinition,
   service,
 } from "../packages/sdk/src/index.ts";
@@ -104,8 +104,8 @@ function expectProjectError(action: () => unknown, code: string): void {
     action();
     throw new Error("Expected the project definition to fail.");
   } catch (error) {
-    expect(error).toBeInstanceOf(ProjectDefinitionError);
-    if (error instanceof ProjectDefinitionError) {
+    expect(error).toBeInstanceOf(DiagnosticError);
+    if (error instanceof DiagnosticError) {
       expect(error.diagnostics.some((diagnostic) => diagnostic.code === code)).toBeTrue();
     }
   }

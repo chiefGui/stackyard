@@ -1,5 +1,3 @@
-export type { Diagnostic, Failure, Result, Success } from "./diagnostics.ts";
-export { formatDiagnostic } from "./diagnostics.ts";
 export type {
   EndpointSpec,
   EndpointValueExpression,

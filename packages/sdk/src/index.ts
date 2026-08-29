@@ -10,9 +10,4 @@ export type {
 } from "./descriptors.ts";
 export { endpoint, service } from "./descriptors.ts";
 export type { ProjectDefinition, ProjectOptions, ResourceInputRecord } from "./project.ts";
-export {
-  defineProject,
-  isProjectDefinitionError,
-  ProjectDefinitionError,
-  readProjectDefinition,
-} from "./project.ts";
+export { defineProject, readProjectDefinition } from "./project.ts";

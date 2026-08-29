@@ -10,6 +10,7 @@
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "dependencies": {
+    "@stackyard/diagnostics": "workspace:*",
     "valibot": "1.4.2"
   },
   "devDependencies": {

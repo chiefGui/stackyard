@@ -2,25 +2,29 @@ import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, join, parse, resolve } from "node:path";
 
-import type { Result } from "@stackyard/protocol";
+import { createDiagnostic, failure, success, type Result } from "@stackyard/diagnostics";
 
 export interface ProjectLocation {
   readonly entrypoint: string;
   readonly root: string;
 }
 
-export async function discoverProject(input: string | undefined): Promise<Result<ProjectLocation>> {
+export async function discoverProject(
+  input: string | undefined,
+  currentDirectory: string,
+): Promise<Result<ProjectLocation>> {
   try {
     if (input) {
-      return await discoverExplicitProject(resolve(input));
+      return await discoverExplicitProject(resolve(currentDirectory, input));
     }
 
-    let directory = resolve(process.cwd());
+    const startingDirectory = resolve(currentDirectory);
+    let directory = startingDirectory;
 
     while (true) {
       const location = await locationFromDirectory(directory);
       if (location) {
-        return { output: location, success: true };
+        return success(location);
       }
 
       const parent = dirname(directory);
@@ -31,21 +35,14 @@ export async function discoverProject(input: string | undefined): Promise<Result
       directory = parent;
     }
 
-    return notFound(resolve(process.cwd()));
+    return notFound(startingDirectory);
   } catch (error) {
-    return {
-      diagnostics: [
-        {
-          code: "SYD2006",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Project discovery failed with an unknown error.",
-          path: [],
-        },
-      ],
-      success: false,
-    };
+    return failure(
+      createDiagnostic(
+        "SYD2006",
+        error instanceof Error ? error.message : "Project discovery failed with an unknown error.",
+      ),
+    );
   }
 }
 
@@ -53,19 +50,16 @@ async function discoverExplicitProject(path: string): Promise<Result<ProjectLoca
   const pathStat = await statIfExists(path);
 
   if (pathStat?.isFile()) {
-    return {
-      output: {
-        entrypoint: path,
-        root: dirname(dirname(path)),
-      },
-      success: true,
-    };
+    return success({
+      entrypoint: path,
+      root: dirname(dirname(path)),
+    });
   }
 
   if (pathStat?.isDirectory()) {
     const location = await locationFromDirectory(path);
     if (location) {
-      return { output: location, success: true };
+      return success(location);
     }
   }
 
@@ -76,11 +70,7 @@ async function locationFromDirectory(root: string): Promise<ProjectLocation | un
   const entrypoint = join(root, "stackyard", "main.ts");
   const entrypointStat = await statIfExists(entrypoint);
 
-  if (!entrypointStat?.isFile()) {
-    return undefined;
-  }
-
-  return { entrypoint, root };
+  return entrypointStat?.isFile() ? { entrypoint, root } : undefined;
 }
 
 async function statIfExists(path: string): Promise<Stats | undefined> {
@@ -100,14 +90,5 @@ function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function notFound(path: string): Result<ProjectLocation> {
-  return {
-    diagnostics: [
-      {
-        code: "SYD2000",
-        message: `No stackyard/main.ts was found from '${path}'.`,
-        path: [],
-      },
-    ],
-    success: false,
-  };
+  return failure(createDiagnostic("SYD2000", `No stackyard/main.ts was found from '${path}'.`));
 }

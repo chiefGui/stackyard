@@ -1,11 +1,19 @@
 import {
+  createDiagnostic,
+  DiagnosticCollector,
+  DiagnosticError,
+  failure,
+  reportDiagnostics,
+  success,
+  type DiagnosticSink,
+  type Result,
+} from "@stackyard/diagnostics";
+import {
   parseProjectSpec,
-  type Diagnostic,
   type EndpointValueExpression,
   type EnvironmentValueSpec,
   type ProcessResourceSpec,
   type ProjectSpec,
-  type Result,
 } from "@stackyard/protocol";
 
 import {
@@ -17,7 +25,6 @@ import {
   type ServiceState,
 } from "./descriptors.ts";
 
-const projectDefinitionErrorSymbol = Symbol.for("stackyard.project-definition-error.v1");
 const projectDefinitionSymbol = Symbol.for("stackyard.project-definition.v1");
 
 export interface ProjectDefinition {
@@ -31,29 +38,10 @@ export interface ProjectOptions<Resources extends ResourceInputRecord> {
 
 export type ResourceInputRecord = Readonly<Record<string, ServiceDescriptor<EndpointInputRecord>>>;
 
-export class ProjectDefinitionError extends Error {
-  readonly [projectDefinitionErrorSymbol] = true;
-  readonly diagnostics: readonly Diagnostic[];
-
-  constructor(diagnostics: readonly Diagnostic[]) {
-    super(diagnostics[0]?.message ?? "The project definition is invalid.");
-    this.name = "ProjectDefinitionError";
-    this.diagnostics = diagnostics;
-  }
-}
-
-export function isProjectDefinitionError(error: unknown): error is ProjectDefinitionError {
-  return (
-    isObject(error) &&
-    Reflect.get(error, projectDefinitionErrorSymbol) === true &&
-    Array.isArray(Reflect.get(error, "diagnostics"))
-  );
-}
-
 export function defineProject<const Resources extends ResourceInputRecord>(
   options: ProjectOptions<Resources>,
 ): ProjectDefinition {
-  const diagnostics: Diagnostic[] = [];
+  const diagnostics = new DiagnosticCollector();
   const resourceNames = new Map<ServiceState, string>();
   const resourceEntries = Object.entries(options.resources).sort(compareEntries);
 
@@ -61,21 +49,25 @@ export function defineProject<const Resources extends ResourceInputRecord>(
     const state = getServiceState(descriptor);
 
     if (!state) {
-      diagnostics.push({
-        code: "SYD1100",
-        message: "Must be a resource created by service().",
-        path: ["resources", name],
-      });
+      diagnostics.report(
+        createDiagnostic("SYD1100", "Must be a resource created by service().", {
+          path: ["resources", name],
+        }),
+      );
       continue;
     }
 
     const previousName = resourceNames.get(state);
     if (previousName) {
-      diagnostics.push({
-        code: "SYD1101",
-        message: `The same service is already registered as '${previousName}'.`,
-        path: ["resources", name],
-      });
+      diagnostics.report(
+        createDiagnostic(
+          "SYD1101",
+          `The same service is already registered as '${previousName}'.`,
+          {
+            path: ["resources", name],
+          },
+        ),
+      );
       continue;
     }
 
@@ -100,11 +92,17 @@ export function defineProject<const Resources extends ResourceInputRecord>(
   });
 
   if (!parsed.success) {
-    diagnostics.push(...parsed.diagnostics);
+    reportDiagnostics(diagnostics, parsed.diagnostics);
   }
 
-  if (diagnostics.length > 0 || !parsed.success) {
-    throw new ProjectDefinitionError(diagnostics);
+  const definitionFailure = diagnostics.toFailure();
+  if (definitionFailure) {
+    const [diagnostic, ...additionalDiagnostics] = definitionFailure.diagnostics;
+    throw new DiagnosticError(diagnostic, ...additionalDiagnostics);
+  }
+
+  if (!parsed.success) {
+    throw new Error("Project parsing failed without a collected diagnostic.");
   }
 
   const definition = Object.create(null) as ProjectDefinition;
@@ -119,26 +117,19 @@ export function readProjectDefinition(input: unknown): Result<ProjectSpec> {
 
   if (spec) {
     const parsed = parseProjectSpec(spec);
-    return parsed.success ? { output: deepFreeze(parsed.output), success: true } : parsed;
+    return parsed.success ? success(deepFreeze(parsed.output)) : parsed;
   }
 
-  return {
-    diagnostics: [
-      {
-        code: "SYD1102",
-        message: "The default export must be created by defineProject().",
-        path: [],
-      },
-    ],
-    success: false,
-  };
+  return failure(
+    createDiagnostic("SYD1102", "The default export must be created by defineProject()."),
+  );
 }
 
 function compileService(
   resourceName: string,
   state: ServiceState,
   resourceNames: ReadonlyMap<ServiceState, string>,
-  diagnostics: Diagnostic[],
+  diagnostics: DiagnosticSink,
 ): ProcessResourceSpec {
   const endpoints: Record<string, ProcessResourceSpec["endpoints"][string]> = {};
   const endpointEnvironmentNames = new Map<string, string>();
@@ -148,21 +139,21 @@ function compileService(
     const path = ["resources", resourceName, "endpoints", name] as const;
 
     if (!endpointState) {
-      diagnostics.push({
-        code: "SYD1103",
-        message: "Must be an endpoint created by endpoint.http().",
-        path,
-      });
+      diagnostics.report(
+        createDiagnostic("SYD1103", "Must be an endpoint created by endpoint.http().", { path }),
+      );
       continue;
     }
 
     const previousEndpoint = endpointEnvironmentNames.get(endpointState.env);
     if (previousEndpoint) {
-      diagnostics.push({
-        code: "SYD1104",
-        message: `Environment variable '${endpointState.env}' is already assigned to endpoint '${previousEndpoint}'.`,
-        path: [...path, "port", "env"],
-      });
+      diagnostics.report(
+        createDiagnostic(
+          "SYD1104",
+          `Environment variable '${endpointState.env}' is already assigned to endpoint '${previousEndpoint}'.`,
+          { path: [...path, "port", "env"] },
+        ),
+      );
     } else {
       endpointEnvironmentNames.set(endpointState.env, name);
     }
@@ -183,11 +174,13 @@ function compileService(
 
   for (const [name, value] of Object.entries(state.env).sort(compareEntries)) {
     if (endpointEnvironmentNames.has(name)) {
-      diagnostics.push({
-        code: "SYD1105",
-        message: `Environment variable '${name}' is managed by an endpoint and cannot also be set explicitly.`,
-        path: ["resources", resourceName, "env", name],
-      });
+      diagnostics.report(
+        createDiagnostic(
+          "SYD1105",
+          `Environment variable '${name}' is managed by an endpoint and cannot also be set explicitly.`,
+          { path: ["resources", resourceName, "env", name] },
+        ),
+      );
       continue;
     }
 
@@ -222,36 +215,34 @@ function compileService(
 function compileRuntimeValue(
   value: unknown,
   resourceNames: ReadonlyMap<ServiceState, string>,
-  diagnostics: Diagnostic[],
+  diagnostics: DiagnosticSink,
   path: readonly string[],
 ): EndpointValueExpression | undefined {
   const state = getRuntimeValueState(value);
 
   if (!state) {
-    diagnostics.push({
-      code: "SYD1106",
-      message: "Must be a string or a Stackyard runtime value.",
-      path,
-    });
+    diagnostics.report(
+      createDiagnostic("SYD1106", "Must be a string or a Stackyard runtime value.", { path }),
+    );
     return undefined;
   }
 
   const resource = resourceNames.get(state.service);
   if (!resource) {
-    diagnostics.push({
-      code: "SYD1107",
-      message: "The referenced service is not registered in this project.",
-      path,
-    });
+    diagnostics.report(
+      createDiagnostic("SYD1107", "The referenced service is not registered in this project.", {
+        path,
+      }),
+    );
     return undefined;
   }
 
   if (!getEndpointState(state.service.endpoints[state.endpoint])) {
-    diagnostics.push({
-      code: "SYD1108",
-      message: `The referenced endpoint '${state.endpoint}' is not valid.`,
-      path,
-    });
+    diagnostics.report(
+      createDiagnostic("SYD1108", `The referenced endpoint '${state.endpoint}' is not valid.`, {
+        path,
+      }),
+    );
     return undefined;
   }
 

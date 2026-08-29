@@ -1,6 +1,12 @@
 import * as v from "valibot";
 
-import type { Diagnostic, Result } from "./diagnostics.ts";
+import {
+  createDiagnostic,
+  DiagnosticCollector,
+  success,
+  type Diagnostic,
+  type Result,
+} from "@stackyard/diagnostics";
 
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
@@ -103,21 +109,25 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   const result = v.safeParse(ProjectSpecSchema, input, { abortEarly: false });
 
   if (result.success) {
-    return { output: result.output, success: true };
+    return success(result.output);
   }
 
-  return {
-    diagnostics: result.issues.map(issueToDiagnostic),
-    success: false,
-  };
+  const diagnostics = new DiagnosticCollector();
+  for (const issue of result.issues) {
+    diagnostics.report(issueToDiagnostic(issue));
+  }
+
+  const parseFailure = diagnostics.toFailure();
+  if (!parseFailure) {
+    throw new Error("Project parsing failed without a diagnostic.");
+  }
+
+  return parseFailure;
 }
 
 function issueToDiagnostic(issue: v.BaseIssue<unknown>): Diagnostic {
-  return {
-    code: "SYD1000",
-    message: issue.message,
-    path: issue.path?.map((item) => item.key).filter(isPathSegment) ?? [],
-  };
+  const path = issue.path?.map((item) => item.key).filter(isPathSegment);
+  return createDiagnostic("SYD1000", issue.message, path ? { path } : {});
 }
 
 function isPathSegment(value: unknown): value is number | string {

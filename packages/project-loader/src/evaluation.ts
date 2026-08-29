@@ -1,9 +1,5 @@
-import {
-  parseProjectSpec,
-  type Diagnostic,
-  type ProjectSpec,
-  type Result,
-} from "@stackyard/protocol";
+import { createDiagnostic, failure, isDiagnostic, type Result } from "@stackyard/diagnostics";
+import { parseProjectSpec, type ProjectSpec } from "@stackyard/protocol";
 
 const evaluationTimeoutMilliseconds = 10_000;
 const evaluationMessageType = "stackyard:evaluation";
@@ -20,14 +16,14 @@ interface EvaluationMessage {
 }
 
 export async function evaluateProject(
-  cliEntrypoint: string,
+  evaluatorEntrypoint: string,
   entrypoint: string,
   projectRoot: string,
 ): Promise<EvaluationOutput> {
   let message: EvaluationMessage | undefined;
 
   const subprocess = Bun.spawn({
-    cmd: [process.execPath, cliEntrypoint, "__stackyard_evaluate__", entrypoint],
+    cmd: [process.execPath, evaluatorEntrypoint, "__stackyard_evaluate__", entrypoint],
     cwd: projectRoot,
     ipc(value) {
       if (isEvaluationMessage(value)) {
@@ -53,8 +49,10 @@ export async function evaluateProject(
   if (timedOut) {
     return {
       result: failure(
-        "SYD2001",
-        `Project evaluation exceeded ${evaluationTimeoutMilliseconds / 1_000} seconds.`,
+        createDiagnostic(
+          "SYD2001",
+          `Project evaluation exceeded ${evaluationTimeoutMilliseconds / 1_000} seconds.`,
+        ),
       ),
       stderr,
       stdout,
@@ -64,8 +62,10 @@ export async function evaluateProject(
   if (!message) {
     return {
       result: failure(
-        "SYD2002",
-        `Project evaluator exited with code ${exitCode} without returning a result.`,
+        createDiagnostic(
+          "SYD2002",
+          `Project evaluator exited with code ${exitCode} without returning a result.`,
+        ),
       ),
       stderr,
       stdout,
@@ -114,25 +114,6 @@ function isEvaluationResult(value: unknown): value is Result<ProjectSpec> {
     Array.isArray(value.diagnostics) &&
     value.diagnostics.every(isDiagnostic)
   );
-}
-
-function isDiagnostic(value: unknown): value is Diagnostic {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    typeof value.code === "string" &&
-    "message" in value &&
-    typeof value.message === "string" &&
-    "path" in value &&
-    Array.isArray(value.path) &&
-    value.path.every((segment) => typeof segment === "string" || typeof segment === "number")
-  );
-}
-
-function failure(code: string, message: string): Result<ProjectSpec> {
-  const diagnostic: Diagnostic = { code, message, path: [] };
-  return { diagnostics: [diagnostic], success: false };
 }
 
 async function didTimeOut(subprocess: Bun.Subprocess): Promise<boolean> {
