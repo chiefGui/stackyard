@@ -1,13 +1,13 @@
 {
-  "name": "@stackyard/example-basic",
+  "name": "@stackyard/diagnostics",
   "private": true,
   "type": "module",
-  "scripts": {
-    "build": "tsc -p ./tsconfig.json",
-    "typecheck": "tsc -p ./tsconfig.json"
+  "exports": {
+    ".": "./src/index.ts"
   },
-  "dependencies": {
-    "stackyard": "workspace:*"
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "typecheck": "tsc -p ./tsconfig.json"
   },
   "devDependencies": {
     "typescript": "catalog:"

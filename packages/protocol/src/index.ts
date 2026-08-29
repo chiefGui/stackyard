@@ -1,2 +1,8 @@
-// Serializable models and transport contracts begin in Milestone 2.
-export {};
+export type {
+  EndpointSpec,
+  EndpointValueExpression,
+  EnvironmentValueSpec,
+  ProcessResourceSpec,
+  ProjectSpec,
+} from "./project.ts";
+export { parseProjectSpec, ProjectSpecSchema } from "./project.ts";
