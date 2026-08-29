@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import type { NonEmptyDiagnostics } from "../packages/diagnostics/src/index.ts";
 import { parseProjectSpec } from "../packages/protocol/src/index.ts";
 
 const validSpec = {
@@ -27,26 +28,123 @@ describe("ProjectSpec", () => {
   });
 
   test("rejects unknown properties", () => {
-    const result = parseProjectSpec({ ...validSpec, unexpected: true });
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      anotherUnexpected: true,
+      unexpected: true,
+    });
 
-    expect(result.success).toBeFalse();
-    if (!result.success) {
-      expect(result.diagnostics[0]?.code).toBe("SYD1000");
-      expect(result.diagnostics[0]?.path).toEqual(["unexpected"]);
-    }
+    expect(diagnostics[0]).toEqual({
+      code: "SYD1000",
+      message: "Property is not recognized.",
+      path: ["anotherUnexpected"],
+      severity: "error",
+    });
+    expect(diagnostics[1]?.path).toEqual(["unexpected"]);
+  });
+
+  test("rejects unknown properties at their exact nested path", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: {
+          ...validSpec.resources.api,
+          command: { ...validSpec.resources.api.command, unexpected: true },
+        },
+      },
+    });
+
+    expect(diagnostics[0]?.path).toEqual(["resources", "api", "command", "unexpected"]);
   });
 
   test("rejects working directories outside the project root", () => {
-    const result = parseProjectSpec({
+    const diagnostics = parseDiagnostics({
       ...validSpec,
       resources: {
         api: { ...validSpec.resources.api, cwd: "../api" },
       },
     });
 
-    expect(result.success).toBeFalse();
-    if (!result.success) {
-      expect(result.diagnostics[0]?.path).toEqual(["resources", "api", "cwd"]);
-    }
+    expect(diagnostics[0]?.path).toEqual(["resources", "api", "cwd"]);
+    expect(diagnostics[0]?.message).toBe("Must be a portable path inside the project root.");
+  });
+
+  test("preserves resource key validation details", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: { "Bad key": validSpec.resources.api },
+    });
+
+    expect(diagnostics[0]?.path).toEqual(["resources", "Bad key"]);
+    expect(diagnostics[0]?.message).toBe(
+      "Must start with a lowercase letter and contain only letters, numbers, and hyphens.",
+    );
+  });
+
+  test("preserves environment key validation details", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: { ...validSpec.resources.api, env: { "bad-key": "value" } },
+      },
+    });
+
+    expect(diagnostics[0]?.path).toEqual(["resources", "api", "env", "bad-key"]);
+    expect(diagnostics[0]?.message).toBe("Must be a valid environment variable name.");
+  });
+
+  test("reports invalid endpoint references at the environment value", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: {
+          ...validSpec.resources.api,
+          env: {
+            API_URL: { endpoint: "http", kind: "invalid", resource: "api" },
+          },
+        },
+      },
+    });
+
+    expect(diagnostics[0]?.path).toEqual(["resources", "api", "env", "API_URL"]);
+    expect(diagnostics[0]?.message).toBe("Must be a string or endpoint reference.");
+  });
+
+  test("collects independent validation failures", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      name: "Invalid",
+      resources: {
+        api: {
+          ...validSpec.resources.api,
+          cwd: "../api",
+          endpoints: {
+            http: {
+              ...validSpec.resources.api.endpoints.http,
+              port: {
+                ...validSpec.resources.api.endpoints.http.port,
+                preferred: 70_000,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(diagnostics.map(({ path }) => path)).toEqual([
+      ["name"],
+      ["resources", "api", "cwd"],
+      ["resources", "api", "endpoints", "http", "port", "preferred"],
+    ]);
   });
 });
+
+function parseDiagnostics(input: unknown): NonEmptyDiagnostics {
+  const result = parseProjectSpec(input);
+
+  if (result.success) {
+    throw new Error("Expected project parsing to fail.");
+  }
+
+  return result.diagnostics;
+}
