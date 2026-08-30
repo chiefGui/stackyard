@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { NonEmptyDiagnostics } from "../packages/diagnostics/src/index.ts";
-import { parseProjectSpec } from "../packages/protocol/src/index.ts";
+import { createProjectSpec, parseProjectSpec } from "../packages/protocol/src/index.ts";
 
 const validSpec = {
   name: "example",
@@ -23,8 +23,50 @@ const validSpec = {
 } as const;
 
 describe("ProjectSpec", () => {
+  test("owns the schema version when creating the canonical model", () => {
+    const result = createProjectSpec({
+      name: validSpec.name,
+      resources: validSpec.resources,
+    });
+
+    expect(result).toEqual({ output: validSpec, success: true });
+    if (result.success) {
+      expect(result.output.schemaVersion).toBe(1);
+      expect(Object.isFrozen(result.output)).toBeTrue();
+      expect(Object.isFrozen(result.output.resources)).toBeTrue();
+      expect(Object.isFrozen(result.output.resources.api?.command.args)).toBeTrue();
+    }
+  });
+
   test("parses the canonical project model", () => {
-    expect(parseProjectSpec(validSpec)).toEqual({ output: validSpec, success: true });
+    const result = parseProjectSpec(validSpec);
+
+    expect(result).toEqual({ output: validSpec, success: true });
+    if (result.success) {
+      expect(Object.isFrozen(result.output)).toBeTrue();
+    }
+  });
+
+  test("reports missing and unsupported schema versions explicitly", () => {
+    const missing = parseDiagnostics({
+      name: validSpec.name,
+      resources: validSpec.resources,
+    });
+    expect(missing[0]).toMatchObject({
+      code: "SYD1008",
+      message: "Project specification schema version is missing.",
+      path: ["schemaVersion"],
+    });
+    expect(missing[0]?.help).toContain("Regenerate");
+
+    const unsupported = parseDiagnostics({ ...validSpec, schemaVersion: 2 });
+    expect(unsupported[0]).toMatchObject({
+      code: "SYD1008",
+      message: "Project specification schema version 2 is not supported.",
+      notes: ["Supported schema version: 1."],
+      path: ["schemaVersion"],
+    });
+    expect(unsupported[0]?.help).toContain("Update Stackyard");
   });
 
   test("rejects unknown properties", () => {

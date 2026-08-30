@@ -5,4 +5,4 @@ export type {
   ProcessResourceSpec,
   ProjectSpec,
 } from "./project.ts";
-export { parseProjectSpec } from "./project.ts";
+export { createProjectSpec, parseProjectSpec } from "./project.ts";

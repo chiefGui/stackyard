@@ -39,8 +39,9 @@ export async function evaluateProject(
 
   try {
     subprocess = spawnEvaluator(evaluatorEntrypoint, entrypoint, projectRoot, (value) => {
-      if (isEvaluationMessage(value)) {
-        message = value;
+      const received = readEvaluationMessage(value);
+      if (received) {
+        message = received;
       }
     });
 
@@ -84,15 +85,7 @@ export async function evaluateProject(
       };
     }
 
-    if (!message.result.success) {
-      return { result: message.result, stderr, stdout };
-    }
-
-    return {
-      result: parseProjectSpec(message.result.output),
-      stderr,
-      stdout,
-    };
+    return { result: message.result, stderr, stdout };
   } catch (error) {
     await terminateSubprocess(subprocess);
     const [stderr, stdout] = await Promise.all([
@@ -158,32 +151,43 @@ async function terminateSubprocess(
 }
 
 export function createEvaluationMessage(result: Result<ProjectSpec>): EvaluationMessage {
-  return { result, type: evaluationMessageType };
+  return Object.freeze({ result, type: evaluationMessageType });
 }
 
-function isEvaluationMessage(value: unknown): value is EvaluationMessage {
+function readEvaluationMessage(value: unknown): EvaluationMessage | undefined {
   if (typeof value !== "object" || value === null) {
-    return false;
+    return undefined;
   }
 
   if (!("type" in value) || value.type !== evaluationMessageType || !("result" in value)) {
-    return false;
+    return undefined;
   }
 
-  return isEvaluationResult(value.result);
+  const result = readEvaluationResult(value.result);
+  return result ? Object.freeze({ result, type: evaluationMessageType }) : undefined;
 }
 
-function isEvaluationResult(value: unknown): value is Result<ProjectSpec> {
+function readEvaluationResult(value: unknown): Result<ProjectSpec> | undefined {
   if (typeof value !== "object" || value === null || !("success" in value)) {
-    return false;
+    return undefined;
   }
 
   if (value.success === true) {
-    return "output" in value;
+    return "output" in value ? parseProjectSpec(value.output) : undefined;
   }
 
-  return (
-    value.success === false && "diagnostics" in value && isNonEmptyDiagnostics(value.diagnostics)
+  if (
+    value.success !== false ||
+    !("diagnostics" in value) ||
+    !isNonEmptyDiagnostics(value.diagnostics)
+  ) {
+    return undefined;
+  }
+
+  const [diagnostic, ...additionalDiagnostics] = value.diagnostics;
+  return failure(
+    createDiagnostic(diagnostic),
+    ...additionalDiagnostics.map((additional) => createDiagnostic(additional)),
   );
 }
 

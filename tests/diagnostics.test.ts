@@ -166,13 +166,13 @@ describe("diagnostics", () => {
     expect(isDiagnosticError(error)).toBeTrue();
     expect(
       isDiagnosticError({
-        [Symbol.for("stackyard.diagnostic-error.v2")]: true,
+        [Symbol.for("stackyard.diagnostic-error")]: true,
         diagnostics: [],
       }),
     ).toBeFalse();
     expect(
       isDiagnosticError({
-        [Symbol.for("stackyard.diagnostic-error.v1")]: true,
+        [Symbol.for("stackyard.diagnostic-error.v2")]: true,
         diagnostics: error.diagnostics,
       }),
     ).toBeFalse();
