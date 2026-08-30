@@ -20,8 +20,6 @@ export async function captureProcessOutput(
 
   try {
     while (true) {
-      // Reads must remain sequential to preserve stream backpressure.
-      // oxlint-disable-next-line eslint/no-await-in-loop
       const { done, value } = await reader.read();
       if (done) {
         break;

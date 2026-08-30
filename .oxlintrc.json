@@ -14,6 +14,21 @@
       }
     },
     {
+      "files": ["packages/sdk/src/project.ts"],
+      "rules": {
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/project-loader/src/discovery.ts",
+        "packages/project-loader/src/process-output.ts"
+      ],
+      "rules": {
+        "eslint/no-await-in-loop": "off"
+      }
+    },
+    {
       "files": [
         "apps/server/src/main.ts",
         "apps/web/src/main.ts",
