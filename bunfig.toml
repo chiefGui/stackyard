@@ -1,2 +1,8 @@
 [install]
 linker = "isolated"
+
+[test]
+coverageReporter = ["text", "lcov"]
+coverageSkipTestFiles = true
+coverageThreshold = { line = 0.9, function = 0.9 }
+root = "./tests"

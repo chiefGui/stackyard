@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { join, resolve } from "node:path";
 
+import { parseProjectSpec } from "../packages/protocol/src/index.ts";
+
 const repositoryRoot = resolve(import.meta.dir, "..");
 
 test("inspect discovers and evaluates a project in an isolated process", async () => {
@@ -12,11 +14,13 @@ test("inspect discovers and evaluates a project in an isolated process", async (
   expect(result.exitCode).toBe(0);
   expect(result.stderr).toBe("");
 
-  const spec = JSON.parse(result.stdout) as {
-    name: string;
-    resources: Record<string, unknown>;
-    schemaVersion: number;
-  };
+  const parsedSpec = parseProjectSpec(JSON.parse(result.stdout));
+  expect(parsedSpec.success).toBeTrue();
+  if (!parsedSpec.success) {
+    throw new Error("Expected inspect to return a valid project specification.");
+  }
+
+  const spec = parsedSpec.output;
   expect(spec.name).toBe("basic");
   expect(spec.schemaVersion).toBe(1);
   expect(Object.keys(spec.resources)).toEqual(["api", "web"]);
