@@ -3,7 +3,7 @@ import { defineConfig } from "tsdown";
 export default defineConfig({
   deps: {
     alwaysBundle: [/^@stackyard\//, "zod"],
-    onlyBundle: false,
+    onlyBundle: "zod",
     onlyImport: [],
   },
   dts: {

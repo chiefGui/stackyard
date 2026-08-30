@@ -59,8 +59,28 @@ test("the packed package works in an external Bun project", async () => {
     );
     expect(valid.exitCode).toBe(0);
     expect(valid.stderr).toBe("");
-    expect(JSON.parse(valid.stdout)).toMatchObject({
+    expect(JSON.parse(valid.stdout)).toEqual({
       name: "package-consumer",
+      resources: {
+        api: {
+          command: {
+            args: ["--version"],
+            executable: "bun",
+          },
+          cwd: ".",
+          endpoints: {
+            http: {
+              kind: "http",
+              port: {
+                env: "PORT",
+                kind: "allocated",
+              },
+            },
+          },
+          env: {},
+          kind: "process",
+        },
+      },
       schemaVersion: 1,
     });
 
