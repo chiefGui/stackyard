@@ -35,12 +35,16 @@ test("the packed package works in an external Bun project", async () => {
     expect(installed.exitCode).toBe(0);
 
     const installedPackage = join(consumerDirectory, "node_modules/stackyard");
-    const manifest = JSON.parse(await readFile(join(installedPackage, "package.json"), "utf8")) as {
-      dependencies?: unknown;
-    };
-    expect(manifest.dependencies).toBeUndefined();
-    expect((await readdir(installedPackage)).sort()).toEqual(["dist", "package.json"]);
-    expect((await readdir(join(installedPackage, "dist"))).sort()).toEqual([
+    const manifest: unknown = JSON.parse(
+      await readFile(join(installedPackage, "package.json"), "utf8"),
+    );
+    if (typeof manifest !== "object" || manifest === null) {
+      throw new TypeError("The installed package manifest must be an object.");
+    }
+
+    expect("dependencies" in manifest).toBeFalse();
+    expect((await readdir(installedPackage)).toSorted()).toEqual(["dist", "package.json"]);
+    expect((await readdir(join(installedPackage, "dist"))).toSorted()).toEqual([
       "cli.js",
       "index.d.ts",
       "index.js",

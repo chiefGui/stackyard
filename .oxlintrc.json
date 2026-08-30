@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "perf": "error",
+    "suspicious": "error"
+  },
+  "plugins": ["import", "oxc", "typescript", "unicorn"],
+  "overrides": [
+    {
+      "files": ["packages/sdk/src/**/*.ts"],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    },
+    {
+      "files": ["packages/sdk/src/project.ts"],
+      "rules": {
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/project-loader/src/discovery.ts",
+        "packages/project-loader/src/process-output.ts"
+      ],
+      "rules": {
+        "eslint/no-await-in-loop": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/server/src/main.ts",
+        "apps/web/src/main.ts",
+        "packages/control-plane/src/index.ts"
+      ],
+      "rules": {
+        "unicorn/require-module-specifiers": "off"
+      }
+    }
+  ],
+  "options": {
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true
+  },
+  "ignorePatterns": ["coverage/**", "dist/**", "node_modules/**"]
+}
