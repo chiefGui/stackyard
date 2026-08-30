@@ -18,12 +18,14 @@ export async function runProjectEvaluator(entrypoint: string): Promise<number> {
       result = failure(diagnostic, ...additionalDiagnostics);
     } else {
       result = failure(
-        createDiagnostic(
-          "SYD2003",
-          error instanceof Error
-            ? error.message
-            : "Project evaluation failed with an unknown error.",
-        ),
+        createDiagnostic({
+          code: "SYD2003",
+          help: "Fix the exception thrown while importing stackyard/main.ts, then retry.",
+          message: "Project definition threw while being evaluated.",
+          ...(error instanceof Error && error.message.trim().length > 0
+            ? { notes: [error.message] }
+            : {}),
+        }),
       );
     }
   }

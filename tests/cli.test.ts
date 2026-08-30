@@ -27,7 +27,8 @@ test("inspect preserves structured definition errors across the evaluator bounda
 
   expect(result.exitCode).toBe(1);
   expect(result.stdout).toBe("");
-  expect(result.stderr).toContain("SYD1000 at resources.api.cwd");
+  expect(result.stderr).toContain("error[SYD1005] at resources.api.cwd");
+  expect(result.stderr).toContain("help: Use a forward-slash path inside the project root");
 });
 
 async function runCli(args: readonly string[], cwd: string): Promise<CommandResult> {

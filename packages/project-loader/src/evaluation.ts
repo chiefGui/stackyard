@@ -58,10 +58,11 @@ export async function evaluateProject(
     if (timedOut) {
       return {
         result: failure(
-          createDiagnostic(
-            "SYD2001",
-            `Project evaluation exceeded ${evaluationTimeoutMilliseconds / 1_000} seconds.`,
-          ),
+          createDiagnostic({
+            code: "SYD2001",
+            help: "Remove blocking top-level work from stackyard/main.ts and retry.",
+            message: `Project evaluation exceeded ${evaluationTimeoutMilliseconds / 1_000} seconds.`,
+          }),
         ),
         stderr,
         stdout,
@@ -71,10 +72,12 @@ export async function evaluateProject(
     if (!message) {
       return {
         result: failure(
-          createDiagnostic(
-            "SYD2002",
-            `Project evaluator exited with code ${exitCode} without returning a result.`,
-          ),
+          createDiagnostic({
+            code: "SYD2002",
+            help: "Remove top-level process exits from stackyard/main.ts and retry.",
+            message: "Project evaluator exited without returning a result.",
+            notes: [`Evaluator exit code: ${exitCode}.`],
+          }),
         ),
         stderr,
         stdout,
@@ -99,12 +102,14 @@ export async function evaluateProject(
 
     return {
       result: failure(
-        createDiagnostic(
-          "SYD2007",
-          error instanceof Error
-            ? `Project evaluator failed: ${error.message}`
-            : "Project evaluator failed with an unknown infrastructure error.",
-        ),
+        createDiagnostic({
+          code: "SYD2007",
+          help: "Retry the command; if it persists, report this diagnostic and its notes.",
+          message: "Project evaluator failed because of an infrastructure error.",
+          ...(error instanceof Error && error.message.trim().length > 0
+            ? { notes: [error.message] }
+            : {}),
+        }),
       ),
       stderr,
       stdout,

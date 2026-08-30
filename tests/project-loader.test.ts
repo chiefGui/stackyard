@@ -33,6 +33,8 @@ test("evaluator infrastructure failures become diagnostics", async () => {
   expect(output.result.success).toBeFalse();
   if (!output.result.success) {
     expect(output.result.diagnostics[0]?.code).toBe("SYD2007");
+    expect(output.result.diagnostics[0]?.help).toContain("Retry");
+    expect(output.result.diagnostics[0]?.notes).not.toEqual([]);
   }
   expect(output.stderr).toEqual({ text: "", truncated: false });
   expect(output.stdout).toEqual({ text: "", truncated: false });

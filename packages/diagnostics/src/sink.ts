@@ -46,7 +46,9 @@ export class DiagnosticCollector implements DiagnosticSink {
     const retained = this.#diagnostics.slice(0, this.#capacity - 1);
     const omitted = this.#omitted + 1;
     retained.push(
-      createDiagnostic("SYD0000", `${omitted} additional diagnostics omitted.`, {
+      createDiagnostic({
+        code: "SYD0000",
+        message: `${omitted} additional diagnostics omitted.`,
         severity: "warning",
       }),
     );

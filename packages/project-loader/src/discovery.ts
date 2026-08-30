@@ -38,10 +38,14 @@ export async function discoverProject(
     return notFound(startingDirectory);
   } catch (error) {
     return failure(
-      createDiagnostic(
-        "SYD2006",
-        error instanceof Error ? error.message : "Project discovery failed with an unknown error.",
-      ),
+      createDiagnostic({
+        code: "SYD2006",
+        help: "Verify that the project path exists and is readable, then retry.",
+        message: "Project discovery failed.",
+        ...(error instanceof Error && error.message.trim().length > 0
+          ? { notes: [error.message] }
+          : {}),
+      }),
     );
   }
 }
@@ -90,5 +94,11 @@ function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function notFound(path: string): Result<ProjectLocation> {
-  return failure(createDiagnostic("SYD2000", `No stackyard/main.ts was found from '${path}'.`));
+  return failure(
+    createDiagnostic({
+      code: "SYD2000",
+      help: "Create stackyard/main.ts or pass the path to an existing Stackyard project.",
+      message: `No stackyard/main.ts was found from '${path}'.`,
+    }),
+  );
 }
