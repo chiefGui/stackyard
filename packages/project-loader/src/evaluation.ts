@@ -151,7 +151,7 @@ async function terminateSubprocess(
 }
 
 export function createEvaluationMessage(result: Result<ProjectSpec>): EvaluationMessage {
-  return Object.freeze({ result, type: evaluationMessageType });
+  return { result, type: evaluationMessageType };
 }
 
 function readEvaluationMessage(value: unknown): EvaluationMessage | undefined {
@@ -164,7 +164,7 @@ function readEvaluationMessage(value: unknown): EvaluationMessage | undefined {
   }
 
   const result = readEvaluationResult(value.result);
-  return result ? Object.freeze({ result, type: evaluationMessageType }) : undefined;
+  return result ? { result, type: evaluationMessageType } : undefined;
 }
 
 function readEvaluationResult(value: unknown): Result<ProjectSpec> | undefined {

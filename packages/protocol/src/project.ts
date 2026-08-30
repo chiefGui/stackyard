@@ -10,7 +10,7 @@ import {
   type Result,
 } from "@stackyard/diagnostics";
 
-const version = 1 as const;
+const version = 1;
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;

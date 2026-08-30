@@ -1,6 +1,6 @@
 import { createDiagnostic, isDiagnostic, type Diagnostic } from "./diagnostic.ts";
 
-const version = 1 as const;
+const version = 1;
 
 export interface DiagnosticReport {
   readonly diagnostics: readonly Diagnostic[];

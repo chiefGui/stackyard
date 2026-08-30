@@ -47,7 +47,7 @@ describe("ProjectSpec", () => {
     }
   });
 
-  test("reports missing and unsupported schema versions explicitly", () => {
+  test("reports missing, invalid, and unsupported schema versions explicitly", () => {
     const missing = parseDiagnostics({
       name: validSpec.name,
       resources: validSpec.resources,
@@ -58,6 +58,14 @@ describe("ProjectSpec", () => {
       path: ["schemaVersion"],
     });
     expect(missing[0]?.help).toContain("Regenerate");
+
+    const invalid = parseDiagnostics({ ...validSpec, schemaVersion: "1" });
+    expect(invalid[0]).toMatchObject({
+      code: "SYD1008",
+      message: "Project specification schema version must be a positive integer.",
+      path: ["schemaVersion"],
+    });
+    expect(invalid[0]?.help).toContain("Regenerate");
 
     const unsupported = parseDiagnostics({ ...validSpec, schemaVersion: 2 });
     expect(unsupported[0]).toMatchObject({
