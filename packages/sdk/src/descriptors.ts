@@ -43,7 +43,9 @@ export interface ServiceOptions<Endpoints extends EndpointInputRecord> {
 
 export type EndpointInputRecord = Readonly<Record<string, HttpEndpointDescriptor>>;
 
-export const endpoint = Object.freeze({
+export const endpoint: Readonly<{
+  http(options: HttpEndpointOptions): HttpEndpointDescriptor;
+}> = Object.freeze({
   http(options: HttpEndpointOptions): HttpEndpointDescriptor {
     const descriptor = Object.freeze({}) as HttpEndpointDescriptor;
     endpointStates.set(descriptor, { ...options });

@@ -3,16 +3,55 @@ import * as z from "zod";
 import {
   createDiagnostic,
   DiagnosticCollector,
+  failure,
   success,
   type Diagnostic,
+  type Failure,
   type Result,
 } from "@stackyard/diagnostics";
 
+const version = 1;
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 type ProjectIssueContext = "record-key" | "value";
+
+export interface EndpointSpec {
+  readonly kind: "http";
+  readonly port: {
+    readonly env: string;
+    readonly kind: "allocated";
+    readonly preferred?: number | undefined;
+  };
+}
+
+export interface EndpointValueExpression {
+  readonly endpoint: string;
+  readonly kind: "endpoint-host" | "endpoint-port" | "endpoint-url";
+  readonly resource: string;
+}
+
+export type EnvironmentValueSpec = string | EndpointValueExpression;
+
+export interface ProcessResourceSpec {
+  readonly command: {
+    readonly args: readonly string[];
+    readonly executable: string;
+  };
+  readonly cwd: string;
+  readonly endpoints: Readonly<Record<string, EndpointSpec>>;
+  readonly env: Readonly<Record<string, EnvironmentValueSpec>>;
+  readonly kind: "process";
+}
+
+export interface ProjectSpec {
+  readonly name: string;
+  readonly resources: Readonly<Record<string, ProcessResourceSpec>>;
+  readonly schemaVersion: typeof version;
+}
+
+type ProjectSpecInput = Omit<ProjectSpec, "schemaVersion">;
 
 const ProjectNameSchema = z
   .string({ error: "Project name must be a string." })
@@ -89,25 +128,26 @@ const ProcessResourceSchema = z.strictObject({
   kind: z.literal("process"),
 });
 
-export const ProjectSpecSchema = z.strictObject({
+const ProjectSpecSchema: z.ZodType<ProjectSpec> = z.strictObject({
   name: ProjectNameSchema,
   resources: z.record(ResourceNameSchema, ProcessResourceSchema),
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(version),
 });
 
-type MutableProjectSpec = z.output<typeof ProjectSpecSchema>;
-
-export type ProjectSpec = DeepReadonly<MutableProjectSpec>;
-export type ProcessResourceSpec = ProjectSpec["resources"][string];
-export type EndpointSpec = ProcessResourceSpec["endpoints"][string];
-export type EnvironmentValueSpec = ProcessResourceSpec["env"][string];
-export type EndpointValueExpression = Exclude<EnvironmentValueSpec, string>;
+export function createProjectSpec(input: ProjectSpecInput): Result<ProjectSpec> {
+  return parseProjectSpec({ ...input, schemaVersion: version });
+}
 
 export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
+  const versionFailure = validateVersion(input);
+  if (versionFailure) {
+    return versionFailure;
+  }
+
   const result = ProjectSpecSchema.safeParse(input);
 
   if (result.success) {
-    return success(result.data);
+    return success(deepFreeze(result.data));
   }
 
   const diagnostics = new DiagnosticCollector();
@@ -123,6 +163,48 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   }
 
   return parseFailure;
+}
+
+function validateVersion(input: unknown): Failure | undefined {
+  if (typeof input !== "object" || input === null || !Object.hasOwn(input, "schemaVersion")) {
+    return failure(
+      createDiagnostic({
+        code: "SYD1008",
+        help: "Regenerate the specification with the installed Stackyard package.",
+        message: "Project specification schema version is missing.",
+        path: ["schemaVersion"],
+      }),
+    );
+  }
+
+  const received = Reflect.get(input, "schemaVersion");
+  if (typeof received !== "number" || !Number.isSafeInteger(received) || received < 1) {
+    return failure(
+      createDiagnostic({
+        code: "SYD1008",
+        help: "Regenerate the specification with the installed Stackyard package.",
+        message: "Project specification schema version must be a positive integer.",
+        path: ["schemaVersion"],
+      }),
+    );
+  }
+
+  if (received !== version) {
+    return failure(
+      createDiagnostic({
+        code: "SYD1008",
+        help:
+          received > version
+            ? "Update Stackyard to a version that supports this project specification."
+            : "Update the project's Stackyard package and regenerate the specification.",
+        message: `Project specification schema version ${received} is not supported.`,
+        notes: [`Supported schema version: ${version}.`],
+        path: ["schemaVersion"],
+      }),
+    );
+  }
+
+  return undefined;
 }
 
 function issueToDiagnostics(
@@ -254,8 +336,14 @@ function isPortableRelativeDirectory(value: string): boolean {
     .every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-type DeepReadonly<T> = T extends readonly (infer Item)[]
-  ? readonly DeepReadonly<Item>[]
-  : T extends object
-    ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
-    : T;
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+
+  for (const child of Object.values(value)) {
+    deepFreeze(child);
+  }
+
+  return Object.freeze(value);
+}

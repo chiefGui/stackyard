@@ -15,6 +15,7 @@
   "scripts": {
     "bench": "bun run ./benchmarks/project-definition.ts",
     "build": "bun run --workspaces --if-present build",
+    "pack:local": "bun run --filter stackyard pack:local",
     "typecheck": "bun run typecheck:packages && tsc -p ./tsconfig.json",
     "typecheck:packages": "bun run --workspaces --if-present typecheck",
     "test": "bun test",

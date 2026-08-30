@@ -1,10 +1,10 @@
 import { createDiagnostic, isDiagnostic, type Diagnostic } from "./diagnostic.ts";
 
-export const diagnosticReportSchemaVersion = 1;
+const version = 1;
 
 export interface DiagnosticReport {
   readonly diagnostics: readonly Diagnostic[];
-  readonly schemaVersion: typeof diagnosticReportSchemaVersion;
+  readonly schemaVersion: typeof version;
 }
 
 export function createDiagnosticReport(diagnostics: readonly Diagnostic[]): DiagnosticReport {
@@ -18,7 +18,7 @@ export function createDiagnosticReport(diagnostics: readonly Diagnostic[]): Diag
   }
 
   return Object.freeze({
-    schemaVersion: diagnosticReportSchemaVersion,
+    schemaVersion: version,
     diagnostics: Object.freeze(copiedDiagnostics),
   });
 }
@@ -28,7 +28,7 @@ export function isDiagnosticReport(value: unknown): value is DiagnosticReport {
     typeof value !== "object" ||
     value === null ||
     !("schemaVersion" in value) ||
-    value.schemaVersion !== diagnosticReportSchemaVersion ||
+    value.schemaVersion !== version ||
     !("diagnostics" in value) ||
     !Array.isArray(value.diagnostics)
   ) {

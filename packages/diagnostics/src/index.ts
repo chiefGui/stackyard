@@ -9,7 +9,6 @@ export { DiagnosticError, isDiagnosticError } from "./error.ts";
 export type { DiagnosticReport } from "./report.ts";
 export {
   createDiagnosticReport,
-  diagnosticReportSchemaVersion,
   isDiagnosticReport,
   parseDiagnosticReport,
   serializeDiagnosticReport,

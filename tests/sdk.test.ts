@@ -33,12 +33,14 @@ describe("project definitions", () => {
 
     if (result.success) {
       expect(Object.keys(result.output.resources)).toEqual(["api", "web"]);
+      expect(result.output.schemaVersion).toBe(1);
       expect(result.output.resources.web?.env.API_URL).toEqual({
         endpoint: "http",
         kind: "endpoint-url",
         resource: "api",
       });
       expect(Object.isFrozen(result.output)).toBeTrue();
+      expect(Object.isFrozen(result.output.resources.web?.env)).toBeTrue();
     }
   });
 

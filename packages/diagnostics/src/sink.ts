@@ -12,7 +12,7 @@ export class DiagnosticCollector implements DiagnosticSink {
   readonly #diagnostics: Diagnostic[] = [];
   #omitted = 0;
 
-  constructor(capacity = defaultCapacity) {
+  constructor(capacity: number = defaultCapacity) {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
       throw new RangeError("Diagnostic capacity must be a positive safe integer.");
     }

@@ -4,11 +4,11 @@ import {
   DiagnosticError,
   failure,
   reportDiagnostics,
-  success,
   type DiagnosticSink,
   type Result,
 } from "@stackyard/diagnostics";
 import {
+  createProjectSpec,
   parseProjectSpec,
   type EndpointValueExpression,
   type EnvironmentValueSpec,
@@ -24,10 +24,12 @@ import {
   type ServiceState,
 } from "./descriptors.ts";
 
-const projectDefinitionSymbol = Symbol.for("stackyard.project-definition.v1");
+declare const projectDefinitionBrand: unique symbol;
+
+const projectDefinitionSymbol: symbol = Symbol.for("stackyard.project-definition");
 
 export interface ProjectDefinition {
-  readonly [projectDefinitionSymbol]: ProjectSpec;
+  readonly [projectDefinitionBrand]: never;
 }
 
 export interface ProjectOptions<Resources extends ResourceInputRecord> {
@@ -86,14 +88,13 @@ export function defineProject<const Resources extends ResourceInputRecord>(
     resources[name] = compileService(name, state, resourceNames, diagnostics);
   }
 
-  const parsed = parseProjectSpec({
+  const created = createProjectSpec({
     name: options.name,
     resources,
-    schemaVersion: 1,
   });
 
-  if (!parsed.success) {
-    reportDiagnostics(diagnostics, parsed.diagnostics);
+  if (!created.success) {
+    reportDiagnostics(diagnostics, created.diagnostics);
   }
 
   const definitionFailure = diagnostics.toFailure();
@@ -102,23 +103,20 @@ export function defineProject<const Resources extends ResourceInputRecord>(
     throw new DiagnosticError(diagnostic, ...additionalDiagnostics);
   }
 
-  if (!parsed.success) {
-    throw new Error("Project parsing failed without a collected diagnostic.");
+  if (!created.success) {
+    throw new Error("Project creation failed without a collected diagnostic.");
   }
 
   const definition = Object.create(null) as ProjectDefinition;
   Object.defineProperty(definition, projectDefinitionSymbol, {
-    value: deepFreeze(parsed.output),
+    value: created.output,
   });
   return Object.freeze(definition);
 }
 
 export function readProjectDefinition(input: unknown): Result<ProjectSpec> {
-  const spec = isObject(input) ? Reflect.get(input, projectDefinitionSymbol) : undefined;
-
-  if (spec) {
-    const parsed = parseProjectSpec(spec);
-    return parsed.success ? success(deepFreeze(parsed.output)) : parsed;
+  if (isObject(input) && Object.hasOwn(input, projectDefinitionSymbol)) {
+    return parseProjectSpec(Reflect.get(input, projectDefinitionSymbol));
   }
 
   return failure(
@@ -281,18 +279,6 @@ function compareEntries(
   [right]: readonly [string, unknown],
 ): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (!isObject(value) || Object.isFrozen(value)) {
-    return value;
-  }
-
-  for (const child of Object.values(value)) {
-    deepFreeze(child);
-  }
-
-  return Object.freeze(value);
 }
 
 function isObject(value: unknown): value is object {

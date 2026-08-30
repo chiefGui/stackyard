@@ -1,14 +1,14 @@
 import type { Diagnostic } from "./diagnostic.ts";
 import { failure, isNonEmptyDiagnostics, type NonEmptyDiagnostics } from "./result.ts";
 
-const diagnosticErrorSymbol = Symbol.for("stackyard.diagnostic-error.v2");
+const diagnosticErrorSymbol = Symbol.for("stackyard.diagnostic-error");
 
 export class DiagnosticError extends Error {
-  readonly [diagnosticErrorSymbol] = true;
   readonly diagnostics: NonEmptyDiagnostics;
 
   constructor(diagnostic: Diagnostic, ...additionalDiagnostics: readonly Diagnostic[]) {
     super(diagnostic.message);
+    Object.defineProperty(this, diagnosticErrorSymbol, { value: true });
     this.name = "DiagnosticError";
     this.diagnostics = failure(diagnostic, ...additionalDiagnostics).diagnostics;
   }

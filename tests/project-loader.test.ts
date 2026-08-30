@@ -39,3 +39,20 @@ test("evaluator infrastructure failures become diagnostics", async () => {
   expect(output.stderr).toEqual({ text: "", truncated: false });
   expect(output.stdout).toEqual({ text: "", truncated: false });
 });
+
+test("evaluator failures are normalized at the IPC boundary", async () => {
+  const projectRoot = join(repositoryRoot, "tests/fixtures/invalid-project");
+  const output = await evaluateProject(
+    join(repositoryRoot, "apps/cli/src/main.ts"),
+    join(projectRoot, "stackyard/main.ts"),
+    projectRoot,
+  );
+
+  expect(output.result.success).toBeFalse();
+  if (!output.result.success) {
+    expect(output.result.diagnostics[0]?.code).toBe("SYD1005");
+    expect(Object.isFrozen(output.result)).toBeTrue();
+    expect(Object.isFrozen(output.result.diagnostics)).toBeTrue();
+    expect(Object.isFrozen(output.result.diagnostics[0])).toBeTrue();
+  }
+});
