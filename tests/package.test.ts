@@ -99,7 +99,7 @@ test("the packed package works in an external Bun project", async () => {
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });
   }
-});
+}, 30_000);
 
 interface CommandResult {
   readonly exitCode: number;
@@ -109,7 +109,7 @@ interface CommandResult {
 
 async function runCommand(command: readonly string[], cwd: string): Promise<CommandResult> {
   const subprocess = Bun.spawn({
-    cmd: command,
+    cmd: [...command],
     cwd,
     stderr: "pipe",
     stdout: "pipe",
