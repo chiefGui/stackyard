@@ -26,6 +26,9 @@ seven days.
 
 ## Performance
 
+Tests protect correctness; benchmarks show how project parsing and compilation time changes as a
+project grows.
+
 Run the project-model microbenchmarks with:
 
 ```sh

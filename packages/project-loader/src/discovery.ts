@@ -22,6 +22,8 @@ export async function discoverProject(
     let directory = startingDirectory;
 
     while (true) {
+      // Ancestors must be checked in order so the nearest project wins.
+      // oxlint-disable-next-line eslint/no-await-in-loop
       const location = await locationFromDirectory(directory);
       if (location) {
         return success(location);

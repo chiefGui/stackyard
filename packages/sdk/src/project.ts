@@ -42,6 +42,8 @@ export function defineProject<const Resources extends ResourceInputRecord>(
 ): ProjectDefinition {
   const diagnostics = new DiagnosticCollector();
   const resourceNames = new Map<ServiceState, string>();
+  // Object.entries() creates an owned array, so sorting in place avoids another allocation.
+  // oxlint-disable-next-line unicorn/no-array-sort
   const resourceEntries = Object.entries(options.resources).sort(compareEntries);
 
   for (const [name, descriptor] of resourceEntries) {
@@ -139,6 +141,8 @@ function compileService(
   const endpoints: Record<string, ProcessResourceSpec["endpoints"][string]> = {};
   const endpointEnvironmentNames = new Map<string, string>();
 
+  // Object.entries() creates an owned array, so sorting in place avoids another allocation.
+  // oxlint-disable-next-line unicorn/no-array-sort
   for (const [name, descriptor] of Object.entries(state.endpoints).sort(compareEntries)) {
     const endpointState = getEndpointState(descriptor);
     const path = ["resources", resourceName, "endpoints", name] as const;
@@ -183,6 +187,8 @@ function compileService(
 
   const env: Record<string, EnvironmentValueSpec> = {};
 
+  // Object.entries() creates an owned array, so sorting in place avoids another allocation.
+  // oxlint-disable-next-line unicorn/no-array-sort
   for (const [name, value] of Object.entries(state.env).sort(compareEntries)) {
     if (endpointEnvironmentNames.has(name)) {
       diagnostics.report(
