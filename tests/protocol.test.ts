@@ -101,25 +101,31 @@ describe("ProjectSpec", () => {
     expect(diagnostics[0]?.help).toContain("underscores");
   });
 
-  test("reports invalid endpoint references at the environment value", () => {
-    const diagnostics = parseDiagnostics({
-      ...validSpec,
-      resources: {
-        api: {
-          ...validSpec.resources.api,
-          env: {
-            API_URL: { endpoint: "http", kind: "invalid", resource: "api" },
+  test("classifies invalid environment values by their structural location", () => {
+    const invalidValues: readonly unknown[] = [
+      42,
+      { endpoint: "http", kind: "invalid", resource: "api" },
+    ];
+
+    for (const invalidValue of invalidValues) {
+      const diagnostics = parseDiagnostics({
+        ...validSpec,
+        resources: {
+          api: {
+            ...validSpec.resources.api,
+            env: { API_URL: invalidValue },
           },
         },
-      },
-    });
+      });
 
-    expect(diagnostics[0]?.path).toEqual(["resources", "api", "env", "API_URL"]);
-    expect(diagnostics[0]?.code).toBe("SYD1007");
-    expect(diagnostics[0]?.message).toBe(
-      "Environment value must be a string or endpoint reference.",
-    );
-    expect(diagnostics[0]?.help).toContain(".url");
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]?.path).toEqual(["resources", "api", "env", "API_URL"]);
+      expect(diagnostics[0]?.code).toBe("SYD1007");
+      expect(diagnostics[0]?.message).toBe(
+        "Environment value must be a string or endpoint reference.",
+      );
+      expect(diagnostics[0]?.help).toContain(".url");
+    }
   });
 
   test("collects independent validation failures", () => {

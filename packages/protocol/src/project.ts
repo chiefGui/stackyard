@@ -11,7 +11,8 @@ import {
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const invalidEnvironmentValueMessage = "Environment value must be a string or endpoint reference.";
+
+type ProjectIssueContext = "record-key" | "value";
 
 const ProjectNameSchema = z
   .string({ error: "Project name must be a string." })
@@ -61,7 +62,7 @@ const EndpointValueExpressionSchema = z.discriminatedUnion("kind", [
 ]);
 
 const EnvironmentValueSchema = z.union([z.string(), EndpointValueExpressionSchema], {
-  error: invalidEnvironmentValueMessage,
+  error: "Environment value must be a string or endpoint reference.",
 });
 
 const CommandSchema = z.strictObject({
@@ -127,7 +128,7 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
 function issueToDiagnostics(
   issue: z.core.$ZodIssue,
   prefix: readonly (number | string)[] = [],
-  context: "record-key" | "value" = "value",
+  context: ProjectIssueContext = "value",
 ): readonly Diagnostic[] {
   const path = [...prefix, ...issue.path.filter(isPathSegment)];
 
@@ -148,7 +149,7 @@ function issueToDiagnostics(
     );
   }
 
-  const details = classifyProjectIssue(issue, path, context);
+  const details = classifyProjectIssue(path, context);
   return [
     createDiagnostic({
       code: details.code,
@@ -165,9 +166,8 @@ interface ProjectIssueDetails {
 }
 
 function classifyProjectIssue(
-  issue: z.core.$ZodIssue,
   path: readonly (number | string)[],
-  context: "record-key" | "value",
+  context: ProjectIssueContext,
 ): ProjectIssueDetails {
   const field = path[path.length - 1];
   const owner = path[path.length - 2];
@@ -183,6 +183,13 @@ function classifyProjectIssue(
     return {
       code: "SYD1004",
       help: "Use letters, numbers, or underscores, starting with a letter or underscore.",
+    };
+  }
+
+  if (isEnvironmentValuePath(path, context)) {
+    return {
+      code: "SYD1007",
+      help: "Use a string or an endpoint .host, .port, or .url runtime value.",
     };
   }
 
@@ -214,14 +221,14 @@ function classifyProjectIssue(
     };
   }
 
-  if (issue.message === invalidEnvironmentValueMessage) {
-    return {
-      code: "SYD1007",
-      help: "Use a string or an endpoint .host, .port, or .url runtime value.",
-    };
-  }
-
   return { code: "SYD1000" };
+}
+
+function isEnvironmentValuePath(
+  path: readonly (number | string)[],
+  context: ProjectIssueContext,
+): boolean {
+  return context === "value" && path.length === 4 && path[0] === "resources" && path[2] === "env";
 }
 
 function isPathSegment(value: unknown): value is number | string {
