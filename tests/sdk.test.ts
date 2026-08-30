@@ -95,7 +95,11 @@ describe("project definitions", () => {
       endpoints: { http: endpoint.http({ env: "PORT" }) },
     });
 
-    expect(() => `${api.endpoints.http.url}`).toThrow("cannot be converted to strings");
+    expect(
+      // This intentionally exercises the misuse that the runtime value rejects.
+      // oxlint-disable-next-line typescript/no-base-to-string, typescript/restrict-template-expressions
+      () => `${api.endpoints.http.url}`,
+    ).toThrow("cannot be converted to strings");
   });
 });
 

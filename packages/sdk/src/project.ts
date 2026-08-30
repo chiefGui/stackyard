@@ -20,7 +20,6 @@ import {
   getEndpointState,
   getRuntimeValueState,
   getServiceState,
-  type EndpointInputRecord,
   type ServiceDescriptor,
   type ServiceState,
 } from "./descriptors.ts";
@@ -36,7 +35,7 @@ export interface ProjectOptions<Resources extends ResourceInputRecord> {
   readonly resources: Resources;
 }
 
-export type ResourceInputRecord = Readonly<Record<string, ServiceDescriptor<EndpointInputRecord>>>;
+export type ResourceInputRecord = Readonly<Record<string, ServiceDescriptor>>;
 
 export function defineProject<const Resources extends ResourceInputRecord>(
   options: ProjectOptions<Resources>,

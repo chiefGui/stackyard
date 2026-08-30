@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "perf": "error",
+    "suspicious": "error"
+  },
+  "plugins": ["import", "oxc", "typescript", "unicorn"],
+  "rules": {
+    "eslint/no-await-in-loop": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/require-module-specifiers": "off"
+  },
+  "overrides": [
+    {
+      "files": ["packages/sdk/src/**/*.ts"],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    }
+  ],
+  "options": {
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true
+  },
+  "ignorePatterns": ["coverage/**", "dist/**", "node_modules/**"]
+}

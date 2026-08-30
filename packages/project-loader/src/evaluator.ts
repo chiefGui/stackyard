@@ -10,8 +10,10 @@ export async function runProjectEvaluator(entrypoint: string): Promise<number> {
   let result: Result<ProjectSpec>;
 
   try {
-    const module = (await import(pathToFileURL(entrypoint).href)) as { default?: unknown };
-    result = readProjectDefinition(module.default);
+    const module: unknown = await import(pathToFileURL(entrypoint).href);
+    const defaultExport =
+      typeof module === "object" && module !== null ? Reflect.get(module, "default") : undefined;
+    result = readProjectDefinition(defaultExport);
   } catch (error) {
     if (isDiagnosticError(error)) {
       const [diagnostic, ...additionalDiagnostics] = error.diagnostics;
