@@ -4,11 +4,11 @@ import { failure, isNonEmptyDiagnostics, type NonEmptyDiagnostics } from "./resu
 const diagnosticErrorSymbol = Symbol.for("stackyard.diagnostic-error.v2");
 
 export class DiagnosticError extends Error {
-  readonly [diagnosticErrorSymbol] = true;
   readonly diagnostics: NonEmptyDiagnostics;
 
   constructor(diagnostic: Diagnostic, ...additionalDiagnostics: readonly Diagnostic[]) {
     super(diagnostic.message);
+    Object.defineProperty(this, diagnosticErrorSymbol, { value: true });
     this.name = "DiagnosticError";
     this.diagnostics = failure(diagnostic, ...additionalDiagnostics).diagnostics;
   }

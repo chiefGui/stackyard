@@ -1,24 +1,31 @@
 {
   "name": "stackyard",
-  "private": true,
+  "version": "0.0.0",
   "bin": {
-    "stackyard": "./src/main.ts"
+    "stackyard": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
-    "build": "bun build ./src/main.ts --outdir ./dist --target bun",
+    "build": "tsdown && bun build ./src/main.ts --outfile ./dist/cli.js --target bun",
+    "pack:local": "bun pm pack --destination ../../artifacts",
+    "prepack": "bun run build",
     "typecheck": "tsc -p ./tsconfig.json"
   },
-  "dependencies": {
-    "@stackyard/diagnostics": "workspace:*",
-    "@stackyard/project-loader": "workspace:*",
-    "@stackyard/sdk": "workspace:*"
-  },
   "devDependencies": {
+    "@stackyard/diagnostics": "0.0.0",
+    "@stackyard/project-loader": "0.0.0",
+    "@stackyard/sdk": "0.0.0",
     "@types/bun": "catalog:",
+    "tsdown": "0.22.14",
     "typescript": "catalog:"
   }
 }

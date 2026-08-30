@@ -14,6 +14,40 @@ const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 type ProjectIssueContext = "record-key" | "value";
 
+export interface EndpointSpec {
+  readonly kind: "http";
+  readonly port: {
+    readonly env: string;
+    readonly kind: "allocated";
+    readonly preferred?: number | undefined;
+  };
+}
+
+export interface EndpointValueExpression {
+  readonly endpoint: string;
+  readonly kind: "endpoint-host" | "endpoint-port" | "endpoint-url";
+  readonly resource: string;
+}
+
+export type EnvironmentValueSpec = string | EndpointValueExpression;
+
+export interface ProcessResourceSpec {
+  readonly command: {
+    readonly args: readonly string[];
+    readonly executable: string;
+  };
+  readonly cwd: string;
+  readonly endpoints: Readonly<Record<string, EndpointSpec>>;
+  readonly env: Readonly<Record<string, EnvironmentValueSpec>>;
+  readonly kind: "process";
+}
+
+export interface ProjectSpec {
+  readonly name: string;
+  readonly resources: Readonly<Record<string, ProcessResourceSpec>>;
+  readonly schemaVersion: 1;
+}
+
 const ProjectNameSchema = z
   .string({ error: "Project name must be a string." })
   .min(1, "Project name must not be empty.")
@@ -89,19 +123,11 @@ const ProcessResourceSchema = z.strictObject({
   kind: z.literal("process"),
 });
 
-export const ProjectSpecSchema = z.strictObject({
+const ProjectSpecSchema: z.ZodType<ProjectSpec> = z.strictObject({
   name: ProjectNameSchema,
   resources: z.record(ResourceNameSchema, ProcessResourceSchema),
   schemaVersion: z.literal(1),
 });
-
-type MutableProjectSpec = z.output<typeof ProjectSpecSchema>;
-
-export type ProjectSpec = DeepReadonly<MutableProjectSpec>;
-export type ProcessResourceSpec = ProjectSpec["resources"][string];
-export type EndpointSpec = ProcessResourceSpec["endpoints"][string];
-export type EnvironmentValueSpec = ProcessResourceSpec["env"][string];
-export type EndpointValueExpression = Exclude<EnvironmentValueSpec, string>;
 
 export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   const result = ProjectSpecSchema.safeParse(input);
@@ -253,9 +279,3 @@ function isPortableRelativeDirectory(value: string): boolean {
     .split("/")
     .every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
-
-type DeepReadonly<T> = T extends readonly (infer Item)[]
-  ? readonly DeepReadonly<Item>[]
-  : T extends object
-    ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
-    : T;

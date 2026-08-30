@@ -14,6 +14,7 @@
   },
   "scripts": {
     "build": "bun run --workspaces --if-present build",
+    "pack:local": "bun run --filter stackyard pack:local",
     "typecheck": "bun run --workspaces --if-present typecheck",
     "test": "bun test",
     "lint": "oxlint --deny-warnings .",

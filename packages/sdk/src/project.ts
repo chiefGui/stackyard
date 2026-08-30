@@ -25,10 +25,12 @@ import {
   type ServiceState,
 } from "./descriptors.ts";
 
-const projectDefinitionSymbol = Symbol.for("stackyard.project-definition.v1");
+declare const projectDefinitionBrand: unique symbol;
+
+const projectDefinitionSymbol: symbol = Symbol.for("stackyard.project-definition.v1");
 
 export interface ProjectDefinition {
-  readonly [projectDefinitionSymbol]: ProjectSpec;
+  readonly [projectDefinitionBrand]: never;
 }
 
 export interface ProjectOptions<Resources extends ResourceInputRecord> {
