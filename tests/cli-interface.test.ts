@@ -36,6 +36,46 @@ test("the CLI dispatches injected commands without knowing their implementation"
   expect(output).toEqual([]);
 });
 
+test("unknown CLI commands report actionable diagnostics", async () => {
+  const reportedDiagnostics: Diagnostic[] = [];
+
+  const exitCode = await runCli(["unknown"], {
+    commands: [],
+    diagnostics: {
+      report(diagnostic) {
+        reportedDiagnostics.push(diagnostic);
+      },
+    },
+    writeOutput() {},
+  });
+
+  expect(exitCode).toBe(1);
+  expect(reportedDiagnostics).toHaveLength(1);
+  expect(reportedDiagnostics[0]?.code).toBe("SYD2004");
+  expect(reportedDiagnostics[0]?.help).toBe("Run 'stackyard help' to list the available commands.");
+});
+
+test("invalid inspect arguments report the accepted syntax", async () => {
+  const reportedDiagnostics: Diagnostic[] = [];
+  const command = createInspectCommand({
+    diagnostics: {
+      report(diagnostic) {
+        reportedDiagnostics.push(diagnostic);
+      },
+    },
+    async loadProject() {
+      throw new Error("Invalid arguments must not load a project.");
+    },
+    writeError() {},
+    writeOutput() {},
+  });
+
+  expect(await command.run(["--unknown"])).toBe(1);
+  expect(reportedDiagnostics).toHaveLength(1);
+  expect(reportedDiagnostics[0]?.code).toBe("SYD2005");
+  expect(reportedDiagnostics[0]?.help).toBe("Use: stackyard inspect [path] [--json]");
+});
+
 test("inspect reports when captured project output was truncated", async () => {
   const errors: string[] = [];
   const reportedDiagnostics: Diagnostic[] = [];
@@ -47,7 +87,7 @@ test("inspect reports when captured project output was truncated", async () => {
     },
     async loadProject() {
       return {
-        result: failure(createDiagnostic("TEST", "Expected failure.")),
+        result: failure(createDiagnostic({ code: "SYD9000", message: "Expected failure." })),
         stderr: { text: "", truncated: false },
         stdout: { text: "partial output", truncated: true },
       };
@@ -59,6 +99,8 @@ test("inspect reports when captured project output was truncated", async () => {
   });
 
   expect(await command.run([])).toBe(1);
-  expect(errors.join("")).toBe("partial output\n[Stackyard truncated project stdout.]\n");
-  expect(reportedDiagnostics.map(({ code }) => code)).toEqual(["TEST"]);
+  expect(errors.join("")).toBe("partial output\n");
+  expect(reportedDiagnostics.map(({ code }) => code)).toEqual(["SYD2008", "SYD9000"]);
+  expect(reportedDiagnostics[0]?.severity).toBe("warning");
+  expect(reportedDiagnostics[0]?.help).toContain("stdout");
 });

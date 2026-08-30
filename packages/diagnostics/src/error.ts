@@ -1,7 +1,7 @@
 import type { Diagnostic } from "./diagnostic.ts";
 import { failure, isNonEmptyDiagnostics, type NonEmptyDiagnostics } from "./result.ts";
 
-const diagnosticErrorSymbol = Symbol.for("stackyard.diagnostic-error.v1");
+const diagnosticErrorSymbol = Symbol.for("stackyard.diagnostic-error.v2");
 
 export class DiagnosticError extends Error {
   readonly [diagnosticErrorSymbol] = true;

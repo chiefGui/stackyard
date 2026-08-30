@@ -50,7 +50,10 @@ export function defineProject<const Resources extends ResourceInputRecord>(
 
     if (!state) {
       diagnostics.report(
-        createDiagnostic("SYD1100", "Must be a resource created by service().", {
+        createDiagnostic({
+          code: "SYD1100",
+          help: "Create the resource with service({...}) before registering it.",
+          message: "Resource was not created by service().",
           path: ["resources", name],
         }),
       );
@@ -60,13 +63,12 @@ export function defineProject<const Resources extends ResourceInputRecord>(
     const previousName = resourceNames.get(state);
     if (previousName) {
       diagnostics.report(
-        createDiagnostic(
-          "SYD1101",
-          `The same service is already registered as '${previousName}'.`,
-          {
-            path: ["resources", name],
-          },
-        ),
+        createDiagnostic({
+          code: "SYD1101",
+          help: "Register each service() result once, or create a separate service descriptor.",
+          message: `The same service is already registered as '${previousName}'.`,
+          path: ["resources", name],
+        }),
       );
       continue;
     }
@@ -121,7 +123,11 @@ export function readProjectDefinition(input: unknown): Result<ProjectSpec> {
   }
 
   return failure(
-    createDiagnostic("SYD1102", "The default export must be created by defineProject()."),
+    createDiagnostic({
+      code: "SYD1102",
+      help: "Export defineProject({...}) as the default from stackyard/main.ts.",
+      message: "The default export was not created by defineProject().",
+    }),
   );
 }
 
@@ -140,7 +146,12 @@ function compileService(
 
     if (!endpointState) {
       diagnostics.report(
-        createDiagnostic("SYD1103", "Must be an endpoint created by endpoint.http().", { path }),
+        createDiagnostic({
+          code: "SYD1103",
+          help: "Create the endpoint with endpoint.http({...}) before registering it.",
+          message: "Endpoint was not created by endpoint.http().",
+          path,
+        }),
       );
       continue;
     }
@@ -148,11 +159,12 @@ function compileService(
     const previousEndpoint = endpointEnvironmentNames.get(endpointState.env);
     if (previousEndpoint) {
       diagnostics.report(
-        createDiagnostic(
-          "SYD1104",
-          `Environment variable '${endpointState.env}' is already assigned to endpoint '${previousEndpoint}'.`,
-          { path: [...path, "port", "env"] },
-        ),
+        createDiagnostic({
+          code: "SYD1104",
+          help: "Assign a distinct environment variable to each endpoint.",
+          message: `Environment variable '${endpointState.env}' is already assigned to endpoint '${previousEndpoint}'.`,
+          path: [...path, "port", "env"],
+        }),
       );
     } else {
       endpointEnvironmentNames.set(endpointState.env, name);
@@ -175,11 +187,12 @@ function compileService(
   for (const [name, value] of Object.entries(state.env).sort(compareEntries)) {
     if (endpointEnvironmentNames.has(name)) {
       diagnostics.report(
-        createDiagnostic(
-          "SYD1105",
-          `Environment variable '${name}' is managed by an endpoint and cannot also be set explicitly.`,
-          { path: ["resources", resourceName, "env", name] },
-        ),
+        createDiagnostic({
+          code: "SYD1105",
+          help: "Remove the explicit value or assign a different variable to the endpoint.",
+          message: `Environment variable '${name}' is managed by an endpoint and cannot also be set explicitly.`,
+          path: ["resources", resourceName, "env", name],
+        }),
       );
       continue;
     }
@@ -222,7 +235,12 @@ function compileRuntimeValue(
 
   if (!state) {
     diagnostics.report(
-      createDiagnostic("SYD1106", "Must be a string or a Stackyard runtime value.", { path }),
+      createDiagnostic({
+        code: "SYD1106",
+        help: "Use a string or an endpoint .host, .port, or .url runtime value.",
+        message: "Environment value is not a supported Stackyard runtime value.",
+        path,
+      }),
     );
     return undefined;
   }
@@ -230,7 +248,10 @@ function compileRuntimeValue(
   const resource = resourceNames.get(state.service);
   if (!resource) {
     diagnostics.report(
-      createDiagnostic("SYD1107", "The referenced service is not registered in this project.", {
+      createDiagnostic({
+        code: "SYD1107",
+        help: "Add the referenced service to this project's resources before using its endpoint.",
+        message: "The referenced service is not registered in this project.",
         path,
       }),
     );
@@ -239,7 +260,10 @@ function compileRuntimeValue(
 
   if (!getEndpointState(state.service.endpoints[state.endpoint])) {
     diagnostics.report(
-      createDiagnostic("SYD1108", `The referenced endpoint '${state.endpoint}' is not valid.`, {
+      createDiagnostic({
+        code: "SYD1108",
+        help: "Define the endpoint on the referenced service before using it.",
+        message: `The referenced endpoint '${state.endpoint}' is not valid.`,
         path,
       }),
     );

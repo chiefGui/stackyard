@@ -87,7 +87,13 @@ function parseInspectArguments(args: readonly string[]): InspectOptions | Invali
 
 function invalidArguments(message: string): InvalidInspectOptions {
   return {
-    diagnostics: [createDiagnostic("SYD2005", message)],
+    diagnostics: [
+      createDiagnostic({
+        code: "SYD2005",
+        help: "Use: stackyard inspect [path] [--json]",
+        message,
+      }),
+    ],
     success: false,
   };
 }
@@ -112,6 +118,17 @@ function writeCapturedOutput(
 
   if (output.truncated) {
     const separator = output.text.length > 0 && !output.text.endsWith("\n") ? "\n" : "";
-    dependencies.writeError(`${separator}[Stackyard truncated project ${name}.]\n`);
+    if (separator) {
+      dependencies.writeError(separator);
+    }
+
+    dependencies.diagnostics.report(
+      createDiagnostic({
+        code: "SYD2008",
+        help: `Reduce output written to ${name} while evaluating stackyard/main.ts.`,
+        message: `Project ${name} was truncated.`,
+        severity: "warning",
+      }),
+    );
   }
 }

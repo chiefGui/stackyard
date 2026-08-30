@@ -106,7 +106,9 @@ function expectProjectError(action: () => unknown, code: string): void {
   } catch (error) {
     expect(error).toBeInstanceOf(DiagnosticError);
     if (error instanceof DiagnosticError) {
-      expect(error.diagnostics.some((diagnostic) => diagnostic.code === code)).toBeTrue();
+      const diagnostic = error.diagnostics.find((candidate) => candidate.code === code);
+      expect(diagnostic).toBeDefined();
+      expect(typeof diagnostic?.help).toBe("string");
     }
   }
 }

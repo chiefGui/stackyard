@@ -27,7 +27,11 @@ export async function runCli(
   const command = dependencies.commands.find((candidate) => candidate.name === commandName);
   if (!command) {
     dependencies.diagnostics.report(
-      createDiagnostic("SYD2004", `Unknown command '${commandName}'.`),
+      createDiagnostic({
+        code: "SYD2004",
+        help: "Run 'stackyard help' to list the available commands.",
+        message: `Unknown command '${commandName}'.`,
+      }),
     );
     return 1;
   }

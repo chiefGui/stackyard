@@ -11,38 +11,36 @@ import {
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const invalidEnvironmentValueMessage = "Environment value must be a string or endpoint reference.";
 
 const ProjectNameSchema = z
-  .string()
-  .min(1, "Must not be empty.")
-  .max(63, "Must contain at most 63 characters.")
-  .regex(
-    projectNamePattern,
-    "Must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.",
-  );
+  .string({ error: "Project name must be a string." })
+  .min(1, "Project name must not be empty.")
+  .max(63, "Project name exceeds 63 characters.")
+  .regex(projectNamePattern, "Project name contains unsupported characters.");
 
 const ResourceNameSchema = z
-  .string()
-  .min(1, "Must not be empty.")
-  .max(63, "Must contain at most 63 characters.")
-  .regex(
-    resourceNamePattern,
-    "Must start with a lowercase letter and contain only letters, numbers, and hyphens.",
-  );
+  .string({ error: "Identifier must be a string." })
+  .min(1, "Identifier must not be empty.")
+  .max(63, "Identifier exceeds 63 characters.")
+  .regex(resourceNamePattern, "Identifier contains unsupported characters.");
 
 const EnvironmentNameSchema = z
-  .string()
-  .regex(environmentNamePattern, "Must be a valid environment variable name.");
+  .string({ error: "Environment variable name must be a string." })
+  .regex(environmentNamePattern, "Environment variable name is invalid.");
 
 const RelativeDirectorySchema = z
-  .string()
-  .refine(isPortableRelativeDirectory, "Must be a portable path inside the project root.");
+  .string({ error: "Working directory must be a string." })
+  .refine(
+    isPortableRelativeDirectory,
+    "Working directory is not a portable project-relative path.",
+  );
 
 const PortSchema = z
-  .number()
-  .int("Must be an integer.")
-  .min(1, "Must be at least 1.")
-  .max(65_535, "Must be at most 65535.");
+  .number({ error: "Port must be a number." })
+  .int("Port must be an integer.")
+  .min(1, "Port must be at least 1.")
+  .max(65_535, "Port must be at most 65535.");
 
 const EndpointValueExpressionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -63,12 +61,14 @@ const EndpointValueExpressionSchema = z.discriminatedUnion("kind", [
 ]);
 
 const EnvironmentValueSchema = z.union([z.string(), EndpointValueExpressionSchema], {
-  error: "Must be a string or endpoint reference.",
+  error: invalidEnvironmentValueMessage,
 });
 
 const CommandSchema = z.strictObject({
   args: z.array(z.string()),
-  executable: z.string().min(1, "Must not be empty."),
+  executable: z
+    .string({ error: "Command executable must be a string." })
+    .min(1, "Command executable must not be empty."),
 });
 
 const HttpEndpointSchema = z.strictObject({
@@ -127,22 +127,101 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
 function issueToDiagnostics(
   issue: z.core.$ZodIssue,
   prefix: readonly (number | string)[] = [],
+  context: "record-key" | "value" = "value",
 ): readonly Diagnostic[] {
   const path = [...prefix, ...issue.path.filter(isPathSegment)];
 
   if (issue.code === "invalid_key") {
-    return issue.issues.flatMap((nestedIssue) => issueToDiagnostics(nestedIssue, path));
+    return issue.issues.flatMap((nestedIssue) =>
+      issueToDiagnostics(nestedIssue, path, "record-key"),
+    );
   }
 
   if (issue.code === "unrecognized_keys") {
     return issue.keys.map((key) =>
-      createDiagnostic("SYD1000", "Property is not recognized.", {
+      createDiagnostic({
+        code: "SYD1001",
+        help: "Remove the property or replace it with a supported property.",
+        message: "Property is not recognized.",
         path: [...path, key],
       }),
     );
   }
 
-  return [createDiagnostic("SYD1000", issue.message, { path })];
+  const details = classifyProjectIssue(issue, path, context);
+  return [
+    createDiagnostic({
+      code: details.code,
+      ...(details.help ? { help: details.help } : {}),
+      message: issue.message,
+      path,
+    }),
+  ];
+}
+
+interface ProjectIssueDetails {
+  readonly code: string;
+  readonly help?: string;
+}
+
+function classifyProjectIssue(
+  issue: z.core.$ZodIssue,
+  path: readonly (number | string)[],
+  context: "record-key" | "value",
+): ProjectIssueDetails {
+  const field = path[path.length - 1];
+  const owner = path[path.length - 2];
+
+  if (path.length === 1 && field === "name") {
+    return {
+      code: "SYD1002",
+      help: "Use 1–63 lowercase letters, numbers, or hyphens, starting with a letter.",
+    };
+  }
+
+  if (context === "record-key" && owner === "env") {
+    return {
+      code: "SYD1004",
+      help: "Use letters, numbers, or underscores, starting with a letter or underscore.",
+    };
+  }
+
+  if (context === "record-key" || field === "endpoint" || field === "resource") {
+    return {
+      code: "SYD1003",
+      help: "Use 1–63 letters, numbers, or hyphens, starting with a lowercase letter.",
+    };
+  }
+
+  if (field === "env") {
+    return {
+      code: "SYD1004",
+      help: "Use letters, numbers, or underscores, starting with a letter or underscore.",
+    };
+  }
+
+  if (field === "cwd") {
+    return {
+      code: "SYD1005",
+      help: 'Use a forward-slash path inside the project root, such as "apps/api".',
+    };
+  }
+
+  if (field === "preferred") {
+    return {
+      code: "SYD1006",
+      help: "Use an integer from 1 through 65535.",
+    };
+  }
+
+  if (issue.message === invalidEnvironmentValueMessage) {
+    return {
+      code: "SYD1007",
+      help: "Use a string or an endpoint .host, .port, or .url runtime value.",
+    };
+  }
+
+  return { code: "SYD1000" };
 }
 
 function isPathSegment(value: unknown): value is number | string {
