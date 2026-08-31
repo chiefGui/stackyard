@@ -46,13 +46,12 @@ export function startServer(options: ServerOptions): Result<Bun.Server<undefined
         port: options.port,
         routes: {
           "/health": {
-            GET: () =>
-              Response.json(
-                { status: "ok" },
-                {
-                  headers: { "cache-control": "no-store" },
-                },
-              ),
+            GET: Response.json(
+              { status: "ok" },
+              {
+                headers: { "cache-control": "no-store" },
+              },
+            ),
           },
         },
         fetch(request) {
