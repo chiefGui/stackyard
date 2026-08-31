@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createDiagnostic,
   createDiagnosticReport,
+  describeError,
   DiagnosticCollector,
   DiagnosticError,
   formatDiagnostic,
@@ -179,5 +180,22 @@ describe("diagnostics", () => {
     expect(isNonEmptyDiagnostics(error.diagnostics)).toBeTrue();
     expect(isNonEmptyDiagnostics([])).toBeFalse();
     expect(isNonEmptyDiagnostics(sparseDiagnostics)).toBeFalse();
+  });
+
+  test("describes causal and aggregate errors without unbounded output", () => {
+    const error = new AggregateError(
+      [new Error("First failure."), new Error("Second failure.", { cause: "Root cause." })],
+      "Cleanup failed.",
+    );
+
+    expect(describeError(error)).toBe(
+      "Cleanup failed.\n" +
+        "Cause 1: First failure.\n" +
+        "Cause 2: Second failure.\n" +
+        "Cause: Root cause.",
+    );
+    expect(describeError("  Direct failure.  ")).toBe("Direct failure.");
+    expect(describeError(undefined)).toBe("No details are available.");
+    expect(describeError(new Error("x".repeat(10_000))).length).toBeLessThanOrEqual(2_048);
   });
 });

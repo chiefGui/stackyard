@@ -4,9 +4,10 @@ import {
   type Diagnostic,
   type DiagnosticSink,
 } from "@stackyard/diagnostics";
-import type { CapturedProcessOutput, ProjectLoadOutcome } from "@stackyard/project-loader";
+import type { ProjectLoadOutcome } from "@stackyard/project-loader";
 
 import type { CliCommand } from "./cli.ts";
+import { writeProjectEvaluationOutput } from "./project-output.ts";
 
 export interface InspectCommandDependencies {
   readonly diagnostics: DiagnosticSink;
@@ -48,7 +49,7 @@ async function runInspect(
   }
 
   const project = await dependencies.loadProject(options.path);
-  writeProjectOutput(project.stdout, project.stderr, dependencies);
+  writeProjectEvaluationOutput(project, dependencies);
 
   if (!project.result.success) {
     reportDiagnostics(dependencies.diagnostics, project.result.diagnostics);
@@ -96,39 +97,4 @@ function invalidArguments(message: string): InvalidInspectOptions {
     ],
     success: false,
   };
-}
-
-function writeProjectOutput(
-  stdout: CapturedProcessOutput,
-  stderr: CapturedProcessOutput,
-  dependencies: InspectCommandDependencies,
-): void {
-  writeCapturedOutput(stdout, "stdout", dependencies);
-  writeCapturedOutput(stderr, "stderr", dependencies);
-}
-
-function writeCapturedOutput(
-  output: CapturedProcessOutput,
-  name: "stderr" | "stdout",
-  dependencies: InspectCommandDependencies,
-): void {
-  if (output.text.length > 0) {
-    dependencies.writeError(output.text);
-  }
-
-  if (output.truncated) {
-    const separator = output.text.length > 0 && !output.text.endsWith("\n") ? "\n" : "";
-    if (separator) {
-      dependencies.writeError(separator);
-    }
-
-    dependencies.diagnostics.report(
-      createDiagnostic({
-        code: "SYD2008",
-        help: `Reduce output written to ${name} while evaluating stackyard/main.ts.`,
-        message: `Project ${name} was truncated.`,
-        severity: "warning",
-      }),
-    );
-  }
 }

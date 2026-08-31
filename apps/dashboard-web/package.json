@@ -9,6 +9,7 @@
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "dependencies": {
+    "@stackyard/protocol": "workspace:*",
     "react": "catalog:",
     "react-dom": "catalog:"
   },

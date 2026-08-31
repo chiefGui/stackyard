@@ -10,6 +10,9 @@ import {
   type Result,
 } from "@stackyard/diagnostics";
 
+import { deepFreeze } from "./freeze.ts";
+import { environmentKey } from "./environment.ts";
+
 const version = 1;
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
@@ -128,9 +131,13 @@ const ProcessResourceSchema = z.strictObject({
   kind: z.literal("process"),
 });
 
+const ResourcesSchema = z
+  .record(ResourceNameSchema, ProcessResourceSchema)
+  .refine((resources) => Object.keys(resources).length > 0, "Project must define a resource.");
+
 const ProjectSpecSchema: z.ZodType<ProjectSpec> = z.strictObject({
   name: ProjectNameSchema,
-  resources: z.record(ResourceNameSchema, ProcessResourceSchema),
+  resources: ResourcesSchema,
   schemaVersion: z.literal(version),
 });
 
@@ -147,7 +154,8 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   const result = ProjectSpecSchema.safeParse(input);
 
   if (result.success) {
-    return success(deepFreeze(result.data));
+    const semanticFailure = validateEnvironmentOwnership(result.data);
+    return semanticFailure ?? success(deepFreeze(result.data));
   }
 
   const diagnostics = new DiagnosticCollector();
@@ -163,6 +171,75 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   }
 
   return parseFailure;
+}
+
+function validateEnvironmentOwnership(project: ProjectSpec): Failure | undefined {
+  const diagnostics = new DiagnosticCollector();
+
+  for (const [resourceName, resource] of Object.entries(project.resources).toSorted(
+    ([left], [right]) => left.localeCompare(right, "en"),
+  )) {
+    const owners = new Map<string, { readonly env: string; readonly endpoint: string }>();
+    const explicitNames = new Map<string, string>();
+
+    for (const [endpointName, endpoint] of Object.entries(resource.endpoints).toSorted(
+      ([left], [right]) => left.localeCompare(right, "en"),
+    )) {
+      const key = environmentKey(endpoint.port.env);
+      const owner = owners.get(key);
+      if (owner) {
+        diagnostics.report(
+          createDiagnostic({
+            code: "SYD1010",
+            help: "Assign a distinct environment variable to each endpoint.",
+            message: `Environment variable '${endpoint.port.env}' is already assigned to endpoint '${owner.endpoint}'.`,
+            notes: [
+              `Environment names are compared case-insensitively; endpoint '${owner.endpoint}' owns '${owner.env}'.`,
+            ],
+            path: ["resources", resourceName, "endpoints", endpointName, "port", "env"],
+          }),
+        );
+        continue;
+      }
+      owners.set(key, { endpoint: endpointName, env: endpoint.port.env });
+    }
+
+    for (const name of Object.keys(resource.env).toSorted()) {
+      const key = environmentKey(name);
+      const owner = owners.get(key);
+      if (owner) {
+        diagnostics.report(
+          createDiagnostic({
+            code: "SYD1011",
+            help: "Remove the explicit value or assign a different variable to the endpoint.",
+            message: `Environment variable '${name}' is managed by endpoint '${owner.endpoint}' and cannot also be set explicitly.`,
+            notes: [
+              `Environment names are compared case-insensitively; endpoint '${owner.endpoint}' owns '${owner.env}'.`,
+            ],
+            path: ["resources", resourceName, "env", name],
+          }),
+        );
+        continue;
+      }
+
+      const previousName = explicitNames.get(key);
+      if (previousName) {
+        diagnostics.report(
+          createDiagnostic({
+            code: "SYD1012",
+            help: "Keep one spelling for each environment variable name.",
+            message: `Environment variable '${name}' is already set as '${previousName}'.`,
+            notes: ["Environment names are compared case-insensitively for portability."],
+            path: ["resources", resourceName, "env", name],
+          }),
+        );
+        continue;
+      }
+      explicitNames.set(key, name);
+    }
+  }
+
+  return diagnostics.toFailure();
 }
 
 function validateVersion(input: unknown): Failure | undefined {
@@ -261,6 +338,13 @@ function classifyProjectIssue(
     };
   }
 
+  if (path.length === 1 && field === "resources") {
+    return {
+      code: "SYD1009",
+      help: "Add at least one service to the project resources.",
+    };
+  }
+
   if (context === "record-key" && owner === "env") {
     return {
       code: "SYD1004",
@@ -334,16 +418,4 @@ function isPortableRelativeDirectory(value: string): boolean {
   return value
     .split("/")
     .every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-}
-
-function deepFreeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
-    return value;
-  }
-
-  for (const child of Object.values(value)) {
-    deepFreeze(child);
-  }
-
-  return Object.freeze(value);
 }

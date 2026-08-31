@@ -1,7 +1,12 @@
 {
   "name": "@stackyard/daemon",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./locator": "./src/locator.ts",
+    "./managed": "./src/managed.ts"
+  },
   "scripts": {
     "build": "bun build ./src/main.ts --outdir ./dist --target bun",
     "dev": "bun --watch ./src/main.ts",
@@ -9,7 +14,9 @@
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "dependencies": {
-    "@stackyard/diagnostics": "workspace:*"
+    "@stackyard/control-plane": "workspace:*",
+    "@stackyard/diagnostics": "workspace:*",
+    "@stackyard/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "catalog:",

@@ -5,7 +5,7 @@ export type {
   DiagnosticSeverity,
 } from "./diagnostic.ts";
 export { createDiagnostic, formatDiagnostic, isDiagnostic } from "./diagnostic.ts";
-export { DiagnosticError, isDiagnosticError } from "./error.ts";
+export { describeError, DiagnosticError, isDiagnosticError } from "./error.ts";
 export type { DiagnosticReport } from "./report.ts";
 export {
   createDiagnosticReport,

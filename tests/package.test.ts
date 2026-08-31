@@ -3,6 +3,9 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
+import { readLocator } from "../apps/daemon/src/locator.ts";
+import { parseRuntimeSnapshot } from "../packages/protocol/src/index.ts";
+
 const repositoryRoot = resolve(import.meta.dir, "..");
 const packageRoot = join(repositoryRoot, "apps/cli");
 const fixtureRoot = join(repositoryRoot, "tests/fixtures/package-consumer");
@@ -11,6 +14,9 @@ test("the packed package works in an external Bun project", async () => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-package-"));
   const artifactDirectory = join(temporaryRoot, "artifacts");
   const consumerDirectory = join(temporaryRoot, "consumer");
+  const runtimeDirectory = join(temporaryRoot, "runtime");
+  let runProcess: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
+  let daemonPid: number | undefined;
 
   try {
     await Promise.all([
@@ -46,9 +52,13 @@ test("the packed package works in an external Bun project", async () => {
     expect((await readdir(installedPackage)).toSorted()).toEqual(["dist", "package.json"]);
     expect((await readdir(join(installedPackage, "dist"))).toSorted()).toEqual([
       "cli.js",
+      "dashboard",
       "index.d.ts",
       "index.js",
     ]);
+    expect(await readFile(join(installedPackage, "dist/dashboard/index.html"), "utf8")).toContain(
+      '<div id="root"></div>',
+    );
 
     const typecheck = await runCommand(
       [process.execPath, "x", "tsc", "--noEmit"],
@@ -96,7 +106,78 @@ test("the packed package works in an external Bun project", async () => {
     expect(invalid.stdout).toBe("");
     expect(invalid.stderr).toContain("error[SYD1005] at resources.api.cwd");
     expect(invalid.stderr).toContain("help: Use a forward-slash path inside the project root");
+
+    runProcess = Bun.spawn({
+      cmd: [process.execPath, join(installedPackage, "dist/cli.js"), "run", "projects/run"],
+      cwd: consumerDirectory,
+      env: { ...stringEnvironment(process.env), STACKYARD_RUNTIME_DIR: runtimeDirectory },
+      stderr: "pipe",
+      stdout: "pipe",
+      windowsHide: true,
+    });
+    const runError = new Response(runProcess.stderr).text();
+    const runOutput = new Response(runProcess.stdout).text();
+    const locator = await waitFor(() => readLocator(runtimeDirectory));
+    daemonPid = locator.pid;
+    const snapshot = await waitFor(async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
+        const parsed = parseRuntimeSnapshot(await response.json());
+        return parsed.success && parsed.output.projects.length === 1 ? parsed.output : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    expect(snapshot.projects[0]?.name).toBe("packed-run");
+    const endpoint = snapshot.projects[0]?.resources[0]?.endpoints[0]?.url;
+    expect(
+      await waitFor(async () => {
+        try {
+          const response = await fetch(endpoint ?? "");
+          return response.ok ? response.text() : undefined;
+        } catch {
+          return undefined;
+        }
+      }),
+    ).toBe("packed-fixture");
+    expect(
+      await fetch(`http://127.0.0.1:${locator.port}/`).then((response) => response.text()),
+    ).toContain('<div id="root"></div>');
+
+    runProcess.kill("SIGINT");
+    expect(await runProcess.exited).toBe(process.platform === "win32" ? 130 : 0);
+    expect(await runError).toBe("");
+    expect(await runOutput).toContain("packed-run is running. Dashboard:");
+    await waitFor(async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
+        const parsed = parseRuntimeSnapshot(await response.json());
+        return parsed.success && parsed.output.projects.length === 0 ? true : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    await waitFor(async () => {
+      try {
+        await fetch(endpoint ?? "");
+        return undefined;
+      } catch {
+        return true;
+      }
+    });
   } finally {
+    if (runProcess?.exitCode === null) {
+      runProcess.kill("SIGKILL");
+    }
+    if (daemonPid !== undefined) {
+      const pid = daemonPid;
+      try {
+        process.kill(pid, "SIGTERM");
+        await waitFor(async () => (isProcessAlive(pid) ? undefined : true));
+      } catch {
+        // The daemon may already have completed its idle shutdown.
+      }
+    }
     await rm(temporaryRoot, { force: true, recursive: true });
   }
 }, 30_000);
@@ -105,6 +186,39 @@ interface CommandResult {
   readonly exitCode: number;
   readonly stderr: string;
   readonly stdout: string;
+}
+
+async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
+  return poll(read, Date.now() + 5_000);
+}
+
+async function poll<T>(read: () => Promise<T | undefined>, deadline: number): Promise<T> {
+  const value = await read();
+  if (value !== undefined) {
+    return value;
+  }
+  if (Date.now() >= deadline) {
+    throw new Error("Timed out waiting for the packed Stackyard runtime.");
+  }
+  await Bun.sleep(25);
+  return poll(read, deadline);
+}
+
+function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function runCommand(command: readonly string[], cwd: string): Promise<CommandResult> {

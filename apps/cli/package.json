@@ -15,14 +15,16 @@
     }
   },
   "scripts": {
-    "build": "tsdown && bun build ./src/main.ts --outfile ./dist/cli.js --target bun",
+    "build": "bun run --filter @stackyard/dashboard-web build && tsdown && bun build ./src/main.ts --outfile ./dist/cli.js --target bun && bun ./scripts/copy-dashboard.ts",
     "pack:local": "bun pm pack --destination ../../artifacts",
     "prepack": "bun run build",
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "devDependencies": {
+    "@stackyard/daemon": "0.0.0",
     "@stackyard/diagnostics": "0.0.0",
     "@stackyard/project-loader": "0.0.0",
+    "@stackyard/protocol": "0.0.0",
     "@stackyard/sdk": "0.0.0",
     "@types/bun": "catalog:",
     "tsdown": "0.22.14",
