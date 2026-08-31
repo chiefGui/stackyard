@@ -26,6 +26,31 @@ test("inspect discovers and evaluates a project in an isolated process", async (
   expect(Object.keys(spec.resources)).toEqual(["api", "web"]);
 });
 
+test("Stackyard describes its own server through the public project API", async () => {
+  const result = await runCli(["inspect", "--json"], repositoryRoot);
+
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toBe("");
+
+  const parsedSpec = parseProjectSpec(JSON.parse(result.stdout));
+  expect(parsedSpec.success).toBeTrue();
+  if (!parsedSpec.success) {
+    throw new Error("Expected Stackyard's definition to produce a valid project specification.");
+  }
+
+  expect(parsedSpec.output.name).toBe("stackyard");
+  expect(Object.keys(parsedSpec.output.resources)).toEqual(["server"]);
+
+  const server = parsedSpec.output.resources.server;
+  expect(server?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
+  expect(server?.cwd).toBe("apps/server");
+  expect(server?.endpoints.http?.port).toEqual({
+    env: "PORT",
+    kind: "allocated",
+    preferred: 3000,
+  });
+});
+
 test("inspect preserves structured definition errors across the evaluator boundary", async () => {
   const result = await runCli(["inspect"], join(repositoryRoot, "tests/fixtures/invalid-project"));
 
