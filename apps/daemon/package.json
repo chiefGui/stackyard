@@ -1,5 +1,5 @@
 {
-  "name": "@stackyard/server",
+  "name": "@stackyard/daemon",
   "private": true,
   "type": "module",
   "scripts": {

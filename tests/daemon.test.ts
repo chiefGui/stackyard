@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { readPort, startServer, stopServer } from "../apps/server/src/server.ts";
+import { readPort, startServer, stopServer } from "../apps/daemon/src/server.ts";
 import type { Diagnostic } from "../packages/diagnostics/src/index.ts";
 
-describe("server configuration", () => {
+describe("daemon configuration", () => {
   test("uses the default port when PORT is absent", () => {
     expect(readPort(undefined)).toEqual({ output: 3000, success: true });
   });

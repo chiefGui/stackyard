@@ -69,8 +69,8 @@ export function startServer(options: ServerOptions): Result<Bun.Server<undefined
         error(error) {
           const diagnostic = createDiagnostic({
             code: "SYD3003",
-            help: "Check the Stackyard server output for the underlying error, then retry.",
-            message: "The Stackyard server could not complete the request.",
+            help: "Check the Stackyard daemon output for the underlying error, then retry.",
+            message: "The Stackyard daemon could not complete the request.",
             notes: [describeError(error)],
           });
           options.diagnostics.report(diagnostic);
@@ -83,7 +83,7 @@ export function startServer(options: ServerOptions): Result<Bun.Server<undefined
       createDiagnostic({
         code: "SYD3001",
         help: `Confirm that http://${hostname}:${options.port} is available, then retry.`,
-        message: "The Stackyard server could not start.",
+        message: "The Stackyard daemon could not start.",
         notes: [describeError(error)],
       }),
     );
@@ -98,8 +98,8 @@ export async function stopServer(server: Bun.Server<undefined>): Promise<Result<
     return failure(
       createDiagnostic({
         code: "SYD3004",
-        help: "Stop any remaining Stackyard processes before starting the server again.",
-        message: "The Stackyard server did not shut down cleanly.",
+        help: "Stop any remaining Stackyard processes before starting the daemon again.",
+        message: "The Stackyard daemon did not shut down cleanly.",
         notes: [describeError(error)],
       }),
     );

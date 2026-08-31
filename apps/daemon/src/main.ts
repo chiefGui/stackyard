@@ -24,7 +24,7 @@ async function run(): Promise<number> {
   }
 
   const server = started.output;
-  process.stdout.write(`Stackyard server listening at ${server.url.href}\n`);
+  process.stdout.write(`Stackyard daemon listening at ${server.url.href}\n`);
   await waitForShutdown();
 
   const stopped = await stopServer(server);

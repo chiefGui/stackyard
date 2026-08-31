@@ -29,8 +29,8 @@
         "typescript": "catalog:",
       },
     },
-    "apps/server": {
-      "name": "@stackyard/server",
+    "apps/daemon": {
+      "name": "@stackyard/daemon",
       "dependencies": {
         "@stackyard/diagnostics": "workspace:*",
       },
@@ -246,7 +246,7 @@
 
     "@stackyard/sdk": ["@stackyard/sdk@workspace:packages/sdk"],
 
-    "@stackyard/server": ["@stackyard/server@workspace:apps/server"],
+    "@stackyard/daemon": ["@stackyard/daemon@workspace:apps/daemon"],
 
     "@stackyard/web": ["@stackyard/web@workspace:apps/web"],
 

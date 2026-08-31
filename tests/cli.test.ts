@@ -26,7 +26,7 @@ test("inspect discovers and evaluates a project in an isolated process", async (
   expect(Object.keys(spec.resources)).toEqual(["api", "web"]);
 });
 
-test("Stackyard describes its own server through the public project API", async () => {
+test("Stackyard describes its own daemon through the public project API", async () => {
   const result = await runCli(["inspect", "--json"], repositoryRoot);
 
   expect(result.stderr).toBe("");
@@ -39,12 +39,12 @@ test("Stackyard describes its own server through the public project API", async 
   }
 
   expect(parsedSpec.output.name).toBe("stackyard");
-  expect(Object.keys(parsedSpec.output.resources)).toEqual(["server"]);
+  expect(Object.keys(parsedSpec.output.resources)).toEqual(["daemon"]);
 
-  const server = parsedSpec.output.resources.server;
-  expect(server?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
-  expect(server?.cwd).toBe("apps/server");
-  expect(server?.endpoints.http?.port).toEqual({
+  const daemon = parsedSpec.output.resources.daemon;
+  expect(daemon?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
+  expect(daemon?.cwd).toBe("apps/daemon");
+  expect(daemon?.endpoints.http?.port).toEqual({
     env: "PORT",
     kind: "allocated",
     preferred: 3000,

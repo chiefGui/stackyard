@@ -1,8 +1,8 @@
 import { defineProject, endpoint, service } from "stackyard";
 
-const server = service({
+const daemon = service({
   command: ["bun", "run", "dev"],
-  cwd: "apps/server",
+  cwd: "apps/daemon",
   endpoints: {
     http: endpoint.http({
       env: "PORT",
@@ -13,5 +13,5 @@ const server = service({
 
 export default defineProject({
   name: "stackyard",
-  resources: { server },
+  resources: { daemon },
 });
