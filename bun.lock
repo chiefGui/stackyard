@@ -46,6 +46,7 @@
         "react-dom": "catalog:",
       },
       "devDependencies": {
+        "@types/node": "catalog:",
         "@types/react": "catalog:",
         "@types/react-dom": "catalog:",
         "@vitejs/plugin-react": "catalog:",
@@ -122,6 +123,7 @@
   },
   "catalog": {
     "@types/bun": "1.4.0",
+    "@types/node": "26.4.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.1",

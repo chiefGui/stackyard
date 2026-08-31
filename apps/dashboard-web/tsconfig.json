@@ -3,7 +3,8 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "rootDir": "."
+    "rootDir": ".",
+    "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
 }

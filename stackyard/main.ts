@@ -11,7 +11,18 @@ const daemon = service({
   },
 });
 
+const dashboard = service({
+  command: ["bun", "run", "dev"],
+  cwd: "apps/dashboard-web",
+  endpoints: {
+    http: endpoint.http({
+      env: "PORT",
+      preferredPort: 5173,
+    }),
+  },
+});
+
 export default defineProject({
   name: "stackyard",
-  resources: { daemon },
+  resources: { daemon, dashboard },
 });
