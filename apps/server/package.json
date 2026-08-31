@@ -4,11 +4,12 @@
   "type": "module",
   "scripts": {
     "build": "bun build ./src/main.ts --outdir ./dist --target bun",
+    "dev": "bun --watch ./src/main.ts",
+    "start": "bun ./src/main.ts",
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "dependencies": {
-    "@stackyard/control-plane": "workspace:*",
-    "@stackyard/protocol": "workspace:*"
+    "@stackyard/diagnostics": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "catalog:",

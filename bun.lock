@@ -31,8 +31,7 @@
     "apps/server": {
       "name": "@stackyard/server",
       "dependencies": {
-        "@stackyard/control-plane": "workspace:*",
-        "@stackyard/protocol": "workspace:*",
+        "@stackyard/diagnostics": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "catalog:",
