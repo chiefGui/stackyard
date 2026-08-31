@@ -1,6 +1,9 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
+    "paths": {
+      "stackyard": ["./apps/cli/src/index.ts"]
+    },
     "types": ["bun"]
   },
   "exclude": ["tests/fixtures/package-consumer/**"],

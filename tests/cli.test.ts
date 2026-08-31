@@ -11,8 +11,8 @@ test("inspect discovers and evaluates a project in an isolated process", async (
     join(repositoryRoot, "examples/basic/stackyard"),
   );
 
-  expect(result.exitCode).toBe(0);
   expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
 
   const parsedSpec = parseProjectSpec(JSON.parse(result.stdout));
   expect(parsedSpec.success).toBeTrue();
@@ -29,8 +29,8 @@ test("inspect discovers and evaluates a project in an isolated process", async (
 test("Stackyard describes its own server through the public project API", async () => {
   const result = await runCli(["inspect", "--json"], repositoryRoot);
 
-  expect(result.exitCode).toBe(0);
   expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
 
   const parsedSpec = parseProjectSpec(JSON.parse(result.stdout));
   expect(parsedSpec.success).toBeTrue();
