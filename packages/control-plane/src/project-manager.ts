@@ -14,6 +14,12 @@ import {
 } from "@stackyard/protocol";
 
 import { type ProjectList, type ServiceEndpoint, type ServiceState } from "./project-list.ts";
+import {
+  ResourceLogStore,
+  type ResourceLogEntry,
+  type ResourceLogFeed,
+  type ResourceLogSource,
+} from "./resource-logs.ts";
 
 /* oxlint-disable eslint/no-await-in-loop -- Allocation and launch are deliberately ordered transactions. */
 
@@ -32,24 +38,31 @@ export interface ProcessStart {
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly executable: string;
+  readonly logs: ProcessLogSink;
   readonly projectRoot: string;
   readonly workingDirectory: string;
 }
 
-export interface ProcessOutput {
-  readonly stderr: string;
-  readonly stdout: string;
+export interface ProcessLogLine {
+  readonly observedAt: number;
+  readonly stream: "stderr" | "stdout";
+  readonly text: string;
+  readonly truncatedBytes?: number;
+}
+
+export interface ProcessLogSink {
+  write(entries: readonly ProcessLogLine[]): void;
 }
 
 export interface ProcessExit {
   readonly cleanup: Result<void>;
   readonly exitCode: number;
+  readonly logCapture: Result<void>;
 }
 
 export interface ProcessHandle {
   readonly exited: Promise<ProcessExit>;
   readonly leaderExited: Promise<number>;
-  readonly output: Promise<Result<ProcessOutput>>;
   readonly pid: number;
   stop(): Promise<Result<void>>;
 }
@@ -60,8 +73,10 @@ export interface ProcessHost {
 
 export interface ProjectManagerOptions {
   readonly createId: () => string;
+  readonly logs?: ResourceLogStore;
   readonly ports: PortAllocator;
   readonly processes: ProcessHost;
+  readonly recentProjectLimit?: number;
 }
 
 export interface CancellationSignal {
@@ -104,10 +119,12 @@ interface AllocatedEndpoint {
 
 interface ResourceRuntime {
   readonly endpoints: Map<string, AllocatedEndpoint>;
+  readonly logs: ResourceLogFeed;
   readonly name: string;
   exitCode?: number;
   handle?: ProcessHandle;
   hasExited: boolean;
+  logCapture?: Result<void>;
   state: ServiceState;
   stopRequested: boolean;
 }
@@ -128,20 +145,43 @@ const compareNames = (left: string, right: string): number => left.localeCompare
 
 export class ProjectManager {
   readonly #createId: () => string;
+  readonly #logs: ResourceLogStore;
   readonly #ports: PortAllocator;
   readonly #processes: ProcessHost;
   readonly #projects = new Map<string, ProjectRuntime>();
+  readonly #recentProjectLimit: number;
+  readonly #recentProjects = new Map<string, ProjectRuntime>();
+  readonly #recentRoots = new Map<string, ProjectRuntime>();
   readonly #roots = new Map<string, ProjectRuntime>();
 
   constructor(options: ProjectManagerOptions) {
     this.#createId = options.createId;
+    this.#logs = options.logs ?? new ResourceLogStore();
     this.#ports = options.ports;
     this.#processes = options.processes;
+    this.#recentProjectLimit = positiveInteger(
+      options.recentProjectLimit,
+      20,
+      "recentProjectLimit",
+    );
   }
 
   listProjects(): ProjectList {
+    return this.#projectList(this.#projects.values());
+  }
+
+  listRecentProjects(): ProjectList {
+    return this.#projectList(this.#recentProjects.values());
+  }
+
+  getResourceLogs(projectId: string, resourceName: string): ResourceLogSource | undefined {
+    const project = this.#projects.get(projectId) ?? this.#recentProjects.get(projectId);
+    return project?.resources.find(({ name }) => name === resourceName)?.logs;
+  }
+
+  #projectList(projects: Iterable<ProjectRuntime>): ProjectList {
     return {
-      projects: [...this.#projects.values()].map((project) => ({
+      projects: [...projects].map((project) => ({
         id: project.id,
         name: project.name,
         services: project.resources.map((resource) => ({
@@ -165,7 +205,7 @@ export class ProjectManager {
       );
     }
 
-    const project = createProject(input, this.#createId());
+    const project = createProject(input, this.#createId(), this.#logs);
     this.#roots.set(input.root, project);
     this.#projects.set(project.id, project);
 
@@ -266,6 +306,7 @@ export class ProjectManager {
         args: spec.command.args,
         env: environment.output,
         executable: spec.command.executable,
+        logs: resource.logs,
         projectRoot: project.root,
         workingDirectory: spec.cwd,
       });
@@ -362,13 +403,8 @@ export class ProjectManager {
           resource.state = "stopping";
         }
       });
-      void handle.exited.then(({ cleanup, exitCode }) => {
-        resource.exitCode = exitCode;
-        resource.hasExited = true;
-        if (resource.state === "running" || resource.state === "stopping") {
-          resource.state =
-            cleanup.success && (resource.stopRequested || exitCode === 0) ? "exited" : "failed";
-        }
+      void handle.exited.then((exit) => {
+        this.#recordExit(resource, exit);
         void this.#completeIfTerminal(project);
       });
     }
@@ -393,17 +429,19 @@ export class ProjectManager {
       project.complete({ kind: "natural", result: cleaned });
       return;
     }
+    const captureFailure = project.resources
+      .map(({ logCapture }) => logCapture)
+      .find((result) => result && !result.success);
+    if (captureFailure && !captureFailure.success) {
+      project.complete({ kind: "natural", result: captureFailure });
+      return;
+    }
     const failed = project.resources.find(({ exitCode }) => exitCode !== 0);
-    if (!failed?.handle) {
+    if (!failed) {
       project.complete({ kind: "natural", result: success(undefined) });
       return;
     }
-    const output = await failed.handle.output;
-    if (!output.success) {
-      project.complete({ kind: "natural", result: output });
-      return;
-    }
-    const note = failureNote(output.output);
+    const note = failureNote(failed.logs);
     project.complete({
       kind: "natural",
       result: failure(
@@ -441,7 +479,7 @@ export class ProjectManager {
     if (!disposed.success) {
       return disposed;
     }
-    this.#forget(project);
+    this.#archive(project);
     if (!project.completionPublished) {
       project.completionPublished = true;
       project.complete({ kind: "stopped" });
@@ -473,10 +511,8 @@ export class ProjectManager {
           return stopped;
         }
 
-        const { exitCode } = await resource.handle.exited;
-        resource.exitCode = exitCode;
-        resource.hasExited = true;
-        resource.state = resource.stopRequested || exitCode === 0 ? "exited" : "failed";
+        const exit = await resource.handle.exited;
+        this.#recordExit(resource, exit);
         return stopped;
       }),
     );
@@ -503,7 +539,16 @@ export class ProjectManager {
     if (!disposed.success) {
       return this.#retainedStartFailure(project, disposed, cause);
     }
-    this.#forget(project);
+    if (
+      project.resources.some(({ logs }) => {
+        const snapshot = logs.snapshot();
+        return snapshot.retainedFrom > 1 || snapshot.status === "failed";
+      })
+    ) {
+      this.#archive(project);
+    } else {
+      this.#discard(project);
+    }
     return cause;
   }
 
@@ -536,7 +581,52 @@ export class ProjectManager {
     });
   }
 
-  #forget(project: ProjectRuntime): void {
+  #recordExit(resource: ResourceRuntime, exit: ProcessExit): void {
+    resource.exitCode = exit.exitCode;
+    resource.hasExited = true;
+    resource.logCapture = exit.logCapture;
+    resource.logs.complete(exit.logCapture);
+    if (resource.state === "running" || resource.state === "stopping") {
+      resource.state =
+        exit.cleanup.success &&
+        exit.logCapture.success &&
+        (resource.stopRequested || exit.exitCode === 0)
+          ? "exited"
+          : "failed";
+    }
+  }
+
+  #archive(project: ProjectRuntime): void {
+    this.#removeActive(project);
+    for (const resource of project.resources) {
+      resource.logs.complete();
+      delete resource.handle;
+    }
+
+    const previous = this.#recentRoots.get(project.root);
+    if (previous && previous !== project) {
+      this.#removeRecent(previous);
+    }
+    this.#recentProjects.set(project.id, project);
+    this.#recentRoots.set(project.root, project);
+    while (this.#recentProjects.size > this.#recentProjectLimit) {
+      const oldest = this.#recentProjects.values().next().value;
+      if (!oldest) {
+        break;
+      }
+      this.#removeRecent(oldest);
+    }
+  }
+
+  #discard(project: ProjectRuntime): void {
+    this.#removeActive(project);
+    for (const resource of project.resources) {
+      resource.logs.remove();
+      delete resource.handle;
+    }
+  }
+
+  #removeActive(project: ProjectRuntime): void {
     if (this.#projects.get(project.id) === project) {
       this.#projects.delete(project.id);
     }
@@ -544,9 +634,25 @@ export class ProjectManager {
       this.#roots.delete(project.root);
     }
   }
+
+  #removeRecent(project: ProjectRuntime): void {
+    if (this.#recentProjects.get(project.id) === project) {
+      this.#recentProjects.delete(project.id);
+    }
+    if (this.#recentRoots.get(project.root) === project) {
+      this.#recentRoots.delete(project.root);
+    }
+    for (const resource of project.resources) {
+      resource.logs.remove();
+    }
+  }
 }
 
-function createProject(input: StartProjectInput, id: string): ProjectRuntime {
+function createProject(
+  input: StartProjectInput,
+  id: string,
+  logs: ResourceLogStore,
+): ProjectRuntime {
   let complete!: (completion: ProjectCompletion) => void;
   const completed = new Promise<ProjectCompletion>((resolve) => {
     complete = resolve;
@@ -563,6 +669,7 @@ function createProject(input: StartProjectInput, id: string): ProjectRuntime {
       .map((name) => ({
         endpoints: new Map(),
         hasExited: false,
+        logs: logs.createFeed(),
         name,
         state: "starting",
         stopRequested: false,
@@ -626,7 +733,44 @@ function setEnvironmentValue(
   environment[name] = value;
 }
 
-function failureNote(output: ProcessOutput): string | undefined {
-  const text = output.stderr.trim() || output.stdout.trim();
+function failureNote(logs: ResourceLogSource): string | undefined {
+  const entries = logs.snapshot().entries;
+  const text =
+    recentOutput(entries, "stderr", 16 * 1024) || recentOutput(entries, "stdout", 16 * 1024);
   return text ? `Recent service output:\n${text}` : undefined;
+}
+
+function recentOutput(
+  entries: readonly ResourceLogEntry[],
+  stream: "stderr" | "stdout",
+  limit: number,
+): string {
+  const lines: string[] = [];
+  let length = 0;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry || entry.stream !== stream) {
+      continue;
+    }
+    const separatorLength = lines.length > 0 ? 1 : 0;
+    const available = limit - length - separatorLength;
+    if (available <= 0) {
+      break;
+    }
+    const line = entry.text.slice(-available);
+    lines.push(line);
+    length += separatorLength + line.length;
+    if (line.length < entry.text.length) {
+      break;
+    }
+  }
+  return lines.toReversed().join("\n").trim();
+}
+
+function positiveInteger(value: number | undefined, fallback: number, name: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer.`);
+  }
+  return resolved;
 }

@@ -11,6 +11,7 @@ import {
   type ProcessExit,
   type ProcessHandle,
   type ProcessHost,
+  type ProcessLogLine,
   type ProcessStart,
 } from "../packages/control-plane/src/index.ts";
 import { createDiagnostic, failure, success } from "../packages/diagnostics/src/index.ts";
@@ -320,6 +321,7 @@ describe("service process lifecycle", () => {
         args: [resolve(import.meta.dir, "fixtures/process-tree.ts")],
         env: { ...stringEnvironment(process.env), CHILD_PORT: String(lease.port) },
         executable: process.execPath,
+        logs: discardLogs,
         projectRoot: resolve(import.meta.dir, ".."),
         workingDirectory: ".",
       });
@@ -363,6 +365,7 @@ describe("service process lifecycle", () => {
     const lease = reserved.output;
     let childPid: number | undefined;
     let handle: ProcessHandle | undefined;
+    const logs: ProcessLogLine[] = [];
 
     try {
       expect((await lease.releaseReservation()).success).toBeTrue();
@@ -370,6 +373,7 @@ describe("service process lifecycle", () => {
         args: [resolve(import.meta.dir, "fixtures/process-tree.ts"), "orphan"],
         env: { ...stringEnvironment(process.env), CHILD_PORT: String(lease.port) },
         executable: process.execPath,
+        logs: { write: (entries) => logs.push(...entries) },
         projectRoot: resolve(import.meta.dir, ".."),
         workingDirectory: ".",
       });
@@ -381,11 +385,16 @@ describe("service process lifecycle", () => {
       const exited = await handle.exited;
       expect(exited.cleanup.success).toBeTrue();
       expect(exited.exitCode).toBe(0);
-      const output = await handle.output;
-      if (!output.success) {
+      if (!exited.logCapture.success) {
         throw new Error("The child process identifier could not be captured.");
       }
-      childPid = Number(output.output.stdout.trim());
+      childPid = Number(
+        logs
+          .filter(({ stream }) => stream === "stdout")
+          .map(({ text }) => text)
+          .join("\n")
+          .trim(),
+      );
       expect(Number.isSafeInteger(childPid)).toBeTrue();
       expect(isProcessAlive(childPid)).toBeFalse();
       expect(fetch(`http://127.0.0.1:${lease.port}`)).rejects.toBeDefined();
@@ -590,7 +599,6 @@ class FailingStartProcesses implements ProcessHost {
 class ControlledHandle implements ProcessHandle {
   readonly exited: Promise<ProcessExit>;
   readonly leaderExited: Promise<number>;
-  readonly output = Promise.resolve(success({ stderr: "", stdout: "" }));
   readonly pid = 1;
   stopFailures = 0;
   stopCount = 0;
@@ -611,10 +619,12 @@ class ControlledHandle implements ProcessHandle {
       return failure(createDiagnostic({ code: "SYD4998", message: "Expected stop failure." }));
     }
     await this.stopGate;
-    this.#exit({ cleanup: success(undefined), exitCode: 0 });
+    this.#exit({ cleanup: success(undefined), exitCode: 0, logCapture: success(undefined) });
     return success(undefined);
   }
 }
+
+const discardLogs = Object.freeze({ write(_entries: readonly ProcessLogLine[]) {} });
 
 async function waitFor<T>(read: () => Promise<T | undefined> | T | undefined): Promise<T> {
   return poll(read, Date.now() + 2_000);

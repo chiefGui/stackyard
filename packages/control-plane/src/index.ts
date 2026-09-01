@@ -7,7 +7,8 @@ export type {
   ProcessHandle,
   ProcessHost,
   ProcessExit,
-  ProcessOutput,
+  ProcessLogLine,
+  ProcessLogSink,
   ProcessStart,
   ProjectCompletion,
   ProjectManagerOptions,
@@ -16,6 +17,19 @@ export type {
   StartProjectResult,
 } from "./project-manager.ts";
 export { ProjectManager } from "./project-manager.ts";
+export {
+  ResourceLogStore,
+  type ResourceLogEntry,
+  type ResourceLogInput,
+  type ResourceLogReadOptions,
+  type ResourceLogSink,
+  type ResourceLogSnapshot,
+  type ResourceLogSource,
+  type ResourceLogStatus,
+  type ResourceLogStoreOptions,
+  type ResourceLogStream,
+  type ResourceLogWaitSignal,
+} from "./resource-logs.ts";
 export type {
   Project,
   ProjectList,

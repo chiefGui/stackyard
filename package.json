@@ -28,6 +28,7 @@
   },
   "scripts": {
     "bench": "bun run ./benchmarks/project-definition.ts",
+    "bench:resource-logs": "bun run ./benchmarks/resource-logs.ts",
     "build": "bun run --workspaces --if-present build",
     "changeset": "changeset",
     "pack:local": "bun run --filter stackyard pack:local",
