@@ -17,6 +17,17 @@ export type {
   StartProjectResult,
 } from "./project-manager.ts";
 export { ProjectManager } from "./project-manager.ts";
+export type {
+  ProjectDefinitionLoad,
+  ProjectDefinitionObservation,
+  ProjectDefinitionObserver,
+  ProjectDefinitionState,
+  ProjectRegistration,
+  ProjectRegistrationRecord,
+  ProjectRegistrationStore,
+  ProjectRegistryOptions,
+} from "./project-registry.ts";
+export { ProjectRegistry } from "./project-registry.ts";
 export {
   ResourceLogStore,
   type ResourceLogEntry,

@@ -137,7 +137,7 @@ function createRootCommand(commands: CliDependencies["commands"], version: strin
 
   return defineCommand({
     meta: {
-      description: "Run and inspect local projects",
+      description: "Manage local development projects",
       name: cliName,
       version,
     },

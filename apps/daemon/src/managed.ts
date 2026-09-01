@@ -1,4 +1,4 @@
-import { ProjectManager } from "@stackyard/control-plane";
+import { ProjectManager, type ProjectRegistry } from "@stackyard/control-plane";
 import {
   createDiagnostic,
   describeError,
@@ -7,9 +7,11 @@ import {
 } from "@stackyard/diagnostics";
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
-import { acquireDaemonLock, publishLocator, removeLocator, runtimeDirectory } from "./locator.ts";
+import { resolveStackyardDirectories } from "./directories.ts";
+import { acquireDaemonLock, publishLocator, removeLocator } from "./locator.ts";
 import { BunPortAllocator } from "./ports.ts";
 import { BunProcessHost } from "./processes.ts";
+import { openProjectRegistry } from "./project-registrations.ts";
 import { closeControlServer, startControlServer, type ControlData } from "./server.ts";
 
 const idleMilliseconds = 15_000;
@@ -17,11 +19,17 @@ const idleMilliseconds = 15_000;
 export interface ManagedDaemonOptions {
   readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
+  readonly evaluatorEntrypoint: string;
+  readonly dataDirectory?: string;
   readonly runtimeDirectory?: string;
 }
 
 export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<number> {
-  const directory = runtimeDirectory(options.runtimeDirectory);
+  const directories = resolveStackyardDirectories({
+    ...(options.dataDirectory ? { dataOverride: options.dataDirectory } : {}),
+    ...(options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {}),
+  });
+  const directory = directories.runtime;
   const instanceId = crypto.randomUUID();
   const lockResult = await acquireDaemonLock(directory, instanceId);
   if (!lockResult.success) {
@@ -41,10 +49,23 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
   let finish = noop;
   let locatorPublished = false;
   let longLivedActivities = 0;
+  let registry: ProjectRegistry | undefined;
   let server: Bun.Server<ControlData> | undefined;
   let exitCode = 0;
 
   try {
+    const openedRegistry = await openProjectRegistry({
+      dataDirectory: directories.data,
+      diagnostics: options.diagnostics,
+      evaluatorEntrypoint: options.evaluatorEntrypoint,
+      isActive: (root) => manager.isActive(root),
+    });
+    if (!openedRegistry.success) {
+      reportDiagnostics(options.diagnostics, openedRegistry.diagnostics);
+      return 1;
+    }
+    registry = openedRegistry.output;
+
     const started = startControlServer({
       acquireLongLivedActivity() {
         longLivedActivities += 1;
@@ -77,6 +98,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
         clearIdleTimer();
       },
       port: 0,
+      registrations: registry,
       token,
     });
     if (!started.success) {
@@ -131,6 +153,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
         exitCode = 1;
       }
     }
+    await registry?.close();
     if (locatorPublished) {
       try {
         await removeLocator(directory, instanceId);

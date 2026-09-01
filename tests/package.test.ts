@@ -14,6 +14,7 @@ test("the packed package works in an external Bun project", async () => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-package-"));
   const artifactDirectory = join(temporaryRoot, "artifacts");
   const consumerDirectory = join(temporaryRoot, "consumer");
+  const dataDirectory = join(temporaryRoot, "data");
   const runtimeDirectory = join(temporaryRoot, "runtime");
   let runProcess: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   let daemonPid: number | undefined;
@@ -120,7 +121,11 @@ test("the packed package works in an external Bun project", async () => {
     runProcess = Bun.spawn({
       cmd: [process.execPath, join(installedPackage, "dist/cli.js"), "run", "projects/run"],
       cwd: consumerDirectory,
-      env: { ...stringEnvironment(process.env), STACKYARD_RUNTIME_DIR: runtimeDirectory },
+      env: {
+        ...stringEnvironment(process.env),
+        STACKYARD_DATA_DIR: dataDirectory,
+        STACKYARD_RUNTIME_DIR: runtimeDirectory,
+      },
       stderr: "pipe",
       stdout: "pipe",
       windowsHide: true,

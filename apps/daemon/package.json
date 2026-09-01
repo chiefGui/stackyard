@@ -16,6 +16,7 @@
   "dependencies": {
     "@stackyard/control-plane": "workspace:*",
     "@stackyard/diagnostics": "workspace:*",
+    "@stackyard/project-loader": "workspace:*",
     "@stackyard/protocol": "workspace:*"
   },
   "devDependencies": {

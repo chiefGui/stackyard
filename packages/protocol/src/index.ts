@@ -30,6 +30,17 @@ export {
 export type { Project, ProjectList, Service, ServiceEndpoint, ServiceState } from "./projects.ts";
 export { createProjectList, parseProjectList } from "./projects.ts";
 export type {
+  RegisteredProject,
+  RegisteredProjectDefinition,
+  RegisteredProjectList,
+} from "./registrations.ts";
+export {
+  createRegisteredProject,
+  createRegisteredProjectList,
+  parseRegisteredProject,
+  parseRegisteredProjectList,
+} from "./registrations.ts";
+export type {
   ResourceLogBatch,
   ResourceLogBatchInput,
   ResourceLogEntry,

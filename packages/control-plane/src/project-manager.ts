@@ -181,6 +181,10 @@ export class ProjectManager {
     return this.#projectList(this.#projects.values());
   }
 
+  isActive(root: string): boolean {
+    return this.#roots.has(root);
+  }
+
   listRecentProjects(): ProjectList {
     return { projects: [...this.#recentProjects.values()].map(({ project }) => project) };
   }

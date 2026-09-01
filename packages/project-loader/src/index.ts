@@ -1,4 +1,5 @@
 export type { ProjectLocation } from "./discovery.ts";
+export { discoverProject } from "./discovery.ts";
 export type { LoadedProject, LoadProjectOptions, ProjectLoadOutcome } from "./load.ts";
 export type { CapturedProcessOutput } from "./process-output.ts";
 export { loadProject } from "./load.ts";
