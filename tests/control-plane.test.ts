@@ -245,7 +245,13 @@ describe("project manager", () => {
   test("rolls back processes when their owner disconnects during startup", async () => {
     const ports = new FakePorts();
     const cancellation = new AbortController();
-    const processes = new FakeProcesses(-1, () => cancellation.abort());
+    let processes!: FakeProcesses;
+    processes = new FakeProcesses(-1, () => {
+      processes.starts[0]?.logs.write([
+        { observedAt: 1, stream: "stdout", text: "started before cancellation" },
+      ]);
+      cancellation.abort();
+    });
     const manager = createManager(ports, processes);
 
     const started = await manager.start({
@@ -264,6 +270,10 @@ describe("project manager", () => {
     expect(processes.handles[0]?.stopCount).toBe(1);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
     expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listRecentProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
+      "exited",
+      "failed",
+    ]);
   });
 
   test("stops endpoint allocation promptly when startup is canceled", async () => {
@@ -358,7 +368,10 @@ describe("project manager", () => {
     expect((await started.output.stop()).success).toBeTrue();
 
     expect(manager.listProjects().projects).toEqual([]);
-    expect(manager.listRecentProjects().projects).toMatchObject([{ id: started.output.id }]);
+    const recent = manager.listRecentProjects();
+    expect(recent.projects).toMatchObject([{ id: started.output.id }]);
+    expect(Object.isFrozen(recent.projects[0])).toBeTrue();
+    expect(Object.isFrozen(recent.projects[0]?.services)).toBeTrue();
     expect(manager.getResourceLogs(started.output.id, "api")?.snapshot()).toMatchObject({
       entries: [{ sequence: 1, text: "listening" }],
       status: "complete",

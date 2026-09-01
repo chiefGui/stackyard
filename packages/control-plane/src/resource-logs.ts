@@ -41,6 +41,7 @@ export interface ResourceLogSink {
 
 export interface ResourceLogFeed extends ResourceLogSink, ResourceLogSource {
   complete(result?: Result<void>): void;
+  hasObservedEntries(): boolean;
   remove(): void;
 }
 
@@ -243,6 +244,10 @@ class BoundedResourceLogFeed implements ResourceLogFeed {
     this.#completion = result;
     this.#status = result.success ? "complete" : "failed";
     this.#changed();
+  }
+
+  hasObservedEntries(): boolean {
+    return this.#nextSequence > 1;
   }
 
   remove(): void {

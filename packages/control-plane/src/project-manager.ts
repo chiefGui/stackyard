@@ -13,7 +13,12 @@ import {
   type ProjectSpec,
 } from "@stackyard/protocol";
 
-import { type ProjectList, type ServiceEndpoint, type ServiceState } from "./project-list.ts";
+import {
+  type Project,
+  type ProjectList,
+  type ServiceEndpoint,
+  type ServiceState,
+} from "./project-list.ts";
 import {
   ResourceLogStore,
   type ResourceLogEntry,
@@ -121,12 +126,18 @@ interface ResourceRuntime {
   readonly endpoints: Map<string, AllocatedEndpoint>;
   readonly logs: ResourceLogFeed;
   readonly name: string;
+  exit?: ProcessExit;
   exitCode?: number;
   handle?: ProcessHandle;
-  hasExited: boolean;
-  logCapture?: Result<void>;
   state: ServiceState;
   stopRequested: boolean;
+}
+
+interface RecentProject {
+  readonly id: string;
+  readonly logs: ReadonlyMap<string, ResourceLogFeed>;
+  readonly project: Project;
+  readonly root: string;
 }
 
 interface ProjectRuntime {
@@ -150,8 +161,8 @@ export class ProjectManager {
   readonly #processes: ProcessHost;
   readonly #projects = new Map<string, ProjectRuntime>();
   readonly #recentProjectLimit: number;
-  readonly #recentProjects = new Map<string, ProjectRuntime>();
-  readonly #recentRoots = new Map<string, ProjectRuntime>();
+  readonly #recentProjects = new Map<string, RecentProject>();
+  readonly #recentRoots = new Map<string, RecentProject>();
   readonly #roots = new Map<string, ProjectRuntime>();
 
   constructor(options: ProjectManagerOptions) {
@@ -171,27 +182,38 @@ export class ProjectManager {
   }
 
   listRecentProjects(): ProjectList {
-    return this.#projectList(this.#recentProjects.values());
+    return { projects: [...this.#recentProjects.values()].map(({ project }) => project) };
   }
 
   getResourceLogs(projectId: string, resourceName: string): ResourceLogSource | undefined {
-    const project = this.#projects.get(projectId) ?? this.#recentProjects.get(projectId);
-    return project?.resources.find(({ name }) => name === resourceName)?.logs;
+    const active = this.#projects.get(projectId);
+    return (
+      active?.resources.find(({ name }) => name === resourceName)?.logs ??
+      this.#recentProjects.get(projectId)?.logs.get(resourceName)
+    );
   }
 
   #projectList(projects: Iterable<ProjectRuntime>): ProjectList {
-    return {
-      projects: [...projects].map((project) => ({
-        id: project.id,
-        name: project.name,
-        services: project.resources.map((resource) => ({
-          endpoints: [...resource.endpoints.values()].map(({ endpoint }) => endpoint),
-          ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
-          name: resource.name,
-          state: resource.state,
-        })),
-      })),
-    };
+    return { projects: [...projects].map((project) => this.#projectView(project)) };
+  }
+
+  #projectView(project: ProjectRuntime): Project {
+    return Object.freeze({
+      id: project.id,
+      name: project.name,
+      services: Object.freeze(
+        project.resources.map((resource) =>
+          Object.freeze({
+            endpoints: Object.freeze(
+              [...resource.endpoints.values()].map(({ endpoint }) => endpoint),
+            ),
+            ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
+            name: resource.name,
+            state: resource.state,
+          }),
+        ),
+      ),
+    });
   }
 
   async start(input: StartProjectInput): Promise<StartProjectResult> {
@@ -414,7 +436,7 @@ export class ProjectManager {
     if (
       project.completionPublished ||
       project.cleanup ||
-      project.resources.some((resource) => !resource.hasExited)
+      project.resources.some((resource) => !resource.exit)
     ) {
       return;
     }
@@ -429,9 +451,8 @@ export class ProjectManager {
       project.complete({ kind: "natural", result: cleaned });
       return;
     }
-    const captureFailure = project.resources
-      .map(({ logCapture }) => logCapture)
-      .find((result) => result && !result.success);
+    const captureFailure = project.resources.find(({ exit }) => exit && !exit.logCapture.success)
+      ?.exit?.logCapture;
     if (captureFailure && !captureFailure.success) {
       project.complete({ kind: "natural", result: captureFailure });
       return;
@@ -494,7 +515,7 @@ export class ProjectManager {
 
   async #stopResources(project: ProjectRuntime): Promise<Result<void>> {
     for (const resource of project.resources) {
-      if (resource.handle && !resource.hasExited) {
+      if (resource.handle && !resource.exit) {
         resource.stopRequested = true;
         resource.state = "stopping";
       }
@@ -539,10 +560,14 @@ export class ProjectManager {
     if (!disposed.success) {
       return this.#retainedStartFailure(project, disposed, cause);
     }
+    for (const resource of project.resources) {
+      if (resource.state === "starting") {
+        resource.state = "failed";
+      }
+    }
     if (
       project.resources.some(({ logs }) => {
-        const snapshot = logs.snapshot();
-        return snapshot.retainedFrom > 1 || snapshot.status === "failed";
+        return logs.hasObservedEntries() || logs.snapshot().status === "failed";
       })
     ) {
       this.#archive(project);
@@ -583,8 +608,7 @@ export class ProjectManager {
 
   #recordExit(resource: ResourceRuntime, exit: ProcessExit): void {
     resource.exitCode = exit.exitCode;
-    resource.hasExited = true;
-    resource.logCapture = exit.logCapture;
+    resource.exit = exit;
     resource.logs.complete(exit.logCapture);
     if (resource.state === "running" || resource.state === "stopping") {
       resource.state =
@@ -602,13 +626,19 @@ export class ProjectManager {
       resource.logs.complete();
       delete resource.handle;
     }
+    const recent: RecentProject = {
+      id: project.id,
+      logs: new Map(project.resources.map(({ logs, name }) => [name, logs])),
+      project: this.#projectView(project),
+      root: project.root,
+    };
 
     const previous = this.#recentRoots.get(project.root);
-    if (previous && previous !== project) {
+    if (previous) {
       this.#removeRecent(previous);
     }
-    this.#recentProjects.set(project.id, project);
-    this.#recentRoots.set(project.root, project);
+    this.#recentProjects.set(project.id, recent);
+    this.#recentRoots.set(project.root, recent);
     while (this.#recentProjects.size > this.#recentProjectLimit) {
       const oldest = this.#recentProjects.values().next().value;
       if (!oldest) {
@@ -635,15 +665,15 @@ export class ProjectManager {
     }
   }
 
-  #removeRecent(project: ProjectRuntime): void {
+  #removeRecent(project: RecentProject): void {
     if (this.#recentProjects.get(project.id) === project) {
       this.#recentProjects.delete(project.id);
     }
     if (this.#recentRoots.get(project.root) === project) {
       this.#recentRoots.delete(project.root);
     }
-    for (const resource of project.resources) {
-      resource.logs.remove();
+    for (const logs of project.logs.values()) {
+      logs.remove();
     }
   }
 }
@@ -668,7 +698,6 @@ function createProject(
       .toSorted(compareNames)
       .map((name) => ({
         endpoints: new Map(),
-        hasExited: false,
         logs: logs.createFeed(),
         name,
         state: "starting",
@@ -757,7 +786,7 @@ function recentOutput(
     if (available <= 0) {
       break;
     }
-    const line = entry.text.slice(-available);
+    const line = textTail(entry.text, available);
     lines.push(line);
     length += separatorLength + line.length;
     if (line.length < entry.text.length) {
@@ -765,6 +794,16 @@ function recentOutput(
     }
   }
   return lines.toReversed().join("\n").trim();
+}
+
+function textTail(text: string, maximumCodeUnits: number): string {
+  let start = Math.max(0, text.length - maximumCodeUnits);
+  const first = text.charCodeAt(start);
+  const previous = text.charCodeAt(start - 1);
+  if (first >= 0xdc00 && first <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) {
+    start += 1;
+  }
+  return text.slice(start);
 }
 
 function positiveInteger(value: number | undefined, fallback: number, name: string): number {
