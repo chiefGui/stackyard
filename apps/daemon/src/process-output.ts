@@ -9,6 +9,11 @@ import type { ProcessLogLine, ProcessLogSink } from "@stackyard/control-plane";
 
 export const maxProcessLogLineBytes = 256 * 1024;
 
+export interface ProcessLogCaptureOptions {
+  readonly maxLineBytes?: number;
+  readonly signal?: AbortSignal;
+}
+
 interface FramedLine {
   readonly text: string;
   readonly truncatedBytes?: number;
@@ -26,11 +31,12 @@ export async function captureProcessLogs(
   stdout: ReadableStream<Uint8Array>,
   stderr: ReadableStream<Uint8Array>,
   sink: ProcessLogSink,
-  maxLineBytes = maxProcessLogLineBytes,
+  options: ProcessLogCaptureOptions = {},
 ): Promise<Result<void>> {
+  const maxLineBytes = options.maxLineBytes ?? maxProcessLogLineBytes;
   const captured = await Promise.allSettled([
-    captureStream(stdout, "stdout", sink, maxLineBytes),
-    captureStream(stderr, "stderr", sink, maxLineBytes),
+    captureStream(stdout, "stdout", sink, maxLineBytes, options.signal),
+    captureStream(stderr, "stderr", sink, maxLineBytes, options.signal),
   ]);
   const errors = captured.flatMap((result) =>
     result.status === "rejected" ? [describeError(result.reason)] : [],
@@ -52,9 +58,18 @@ async function captureStream(
   name: "stderr" | "stdout",
   sink: ProcessLogSink,
   maxLineBytes: number,
+  signal: AbortSignal | undefined,
 ): Promise<void> {
   const reader = stream.getReader();
   const framer = new BoundedLineFramer(maxLineBytes);
+  const cancel = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal?.aborted) {
+    cancel();
+  } else {
+    signal?.addEventListener("abort", cancel, { once: true });
+  }
   try {
     while (true) {
       /* oxlint-disable-next-line eslint/no-await-in-loop -- A single stream must be drained in order. */
@@ -69,6 +84,7 @@ async function captureStream(
       publish([finalLine], name, sink);
     }
   } finally {
+    signal?.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 }

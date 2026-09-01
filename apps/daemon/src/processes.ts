@@ -19,7 +19,7 @@ import { superviseCleanup } from "./cleanup.ts";
 import { captureProcessLogs } from "./process-output.ts";
 import { createWindowsJob, type WindowsJob } from "./windows-job.ts";
 
-/* oxlint-disable eslint/no-await-in-loop -- Streams and process-group liveness are consumed sequentially. */
+/* oxlint-disable eslint/no-await-in-loop -- Process-group liveness checks are deliberately sequential. */
 
 const gracefulShutdownMilliseconds = 2_000;
 const windowsStartVariable = "STACKYARD_PROCESS_START";
@@ -62,6 +62,7 @@ export class BunProcessHost implements ProcessHost {
 
   async start(input: ProcessStart): Promise<Result<ProcessHandle>> {
     let logCapture: Promise<Result<void>> | undefined;
+    let cancelLogCapture: (() => void) | undefined;
     try {
       const environment = { ...input.env };
       if (process.platform === "win32") {
@@ -90,7 +91,11 @@ export class BunProcessHost implements ProcessHost {
         stdout: "pipe",
         windowsHide: true,
       });
-      const capture = captureProcessLogs(subprocess.stdout, subprocess.stderr, input.logs);
+      const captureController = new AbortController();
+      cancelLogCapture = () => captureController.abort();
+      const capture = captureProcessLogs(subprocess.stdout, subprocess.stderr, input.logs, {
+        signal: captureController.signal,
+      });
       logCapture = capture;
       const windowsJob = await ownWindowsProcess(subprocess);
       await startOwnedProcess(subprocess, windowsJob);
@@ -127,6 +132,7 @@ export class BunProcessHost implements ProcessHost {
         }),
       );
     } catch (error) {
+      cancelLogCapture?.();
       await logCapture;
       return failure(
         createDiagnostic({

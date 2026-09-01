@@ -38,7 +38,7 @@ describe("service output capture", () => {
       stream([encoder.encode("abcdefghijklmnop\n")]),
       stream([]),
       { write: (entries) => lines.push(...entries) },
-      10,
+      { maxLineBytes: 10 },
     );
 
     expect(captured.success).toBeTrue();
@@ -58,7 +58,7 @@ describe("service output capture", () => {
       stream([encoder.encode("1234🙂abcdefgh🙂9876\n")]),
       stream([]),
       { write: (entries) => lines.push(...entries) },
-      12,
+      { maxLineBytes: 12 },
     );
 
     expect(captured.success).toBeTrue();
@@ -96,6 +96,29 @@ describe("service output capture", () => {
     if (!captured.success) {
       expect(captured.diagnostics[0].code).toBe("SYD4008");
     }
+  });
+
+  test("cancels both output pumps when process startup is abandoned", async () => {
+    const cancellation = new AbortController();
+    let canceledStreams = 0;
+    const pendingStream = (): ReadableStream<Uint8Array> =>
+      new ReadableStream({
+        cancel() {
+          canceledStreams += 1;
+        },
+        pull() {},
+      });
+    const capture = captureProcessLogs(
+      pendingStream(),
+      pendingStream(),
+      { write() {} },
+      { signal: cancellation.signal },
+    );
+
+    cancellation.abort();
+
+    expect((await capture).success).toBeTrue();
+    expect(canceledStreams).toBe(2);
   });
 });
 
