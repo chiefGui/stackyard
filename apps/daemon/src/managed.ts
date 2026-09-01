@@ -48,6 +48,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let finish = noop;
   let locatorPublished = false;
+  let longLivedActivities = 0;
   let registry: ProjectRegistry | undefined;
   let server: Bun.Server<ControlData> | undefined;
   let exitCode = 0;
@@ -66,6 +67,19 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
     registry = openedRegistry.output;
 
     const started = startControlServer({
+      acquireLongLivedActivity() {
+        longLivedActivities += 1;
+        clearIdleTimer();
+        let active = true;
+        return () => {
+          if (!active) {
+            return;
+          }
+          active = false;
+          longLivedActivities -= 1;
+          scheduleIdleShutdown();
+        };
+      },
       diagnostics: options.diagnostics,
       handleUnhandledRequest: createDashboardWebHandler(options.dashboardWebDirectory),
       instanceId,
@@ -76,18 +90,12 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
         scheduleIdleShutdown();
       },
       onActivity() {
-        if (idleTimer) {
-          clearTimeout(idleTimer);
-          idleTimer = undefined;
-        }
+        clearIdleTimer();
         scheduleIdleShutdown();
       },
       onOpen(socket) {
         sockets.add(socket);
-        if (idleTimer) {
-          clearTimeout(idleTimer);
-          idleTimer = undefined;
-        }
+        clearIdleTimer();
       },
       port: 0,
       registrations: registry,
@@ -134,9 +142,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
     shuttingDown = true;
     process.off("SIGINT", finish);
     process.off("SIGTERM", finish);
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-    }
+    clearIdleTimer();
 
     await closeControlServer(manager, sockets, options.diagnostics);
     if (server) {
@@ -169,11 +175,28 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
   }
   return exitCode;
 
-  function scheduleIdleShutdown(): void {
-    if (sockets.size > 0 || manager.listProjects().projects.length > 0 || idleTimer) {
+  function clearIdleTimer(): void {
+    if (!idleTimer) {
       return;
     }
-    idleTimer = setTimeout(finish, idleMilliseconds);
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+  }
+
+  function scheduleIdleShutdown(): void {
+    if (
+      shuttingDown ||
+      sockets.size > 0 ||
+      longLivedActivities > 0 ||
+      manager.listProjects().projects.length > 0 ||
+      idleTimer
+    ) {
+      return;
+    }
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      finish();
+    }, idleMilliseconds);
   }
 }
 
@@ -188,6 +211,7 @@ export async function runForegroundDaemon(options: ForegroundDaemonOptions): Pro
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   let shuttingDown = false;
   const started = startControlServer({
+    acquireLongLivedActivity: () => noop,
     diagnostics: options.diagnostics,
     instanceId: crypto.randomUUID(),
     isShuttingDown: () => shuttingDown,

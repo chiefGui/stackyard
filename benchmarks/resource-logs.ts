@@ -1,6 +1,7 @@
 import { bench, do_not_optimize, run } from "mitata";
 
 import { ResourceLogStore } from "../packages/control-plane/src/index.ts";
+import { createResourceLogBatch } from "../packages/protocol/src/index.ts";
 
 const store = new ResourceLogStore();
 const feed = store.createFeed();
@@ -25,6 +26,26 @@ for (let offset = 0; offset < 10_000; offset += batch.length) {
 
 bench("read 256 lines from a full resource log feed", () => {
   do_not_optimize(snapshotFeed.snapshot({ after: 9_744, limit: 256 }));
+});
+
+const snapshot = snapshotFeed.snapshot({ after: 9_744, limit: 256 });
+if (snapshot.status !== "live") {
+  throw new Error("Benchmark resource log feed completed unexpectedly.");
+}
+const protocolBatch = createResourceLogBatch({
+  cursor: snapshot.nextCursor,
+  droppedEntries: snapshot.droppedEntries,
+  entries: snapshot.entries,
+  latestCursor: snapshot.latestCursor,
+  projectId: "benchmark-project",
+  resourceName: "api",
+  retainedFrom: snapshot.retainedFrom,
+  status: snapshot.status,
+});
+const encoder = new TextEncoder();
+
+bench("encode a 256-line resource log transport batch", () => {
+  do_not_optimize(encoder.encode(`${JSON.stringify(protocolBatch)}\n`));
 });
 
 await run({ throw: true });

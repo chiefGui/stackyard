@@ -40,4 +40,12 @@ export {
   parseRegisteredProject,
   parseRegisteredProjectList,
 } from "./registrations.ts";
+export type {
+  ResourceLogBatch,
+  ResourceLogBatchInput,
+  ResourceLogEntry,
+  ResourceLogStatus,
+  ResourceLogStream,
+} from "./resource-logs.ts";
+export { createResourceLogBatch, parseResourceLogBatch } from "./resource-logs.ts";
 export { protocolVersion } from "./version.ts";

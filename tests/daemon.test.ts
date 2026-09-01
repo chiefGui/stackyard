@@ -573,6 +573,7 @@ function startTestServer(
 ) {
   return startControlServer({
     ...(registrations ? { registrations } : {}),
+    acquireLongLivedActivity: () => () => {},
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,
