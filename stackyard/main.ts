@@ -11,7 +11,7 @@ const daemon = service({
   },
 });
 
-const dashboard = service({
+const dashboardWeb = service({
   command: ["bun", "run", "dev"],
   cwd: "apps/dashboard-web",
   endpoints: {
@@ -24,5 +24,5 @@ const dashboard = service({
 
 export default defineProject({
   name: "stackyard",
-  resources: { daemon, dashboard },
+  resources: { daemon, "dashboard-web": dashboardWeb },
 });

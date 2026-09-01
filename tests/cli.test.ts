@@ -39,7 +39,7 @@ test("Stackyard describes its own daemon through the public project API", async 
   }
 
   expect(parsedSpec.output.name).toBe("stackyard");
-  expect(Object.keys(parsedSpec.output.resources)).toEqual(["daemon", "dashboard"]);
+  expect(Object.keys(parsedSpec.output.resources)).toEqual(["daemon", "dashboard-web"]);
 
   const daemon = parsedSpec.output.resources.daemon;
   expect(daemon?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
@@ -50,9 +50,9 @@ test("Stackyard describes its own daemon through the public project API", async 
     preferred: 3000,
   });
 
-  const dashboard = parsedSpec.output.resources.dashboard;
-  expect(dashboard?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
-  expect(dashboard?.cwd).toBe("apps/dashboard-web");
+  const dashboardWeb = parsedSpec.output.resources["dashboard-web"];
+  expect(dashboardWeb?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
+  expect(dashboardWeb?.cwd).toBe("apps/dashboard-web");
 });
 
 test("inspect preserves structured definition errors across the evaluator boundary", async () => {
