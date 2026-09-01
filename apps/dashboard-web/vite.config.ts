@@ -1,9 +1,23 @@
+import { fileURLToPath } from "node:url";
+
+import stylex from "@stylexjs/unplugin/vite";
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite-plus";
 
 const port = Number(process.env.PORT ?? 5173);
+const rootDirectory = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig(({ command }) => {
+  const plugins = [
+    tanstackRouter({ autoCodeSplitting: true, target: "react" }),
+    stylex({
+      sxPropName: false,
+      unstable_moduleResolution: { rootDir: rootDirectory, type: "commonJS" },
+      useCSSLayers: { before: ["reset"], prefix: "stylex" },
+    }),
+    react(),
+  ];
   const server = {
     host: "127.0.0.1",
     port,
@@ -16,7 +30,7 @@ export default defineConfig(({ command }) => {
       throw new Error("STACKYARD_CONTROL_URL is required to run dashboard-web.");
     }
     return {
-      plugins: [react()],
+      plugins,
       server: {
         ...server,
         proxy: {
@@ -29,5 +43,5 @@ export default defineConfig(({ command }) => {
     };
   }
 
-  return { plugins: [react()], server };
+  return { plugins, server };
 });

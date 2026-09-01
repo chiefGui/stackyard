@@ -3,20 +3,20 @@ import { expect, test } from "bun:test";
 import {
   createProjectStartedMessage,
   createProjectSpec,
-  createRuntimeSnapshot,
+  createProjectList,
   createStartProjectMessage,
   parseDaemonClientMessage,
   parseDaemonServerMessage,
-  parseRuntimeSnapshot,
+  parseProjectList,
 } from "../packages/protocol/src/index.ts";
 
-test("runtime snapshots round-trip as immutable public state", () => {
-  const snapshot = createRuntimeSnapshot({
+test("project lists round-trip as immutable public state", () => {
+  const projectList = createProjectList({
     projects: [
       {
         id: "project-1",
         name: "demo",
-        resources: [
+        services: [
           {
             endpoints: [{ name: "http", url: "http://127.0.0.1:4000" }],
             name: "api",
@@ -25,17 +25,16 @@ test("runtime snapshots round-trip as immutable public state", () => {
         ],
       },
     ],
-    revision: 3,
   });
 
-  const parsed = parseRuntimeSnapshot(JSON.parse(JSON.stringify(snapshot)));
-  expect(parsed).toEqual({ output: snapshot, success: true });
-  expect(Object.isFrozen(snapshot)).toBeTrue();
-  expect(Object.isFrozen(snapshot.projects[0]?.resources[0]?.endpoints)).toBeTrue();
+  const parsed = parseProjectList(JSON.parse(JSON.stringify(projectList)));
+  expect(parsed).toEqual({ output: projectList, success: true });
+  expect(Object.isFrozen(projectList)).toBeTrue();
+  expect(Object.isFrozen(projectList.projects[0]?.services[0]?.endpoints)).toBeTrue();
 });
 
-test("invalid runtime snapshots produce actionable protocol diagnostics", () => {
-  const parsed = parseRuntimeSnapshot({ projects: [], revision: -1, schemaVersion: 1 });
+test("invalid project lists produce actionable protocol diagnostics", () => {
+  const parsed = parseProjectList({ projects: "invalid", schemaVersion: 1 });
 
   expect(parsed.success).toBeFalse();
   if (!parsed.success) {

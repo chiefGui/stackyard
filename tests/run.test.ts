@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { readLocator } from "../apps/daemon/src/locator.ts";
-import { parseRuntimeSnapshot } from "../packages/protocol/src/index.ts";
+import { parseProjectList } from "../packages/protocol/src/index.ts";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
@@ -44,15 +44,15 @@ test("run owns a real project through the global daemon", async () => {
     const locator = await waitFor(() => readLocator(runtimeRoot));
     daemonPid = locator.pid;
 
-    const snapshot = await waitFor(async () => {
+    const projectList = await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
-        const parsed = parseRuntimeSnapshot(await response.json());
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
+        const parsed = parseProjectList(await response.json());
         if (!parsed.success) {
           return undefined;
         }
-        const resource = parsed.output.projects[0]?.resources[0];
-        if (resource?.state !== "running" || resource.endpoints.length === 0) {
+        const service = parsed.output.projects[0]?.services[0];
+        if (service?.state !== "running" || service.endpoints.length === 0) {
           return undefined;
         }
         return parsed.output;
@@ -60,10 +60,10 @@ test("run owns a real project through the global daemon", async () => {
         return undefined;
       }
     });
-    expect(snapshot.projects[0]?.name).toBe("run-fixture");
-    expect(snapshot.projects[0]?.resources[0]?.state).toBe("running");
+    expect(projectList.projects[0]?.name).toBe("run-fixture");
+    expect(projectList.projects[0]?.services[0]?.state).toBe("running");
 
-    const endpoint = snapshot.projects[0]?.resources[0]?.endpoints[0]?.url;
+    const endpoint = projectList.projects[0]?.services[0]?.endpoints[0]?.url;
     expect(endpoint).toBeString();
     expect(
       await waitFor(async () => {
@@ -106,17 +106,17 @@ test("run owns a real project through the global daemon", async () => {
 
     const sharedLocator = await waitFor(() => readLocator(runtimeRoot));
     expect(sharedLocator.instanceId).toBe(locator.instanceId);
-    const sharedSnapshot = await waitFor(async () => {
+    const sharedProjectList = await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
-        const parsed = parseRuntimeSnapshot(await response.json());
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
+        const parsed = parseProjectList(await response.json());
         return parsed.success && parsed.output.projects.length === 2 ? parsed.output : undefined;
       } catch {
         return undefined;
       }
     });
-    const secondEndpoint = sharedSnapshot.projects.find(({ name }) => name === "run-fixture-two")
-      ?.resources[0]?.endpoints[0]?.url;
+    const secondEndpoint = sharedProjectList.projects.find(({ name }) => name === "run-fixture-two")
+      ?.services[0]?.endpoints[0]?.url;
     expect(secondEndpoint).toBeString();
     expect(secondEndpoint).not.toBe(endpoint);
     expect(
@@ -140,8 +140,8 @@ test("run owns a real project through the global daemon", async () => {
 
     await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
-        const parsed = parseRuntimeSnapshot(await response.json());
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
+        const parsed = parseProjectList(await response.json());
         return parsed.success &&
           parsed.output.projects.length === 1 &&
           parsed.output.projects[0]?.name === "run-fixture-two"
@@ -169,8 +169,8 @@ test("run owns a real project through the global daemon", async () => {
     expect(await secondStdout).toContain("run-fixture-two is running. Dashboard:");
     await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
-        const parsed = parseRuntimeSnapshot(await response.json());
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
+        const parsed = parseProjectList(await response.json());
         return parsed.success && parsed.output.projects.length === 0 ? true : undefined;
       } catch {
         return undefined;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  RunManager,
+  ProjectManager,
   type PortAllocator,
   type PortLease,
   type ProcessExit,
@@ -12,7 +12,7 @@ import {
 import { createDiagnostic, failure, success } from "../packages/diagnostics/src/index.ts";
 import { createProjectSpec, type ProjectSpec } from "../packages/protocol/src/index.ts";
 
-describe("run manager", () => {
+describe("project manager", () => {
   test("allocates every endpoint before starting processes and resolves runtime environment", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses(-1, () => {
@@ -53,11 +53,13 @@ describe("run manager", () => {
       executable: "web-command",
     });
 
-    expect(manager.snapshot()).toMatchObject({
+    const projects = manager.listProjects();
+    expect(projects).not.toHaveProperty("schemaVersion");
+    expect(projects).toMatchObject({
       projects: [
         {
           name: "demo",
-          resources: [
+          services: [
             {
               endpoints: [{ name: "http", url: "http://127.0.0.1:4100" }],
               name: "api",
@@ -71,8 +73,6 @@ describe("run manager", () => {
           ],
         },
       ],
-      revision: 5,
-      schemaVersion: 1,
     });
   });
 
@@ -89,7 +89,7 @@ describe("run manager", () => {
     }
     expect(processes.handles[0]?.stopCount).toBe(1);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
 
     expect((await startProject(manager, "/project", projectSpec())).success).toBeTrue();
   });
@@ -106,14 +106,14 @@ describe("run manager", () => {
 
     const started = await startProject(manager, "/project", projectSpec());
 
-    expect(manager.snapshot().projects).toHaveLength(1);
+    expect(manager.listProjects().projects).toHaveLength(1);
     expect(started.success).toBeFalse();
     if (!started.success) {
       expect(started.diagnostics.map(({ code }) => code)).toEqual(["SYD4998", "SYD4999"]);
       expect(started.cleanup?.id).toBeString();
       expect((await started.cleanup?.stop())?.success).toBeTrue();
     }
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
   });
 
   test("reports later exits independently and completes after every service exits", async () => {
@@ -127,16 +127,16 @@ describe("run manager", () => {
 
     processes.handles[0]?.exitLeader(7);
     await tick();
-    expect(manager.snapshot().projects[0]?.resources.map(({ state }) => state)).toEqual([
+    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "stopping",
       "running",
     ]);
-    expect(manager.snapshot().projects[0]?.resources[0]?.exitCode).toBe(7);
+    expect(manager.listProjects().projects[0]?.services[0]?.exitCode).toBe(7);
     expect(processes.handles[1]?.stopCount).toBe(0);
 
     processes.handles[0]?.settle(7);
     await tick();
-    expect(manager.snapshot().projects[0]?.resources.map(({ state }) => state)).toEqual([
+    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "failed",
       "running",
     ]);
@@ -175,7 +175,7 @@ describe("run manager", () => {
     expect(left.success).toBeTrue();
     expect(right.success).toBeTrue();
     expect(processes.handles.every(({ stopCount }) => stopCount === 1)).toBeTrue();
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
   });
 
   test("retains failed cleanup for inspection and permits a later retry", async () => {
@@ -195,7 +195,7 @@ describe("run manager", () => {
     const firstStop = await started.output.stop();
 
     expect(firstStop.success).toBeFalse();
-    expect(manager.snapshot().projects[0]?.resources.map(({ state }) => state)).toEqual([
+    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "failed",
       "exited",
     ]);
@@ -205,7 +205,7 @@ describe("run manager", () => {
     expect(secondStop.success).toBeTrue();
     expect(firstHandle.stopCount).toBe(2);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
     expect(await started.output.completed).toEqual({ kind: "stopped" });
   });
 
@@ -229,7 +229,7 @@ describe("run manager", () => {
     const stopped = await started.output.stop();
 
     expect(stopped.success).toBeFalse();
-    expect(manager.snapshot().projects[0]?.resources.map(({ state }) => state)).toEqual([
+    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "exited",
       "exited",
     ]);
@@ -257,7 +257,7 @@ describe("run manager", () => {
     expect(processes.handles).toHaveLength(1);
     expect(processes.handles[0]?.stopCount).toBe(1);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
   });
 
   test("stops endpoint allocation promptly when startup is canceled", async () => {
@@ -281,7 +281,7 @@ describe("run manager", () => {
     expect(ports.leases).toHaveLength(1);
     expect(ports.leases[0]?.disposed).toBe(1);
     expect(processes.starts).toEqual([]);
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
   });
 
   test("serializes an explicit stop behind natural cleanup", async () => {
@@ -311,13 +311,13 @@ describe("run manager", () => {
     gate.resolve();
     expect((await stopping).success).toBeTrue();
     expect(firstHandle.stopCount).toBe(2);
-    expect(manager.snapshot().projects).toEqual([]);
+    expect(manager.listProjects().projects).toEqual([]);
   });
 });
 
-function createManager(ports: PortAllocator, processes: ProcessHost): RunManager {
+function createManager(ports: PortAllocator, processes: ProcessHost): ProjectManager {
   let id = 0;
-  return new RunManager({
+  return new ProjectManager({
     createId: () => `project-${++id}`,
     ports,
     processes,
@@ -325,7 +325,7 @@ function createManager(ports: PortAllocator, processes: ProcessHost): RunManager
 }
 
 function startProject(
-  manager: RunManager,
+  manager: ProjectManager,
   root: string,
   spec: ProjectSpec,
   environment: Readonly<Record<string, string>> = {},

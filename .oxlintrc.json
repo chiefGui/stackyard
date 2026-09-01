@@ -5,8 +5,24 @@
     "perf": "error",
     "suspicious": "error"
   },
-  "plugins": ["import", "oxc", "typescript", "unicorn"],
+  "plugins": ["import", "jsx-a11y", "oxc", "react", "typescript", "unicorn"],
+  "rules": {
+    "react/react-in-jsx-scope": "off"
+  },
   "overrides": [
+    {
+      "files": ["apps/dashboard-web/src/**/*.ts", "apps/dashboard-web/src/**/*.tsx"],
+      "jsPlugins": [{ "name": "stylex", "specifier": "@stylexjs/eslint-plugin" }],
+      "rules": {
+        "stylex/enforce-extension": "error",
+        "stylex/no-conflicting-props": "error",
+        "stylex/no-legacy-contextual-styles": "error",
+        "stylex/no-lookahead-selectors": "error",
+        "stylex/no-nonstandard-styles": "error",
+        "stylex/no-unused": "error",
+        "stylex/valid-styles": "error"
+      }
+    },
     {
       "files": ["packages/sdk/src/**/*.ts"],
       "rules": {
@@ -44,5 +60,10 @@
     "reportUnusedDisableDirectives": "error",
     "typeAware": true
   },
-  "ignorePatterns": ["coverage/**", "dist/**", "node_modules/**"]
+  "ignorePatterns": [
+    "apps/dashboard-web/src/routeTree.gen.ts",
+    "coverage/**",
+    "dist/**",
+    "node_modules/**"
+  ]
 }

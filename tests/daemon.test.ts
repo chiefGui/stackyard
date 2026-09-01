@@ -6,7 +6,7 @@ import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
 import { startControlServer } from "../apps/daemon/src/server.ts";
 import {
-  RunManager,
+  ProjectManager,
   type PortAllocator,
   type ProcessExit,
   type ProcessHandle,
@@ -91,6 +91,11 @@ describe("HTTP server", () => {
         status: "ok",
       });
 
+      const projects = await fetch(new URL("/api/v1/projects", server.url));
+      expect(projects.status).toBe(200);
+      expect(projects.headers.get("cache-control")).toBe("no-store");
+      expect(await projects.json()).toEqual({ projects: [], schemaVersion: 1 });
+
       const root = await fetch(server.url);
       expect(root.status).toBe(404);
       expect(root.headers.get("content-security-policy")).toContain("default-src 'self'");
@@ -134,7 +139,7 @@ describe("HTTP server", () => {
 
   test("cleans up a project when its control lease disconnects during startup", async () => {
     const processes = new BlockingProcesses();
-    const manager = new RunManager({
+    const manager = new ProjectManager({
       createId: () => "project-one",
       ports: new UnusedPorts(),
       processes,
@@ -157,7 +162,7 @@ describe("HTTP server", () => {
       processes.continue();
 
       await waitFor(() =>
-        processes.handle.stopCount === 1 && manager.snapshot().projects.length === 0
+        processes.handle.stopCount === 1 && manager.listProjects().projects.length === 0
           ? true
           : undefined,
       );
@@ -171,7 +176,7 @@ describe("HTTP server", () => {
     const processes = new BlockingProcesses();
     processes.handle.stopFailures = 1;
     let cancellation: AbortSignal | undefined;
-    const manager = new RunManager({
+    const manager = new ProjectManager({
       createId: () => "project-one",
       ports: new UnusedPorts(),
       processes,
@@ -203,7 +208,7 @@ describe("HTTP server", () => {
         expect(parsed.output.kind).toBe("stopped");
       }
       expect(processes.handle.stopCount).toBe(2);
-      expect(manager.snapshot().projects).toEqual([]);
+      expect(manager.listProjects().projects).toEqual([]);
     } finally {
       processes.continue();
       socket.terminate();
@@ -216,7 +221,7 @@ describe("HTTP server", () => {
     const processes = new FailingStartProcesses();
     processes.handle.stopFailures = 1;
     processes.handle.stopGate = cleanupGate.promise;
-    const manager = new RunManager({
+    const manager = new ProjectManager({
       createId: () => "project-one",
       ports: new UnusedPorts(),
       processes,
@@ -245,10 +250,10 @@ describe("HTTP server", () => {
         "SYD4998",
         "SYD4999",
       ]);
-      expect(manager.snapshot().projects).toHaveLength(1);
+      expect(manager.listProjects().projects).toHaveLength(1);
 
       cleanupGate.resolve();
-      await waitFor(() => (manager.snapshot().projects.length === 0 ? true : undefined));
+      await waitFor(() => (manager.listProjects().projects.length === 0 ? true : undefined));
     } finally {
       cleanupGate.resolve();
       socket.terminate();
@@ -415,7 +420,8 @@ describe("service process lifecycle", () => {
         stdout: "pipe",
         windowsHide: true,
       });
-      servicePid = await readProcessIdentifier(owner.stdout);
+      const runningServicePid = await readProcessIdentifier(owner.stdout);
+      servicePid = runningServicePid;
       await waitFor(async () => {
         try {
           const response = await fetch(`http://127.0.0.1:${lease.port}`);
@@ -435,7 +441,7 @@ describe("service process lifecycle", () => {
           return true;
         }
       });
-      expect(isProcessAlive(servicePid)).toBeFalse();
+      await waitFor(() => (isProcessAlive(runningServicePid) ? undefined : true));
     } finally {
       if (owner?.exitCode === null) {
         owner.kill("SIGKILL");
@@ -451,7 +457,7 @@ describe("service process lifecycle", () => {
 
 function startTestServer(
   port: number,
-  manager = new RunManager({
+  manager = new ProjectManager({
     createId: () => crypto.randomUUID(),
     ports: new BunPortAllocator(),
     processes: new BunProcessHost({ report() {} }),

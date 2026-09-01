@@ -1,0 +1,36 @@
+@layer reset;
+
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    min-width: 320px;
+    margin: 0;
+  }
+
+  h1,
+  h2,
+  p {
+    margin: 0;
+  }
+
+  a {
+    color: inherit;
+    font: inherit;
+  }
+}

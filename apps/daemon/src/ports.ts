@@ -59,7 +59,7 @@ export class BunPortAllocator implements PortAllocator {
       return failure(
         createDiagnostic({
           code: "SYD4001",
-          help: "Free a local TCP port or stop an existing Stackyard run, then retry.",
+          help: "Free the local TCP port or stop the Stackyard project using it, then retry.",
           message: "Stackyard could not allocate a service port.",
         }),
       );

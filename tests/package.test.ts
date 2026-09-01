@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { readLocator } from "../apps/daemon/src/locator.ts";
-import { parseRuntimeSnapshot } from "../packages/protocol/src/index.ts";
+import { parseProjectList } from "../packages/protocol/src/index.ts";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const packageRoot = join(repositoryRoot, "apps/cli");
@@ -120,17 +120,17 @@ test("the packed package works in an external Bun project", async () => {
     const runOutput = new Response(runProcess.stdout).text();
     const locator = await waitFor(() => readLocator(runtimeDirectory));
     daemonPid = locator.pid;
-    const snapshot = await waitFor(async () => {
+    const projectList = await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
-        const parsed = parseRuntimeSnapshot(await response.json());
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
+        const parsed = parseProjectList(await response.json());
         return parsed.success && parsed.output.projects.length === 1 ? parsed.output : undefined;
       } catch {
         return undefined;
       }
     });
-    expect(snapshot.projects[0]?.name).toBe("packed-run");
-    const endpoint = snapshot.projects[0]?.resources[0]?.endpoints[0]?.url;
+    expect(projectList.projects[0]?.name).toBe("packed-run");
+    const endpoint = projectList.projects[0]?.services[0]?.endpoints[0]?.url;
     expect(
       await waitFor(async () => {
         try {
@@ -151,8 +151,8 @@ test("the packed package works in an external Bun project", async () => {
     expect(await runOutput).toContain("packed-run is running. Dashboard:");
     await waitFor(async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
-        const parsed = parseRuntimeSnapshot(await response.json());
+        const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
+        const parsed = parseProjectList(await response.json());
         return parsed.success && parsed.output.projects.length === 0 ? true : undefined;
       } catch {
         return undefined;

@@ -27,12 +27,6 @@ export {
   parseDaemonClientMessage,
   parseDaemonServerMessage,
 } from "./runtime.ts";
-export type {
-  ResourceState,
-  RuntimeEndpoint,
-  RuntimeProject,
-  RuntimeResource,
-  RuntimeSnapshot,
-} from "./snapshot.ts";
-export { createRuntimeSnapshot, parseRuntimeSnapshot } from "./snapshot.ts";
+export type { Project, ProjectList, Service, ServiceEndpoint, ServiceState } from "./projects.ts";
+export { createProjectList, parseProjectList } from "./projects.ts";
 export { protocolVersion } from "./version.ts";

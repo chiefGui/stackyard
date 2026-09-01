@@ -1,4 +1,4 @@
-import { RunManager } from "@stackyard/control-plane";
+import { ProjectManager } from "@stackyard/control-plane";
 import {
   createDiagnostic,
   describeError,
@@ -34,7 +34,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
 
   const lock = lockResult.output;
   const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
-  const manager = createRunManager(options.diagnostics);
+  const manager = createProjectManager(options.diagnostics);
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   let shuttingDown = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -147,7 +147,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
   return exitCode;
 
   function scheduleIdleShutdown(): void {
-    if (sockets.size > 0 || manager.snapshot().projects.length > 0 || idleTimer) {
+    if (sockets.size > 0 || manager.listProjects().projects.length > 0 || idleTimer) {
       return;
     }
     idleTimer = setTimeout(finish, idleMilliseconds);
@@ -161,7 +161,7 @@ export interface ForegroundDaemonOptions {
 }
 
 export async function runForegroundDaemon(options: ForegroundDaemonOptions): Promise<number> {
-  const manager = createRunManager(options.diagnostics);
+  const manager = createProjectManager(options.diagnostics);
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   let shuttingDown = false;
   const started = startControlServer({
@@ -217,8 +217,8 @@ export async function runForegroundDaemon(options: ForegroundDaemonOptions): Pro
   return exitCode;
 }
 
-function createRunManager(diagnostics: DiagnosticSink): RunManager {
-  return new RunManager({
+function createProjectManager(diagnostics: DiagnosticSink): ProjectManager {
+  return new ProjectManager({
     createId: () => crypto.randomUUID(),
     ports: new BunPortAllocator(),
     processes: new BunProcessHost(diagnostics),
