@@ -12,6 +12,7 @@ const secondProjectRoot = join(repositoryRoot, "tests/fixtures/run-project-two")
 
 test("run owns a real project through the global daemon", async () => {
   const runtimeRoot = await mkdtemp(join(tmpdir(), "stackyard-run-"));
+  const dataDirectory = join(runtimeRoot, "data");
   let cli: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   let secondCli: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
   let daemonPid: number | undefined;
@@ -32,6 +33,7 @@ test("run owns a real project through the global daemon", async () => {
       env: {
         ...stringEnvironment(process.env),
         RUN_FIXTURE_VALUE: "first-run",
+        STACKYARD_DATA_DIR: dataDirectory,
         STACKYARD_RUNTIME_DIR: runtimeRoot,
       },
       stderr: "pipe",
@@ -95,6 +97,7 @@ test("run owns a real project through the global daemon", async () => {
       env: {
         ...stringEnvironment(process.env),
         RUN_FIXTURE_VALUE: "second-run",
+        STACKYARD_DATA_DIR: dataDirectory,
         STACKYARD_RUNTIME_DIR: runtimeRoot,
       },
       stderr: "pipe",

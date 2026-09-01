@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readPort } from "../apps/daemon/src/config.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
-import { startControlServer } from "../apps/daemon/src/server.ts";
+import { startControlServer, type RegisteredProjects } from "../apps/daemon/src/server.ts";
 import {
   ProjectManager,
   type PortAllocator,
@@ -20,6 +20,7 @@ import {
   createStartProjectMessage,
   createStopProjectMessage,
   parseDaemonServerMessage,
+  type RegisteredProject,
 } from "../packages/protocol/src/index.ts";
 
 describe("daemon configuration", () => {
@@ -135,6 +136,102 @@ describe("HTTP server", () => {
     } finally {
       socket?.close();
       await server.stop(true);
+    }
+  });
+
+  test("lists and mutates project registrations through authenticated requests", async () => {
+    const project: RegisteredProject = {
+      definition: { kind: "valid", spec: projectSpec() },
+      id: "registration-one",
+      root: resolve(import.meta.dir, "../project"),
+    };
+    const registrations: RegisteredProjects = {
+      list: () => [project],
+      async add(path) {
+        expect(path).toBe(project.root);
+        return success(project);
+      },
+      async remove(target) {
+        expect(target).toBe("registration-one");
+        return success(project);
+      },
+    };
+    const result = startTestServer(0, undefined, undefined, registrations);
+    if (!result.success) {
+      throw new Error("The test server could not start.");
+    }
+
+    const server = result.output;
+    try {
+      const unauthorized = await fetch(new URL("/api/v1/registrations", server.url));
+      expect(unauthorized.status).toBe(401);
+
+      const listed = await fetch(new URL("/api/v1/registrations", server.url), {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({ projects: [project], schemaVersion: 1 });
+
+      const unauthorizedMutation = await fetch(new URL("/api/v1/registrations", server.url), {
+        body: JSON.stringify({ path: project.root }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(unauthorizedMutation.status).toBe(401);
+
+      const added = await fetch(new URL("/api/v1/registrations", server.url), {
+        body: JSON.stringify({ path: project.root }),
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(added.status).toBe(200);
+      expect(await added.json()).toEqual(project);
+
+      const removed = await fetch(new URL("/api/v1/registrations", server.url), {
+        body: JSON.stringify({ target: "registration-one" }),
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "DELETE",
+      });
+      expect(removed.status).toBe(200);
+      expect(await removed.json()).toEqual(project);
+
+      const malformed = await fetch(new URL("/api/v1/registrations", server.url), {
+        body: "{}",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toMatchObject({ diagnostics: [{ code: "SYD3016" }] });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("does not advertise project registration when the daemon mode lacks it", async () => {
+    const result = startTestServer(0, undefined, undefined, null);
+    if (!result.success) {
+      throw new Error("The test server could not start.");
+    }
+
+    try {
+      const listed = await fetch(new URL("/api/v1/registrations", result.output.url));
+      expect(listed.status).toBe(404);
+
+      const added = await fetch(new URL("/api/v1/registrations", result.output.url), {
+        method: "POST",
+      });
+      expect(added.status).toBe(404);
+    } finally {
+      await result.output.stop(true);
     }
   });
 
@@ -472,8 +569,10 @@ function startTestServer(
     processes: new BunProcessHost({ report() {} }),
   }),
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
+  registrations: RegisteredProjects | null = emptyRegistrations,
 ) {
   return startControlServer({
+    ...(registrations ? { registrations } : {}),
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,
@@ -485,6 +584,18 @@ function startTestServer(
     token: "test-token",
   });
 }
+
+const emptyRegistrations = {
+  list(): readonly RegisteredProject[] {
+    return [];
+  },
+  async add() {
+    throw new Error("Unexpected registration add request.");
+  },
+  async remove() {
+    throw new Error("Unexpected registration remove request.");
+  },
+};
 
 function connectControl(serverUrl: URL, token: string): Promise<WebSocket> {
   return new Promise((resolveConnection, rejectConnection) => {

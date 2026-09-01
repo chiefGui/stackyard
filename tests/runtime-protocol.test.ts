@@ -4,10 +4,12 @@ import {
   createProjectStartedMessage,
   createProjectSpec,
   createProjectList,
+  createRegisteredProjectList,
   createStartProjectMessage,
   parseDaemonClientMessage,
   parseDaemonServerMessage,
   parseProjectList,
+  parseRegisteredProjectList,
 } from "../packages/protocol/src/index.ts";
 
 test("project lists round-trip as immutable public state", () => {
@@ -31,6 +33,57 @@ test("project lists round-trip as immutable public state", () => {
   expect(parsed).toEqual({ output: projectList, success: true });
   expect(Object.isFrozen(projectList)).toBeTrue();
   expect(Object.isFrozen(projectList.projects[0]?.services[0]?.endpoints)).toBeTrue();
+});
+
+test("registered projects round-trip with their evaluated definitions", () => {
+  const list = createRegisteredProjectList([
+    {
+      definition: { kind: "valid", spec: projectSpec() },
+      id: "registration-1",
+      root: "/project",
+    },
+  ]);
+
+  const parsed = parseRegisteredProjectList(JSON.parse(JSON.stringify(list)));
+
+  expect(parsed).toEqual({ output: list, success: true });
+  expect(list.schemaVersion).toBe(1);
+  expect(Object.isFrozen(list.projects[0]?.definition)).toBeTrue();
+});
+
+test("registered project lists reject unsupported schema versions", () => {
+  const parsed = parseRegisteredProjectList({ projects: [], schemaVersion: 2 });
+
+  expect(parsed.success).toBeFalse();
+  if (!parsed.success) {
+    expect(parsed.diagnostics[0].code).toBe("SYD1201");
+  }
+});
+
+test("registered project lists reject relative roots and duplicate registrations", () => {
+  const definition = { kind: "valid" as const, spec: projectSpec() };
+  const relative = parseRegisteredProjectList({
+    projects: [{ definition, id: "registration-1", root: "project" }],
+    schemaVersion: 1,
+  });
+  const duplicate = parseRegisteredProjectList({
+    projects: [
+      { definition, id: "registration-1", root: "/project-one" },
+      { definition, id: "registration-1", root: "/project-two" },
+    ],
+    schemaVersion: 1,
+  });
+  const duplicateRoot = parseRegisteredProjectList({
+    projects: [
+      { definition, id: "registration-1", root: "/project" },
+      { definition, id: "registration-2", root: "/project" },
+    ],
+    schemaVersion: 1,
+  });
+
+  expect(relative.success).toBeFalse();
+  expect(duplicate.success).toBeFalse();
+  expect(duplicateRoot.success).toBeFalse();
 });
 
 test("invalid project lists produce actionable protocol diagnostics", () => {

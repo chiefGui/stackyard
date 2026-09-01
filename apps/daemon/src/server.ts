@@ -1,6 +1,10 @@
 import { realpath } from "node:fs/promises";
 
-import { ProjectManager, type ManagedProject } from "@stackyard/control-plane";
+import {
+  ProjectManager,
+  type ManagedProject,
+  type ProjectRegistration,
+} from "@stackyard/control-plane";
 import {
   createDiagnostic,
   createDiagnosticReport,
@@ -16,6 +20,8 @@ import {
   createProjectStartedMessage,
   createProjectStoppedMessage,
   createProjectList,
+  createRegisteredProject,
+  createRegisteredProjectList,
   parseDaemonClientMessage,
   protocolVersion,
   type DaemonClientMessage,
@@ -24,7 +30,7 @@ import {
 import { superviseCleanup } from "./cleanup.ts";
 import { daemonHostname } from "./locator.ts";
 
-const maximumControlMessageBytes = 4 * 1024 * 1024;
+const maximumMessageBytes = 4 * 1024 * 1024;
 
 export interface ControlData {
   readonly cancellation: AbortController;
@@ -36,12 +42,19 @@ export interface ControlData {
 
 export type UnhandledRequestHandler = (request: Request, url: URL) => Promise<Response> | Response;
 
+export interface RegisteredProjects {
+  list(): readonly ProjectRegistration[];
+  add(path: string): Promise<Result<ProjectRegistration>>;
+  remove(target: string): Promise<Result<ProjectRegistration>>;
+}
+
 export interface ControlServerOptions {
   readonly diagnostics: DiagnosticSink;
   readonly instanceId: string;
   readonly isShuttingDown: () => boolean;
   readonly manager: ProjectManager;
   readonly port: number;
+  readonly registrations?: RegisteredProjects;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
   onActivity(): void;
@@ -93,6 +106,29 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
           return secureResponse("WebSocket upgrade required.", { status: 426 });
         }
 
+        if (url.pathname === "/api/v1/registrations") {
+          if (!options.registrations) {
+            return secureResponse("Not found.", { status: 404 });
+          }
+          if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
+            return secureResponse("Unauthorized.", { status: 401 });
+          }
+          if (request.method === "GET") {
+            return secureJson(
+              createRegisteredProjectList(
+                options.registrations.list().map((project) => createRegisteredProject(project)),
+              ),
+            );
+          }
+          if (request.method !== "POST" && request.method !== "DELETE") {
+            return secureResponse("Method not allowed.", { status: 405 });
+          }
+          if (options.isShuttingDown()) {
+            return secureResponse("Daemon is shutting down.", { status: 503 });
+          }
+          return handleRegistrationRequest(request, options.registrations);
+        }
+
         if (request.method !== "GET") {
           return secureResponse("Method not allowed.", { status: 405 });
         }
@@ -108,7 +144,7 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         return secureUnhandledResponse(options.handleUnhandledRequest(request, url));
       },
       hostname: daemonHostname,
-      maxRequestBodySize: maximumControlMessageBytes,
+      maxRequestBodySize: maximumMessageBytes,
       port: options.port,
       websocket: {
         close(socket) {
@@ -126,7 +162,7 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
             .finally(() => options.onClose(socket));
         },
         idleTimeout: 0,
-        maxPayloadLength: maximumControlMessageBytes,
+        maxPayloadLength: maximumMessageBytes,
         message(socket, payload) {
           if (options.isShuttingDown()) {
             socket.data.cancellation.abort();
@@ -176,6 +212,78 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
       }),
     );
   }
+}
+
+async function handleRegistrationRequest(
+  request: Request,
+  registrations: RegisteredProjects,
+): Promise<Response> {
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return registrationFailureResponse(invalidRegistrationRequest(), 400);
+  }
+
+  const field = request.method === "POST" ? "path" : "target";
+  const value = singleStringProperty(input, field);
+  if (!value) {
+    return registrationFailureResponse(invalidRegistrationRequest(), 400);
+  }
+
+  const result =
+    request.method === "POST" ? await registrations.add(value) : await registrations.remove(value);
+  if (!result.success) {
+    const status = registrationFailureStatus(result.diagnostics[0]?.code);
+    return registrationFailureResponse(result.diagnostics, status);
+  }
+  return secureJson(createRegisteredProject(result.output));
+}
+
+function registrationFailureResponse(
+  diagnostics: Parameters<typeof createDiagnosticReport>[0],
+  status: number,
+): Response {
+  return secure(
+    Response.json(createDiagnosticReport(diagnostics), {
+      headers: { "cache-control": "no-store" },
+      status,
+    }),
+  );
+}
+
+function registrationFailureStatus(code: string | undefined): number {
+  if (code === "SYD4100") {
+    return 404;
+  }
+  if (code === "SYD4101" || code === "SYD4102") {
+    return 409;
+  }
+  return code === "SYD2000" || code === "SYD2006" ? 400 : 500;
+}
+
+function invalidRegistrationRequest() {
+  return [
+    createDiagnostic({
+      code: "SYD3016",
+      help: "Update Stackyard so the CLI and daemon use the same protocol, then retry.",
+      message: "The daemon received an invalid project registration request.",
+    }),
+  ] as const;
+}
+
+function singleStringProperty(value: unknown, field: string): string | undefined {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    Object.hasOwn(value, field)
+  ) {
+    const candidate = Reflect.get(value, field);
+    return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
+  }
+  return undefined;
 }
 
 export async function closeControlServer(

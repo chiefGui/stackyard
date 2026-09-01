@@ -2,6 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ProjectManager,
+  ProjectRegistry,
+  type ProjectDefinitionLoad,
+  type ProjectDefinitionObservation,
+  type ProjectRegistrationRecord,
+  type ProjectRegistrationStore,
   type PortAllocator,
   type PortLease,
   type ProcessExit,
@@ -434,6 +439,70 @@ describe("project manager", () => {
   });
 });
 
+describe("project registry", () => {
+  test("persists canonical roots and refreshes definitions without re-registering", async () => {
+    const store = new FakeRegistrationStore();
+    const observer = new FakeDefinitionObserver();
+    let definition: ProjectDefinitionLoad = { kind: "valid", spec: projectSpec() };
+    let active = false;
+    const opened = await ProjectRegistry.open({
+      canonicalize: async () => success("/canonical/project"),
+      createId: () => "registration-one",
+      diagnostics: { report() {} },
+      isActive: () => active,
+      loadDefinition: async () => definition,
+      observer,
+      store,
+    });
+    if (!opened.success) {
+      throw new Error("Expected the registry to open.");
+    }
+    const registry = opened.output;
+
+    const added = await registry.add("/input/project");
+    expect(added.success).toBeTrue();
+    expect(store.records).toEqual([{ id: "registration-one", root: "/canonical/project" }]);
+    expect(registry.list()[0]?.definition.kind).toBe("valid");
+
+    definition = {
+      diagnostics: [createDiagnostic({ code: "SYD4996", message: "Expected invalid definition." })],
+      kind: "invalid",
+    };
+    observer.change("/canonical/project");
+    await tick();
+    await tick();
+
+    expect(registry.list()[0]).toMatchObject({
+      definition: {
+        diagnostics: [{ code: "SYD4996" }],
+        kind: "invalid",
+        lastValidSpec: { name: "demo" },
+      },
+    });
+    expect((await registry.add("/input/project")).success).toBeTrue();
+    expect(store.saveCount).toBe(1);
+
+    active = true;
+    const refused = await registry.remove("registration-one");
+    expect(refused.success).toBeFalse();
+    if (!refused.success) {
+      expect(refused.diagnostics[0].code).toBe("SYD4102");
+    }
+    active = false;
+    expect((await registry.remove("registration-one")).success).toBeTrue();
+    expect(store.records).toEqual([]);
+    expect(observer.closedRoots).toEqual(["/canonical/project"]);
+    await registry.close();
+
+    const closed = await registry.add("/input/project");
+    expect(closed.success).toBeFalse();
+    if (!closed.success) {
+      expect(closed.diagnostics[0].code).toBe("SYD4105");
+    }
+    expect(store.saveCount).toBe(2);
+  });
+});
+
 function createManager(ports: PortAllocator, processes: ProcessHost): ProjectManager {
   let id = 0;
   return new ProjectManager({
@@ -441,6 +510,41 @@ function createManager(ports: PortAllocator, processes: ProcessHost): ProjectMan
     ports,
     processes,
   });
+}
+
+class FakeRegistrationStore implements ProjectRegistrationStore {
+  records: readonly ProjectRegistrationRecord[] = [];
+  saveCount = 0;
+
+  async load() {
+    return success(this.records);
+  }
+
+  async save(records: readonly ProjectRegistrationRecord[]) {
+    this.saveCount += 1;
+    this.records = records;
+    return success(undefined);
+  }
+}
+
+class FakeDefinitionObserver {
+  readonly callbacks = new Map<string, () => void>();
+  readonly closedRoots: string[] = [];
+
+  observe(root: string, onChange: () => void) {
+    this.callbacks.set(root, onChange);
+    const observation: ProjectDefinitionObservation = {
+      close: () => {
+        this.closedRoots.push(root);
+        this.callbacks.delete(root);
+      },
+    };
+    return success(observation);
+  }
+
+  change(root: string): void {
+    this.callbacks.get(root)?.();
+  }
 }
 
 function startProject(

@@ -15,8 +15,12 @@ import {
 
 import packageManifest from "../package.json" with { type: "json" };
 import { runCli } from "./cli.ts";
+import { createAddCommand } from "./add.ts";
 import { createInspectCommand } from "./inspect.ts";
+import { DaemonRegistrationClient } from "./registration-client.ts";
+import { createRemoveCommand } from "./remove.ts";
 import { createRunCommand } from "./run.ts";
+import { createStatusCommand } from "./status.ts";
 
 const cliEntrypoint = fileURLToPath(import.meta.url);
 const cliArguments = Bun.argv.slice(2);
@@ -43,21 +47,29 @@ function runDaemon(): Promise<number> {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
     configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
-  const configuredRuntimeDirectory = Bun.env.STACKYARD_RUNTIME_DIR;
-  if (configuredRuntimeDirectory) {
-    return runManagedDaemon({
-      dashboardWebDirectory,
-      diagnostics,
-      runtimeDirectory: configuredRuntimeDirectory,
-    });
-  }
-  return runManagedDaemon({ dashboardWebDirectory, diagnostics });
+  return runManagedDaemon({
+    dashboardWebDirectory,
+    diagnostics,
+    evaluatorEntrypoint: cliEntrypoint,
+  });
 }
 
 function runPublicCli(): Promise<number> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
+  const registrationClient = new DaemonRegistrationClient({
+    daemonEntrypoint: cliEntrypoint,
+    dashboardWebDirectory,
+  });
   return runCli(cliArguments, {
     commands: [
+      createAddCommand({
+        client: registrationClient,
+        currentDirectory: process.cwd(),
+        diagnostics,
+        writeOutput(output) {
+          process.stdout.write(output);
+        },
+      }),
       createInspectCommand({
         diagnostics,
         loadProject,
@@ -76,6 +88,21 @@ function runPublicCli(): Promise<number> {
         writeError(output) {
           process.stderr.write(output);
         },
+        writeOutput(output) {
+          process.stdout.write(output);
+        },
+      }),
+      createRemoveCommand({
+        client: registrationClient,
+        currentDirectory: process.cwd(),
+        diagnostics,
+        writeOutput(output) {
+          process.stdout.write(output);
+        },
+      }),
+      createStatusCommand({
+        client: registrationClient,
+        diagnostics,
         writeOutput(output) {
           process.stdout.write(output);
         },

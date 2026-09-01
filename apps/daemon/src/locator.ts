@@ -1,5 +1,4 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
@@ -10,6 +9,8 @@ import {
   type Result,
 } from "@stackyard/diagnostics";
 import { protocolVersion } from "@stackyard/protocol";
+
+import { resolveStackyardDirectories } from "./directories.ts";
 
 export const internalDaemonCommand = "__stackyard_daemon__";
 export const daemonHostname = "127.0.0.1";
@@ -48,23 +49,11 @@ export function daemonUrl(locator: Pick<DaemonLocator, "port">): string {
   return `http://${daemonHostname}:${locator.port}/`;
 }
 
-export function runtimeDirectory(override?: string): string {
-  const configured = override ?? process.env.STACKYARD_RUNTIME_DIR;
-  if (configured) {
-    return resolve(configured);
-  }
-
-  if (process.platform === "win32") {
-    return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Stackyard");
-  }
-
-  return process.env.XDG_RUNTIME_DIR
-    ? join(process.env.XDG_RUNTIME_DIR, "stackyard")
-    : join(homedir(), ".stackyard", "run");
-}
-
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result<DaemonLocator>> {
-  const directory = runtimeDirectory(options.runtimeDirectory);
+  const directories = resolveStackyardDirectories(
+    options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
+  );
+  const directory = directories.runtime;
   await mkdir(directory, { mode: 0o700, recursive: true });
 
   const current = await readLocator(directory);
@@ -97,6 +86,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result
     );
   }
   const environment = stringEnvironment(process.env);
+  environment.STACKYARD_DATA_DIR = directories.data;
   environment.STACKYARD_DIAGNOSTICS_PATH = diagnosticsPath;
   environment.STACKYARD_RUNTIME_DIR = directory;
   environment.STACKYARD_DASHBOARD_WEB_DIR = resolve(options.dashboardWebDirectory);
