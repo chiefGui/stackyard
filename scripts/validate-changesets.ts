@@ -1,4 +1,5 @@
 type ReleaseType = "major" | "minor" | "patch";
+type ConventionalType = "deps" | "docs" | "feat" | "fix" | "perf" | "refactor";
 
 type ChangesetRelease = {
   name: string;
@@ -18,6 +19,17 @@ const releasePattern = /^(?:"([^"]+)"|'([^']+)'|([^:]+)):\s*(major|minor|patch)$
 
 function isReleaseType(value: string | undefined): value is ReleaseType {
   return value === "major" || value === "minor" || value === "patch";
+}
+
+function isConventionalType(value: string | undefined): value is ConventionalType {
+  return (
+    value === "deps" ||
+    value === "docs" ||
+    value === "feat" ||
+    value === "fix" ||
+    value === "perf" ||
+    value === "refactor"
+  );
 }
 
 export function parseChangeset(contents: string): ParsedChangeset {
@@ -44,7 +56,12 @@ export function parseChangeset(contents: string): ParsedChangeset {
       throw new Error(`Invalid release entry: ${line}`);
     }
 
+    const name = match[1] ?? match[2] ?? match[3];
     const type = match[4];
+
+    if (!name) {
+      throw new Error(`Invalid package name in release entry: ${line}`);
+    }
 
     if (!isReleaseType(type)) {
       throw new Error(`Invalid release type: ${type}`);
@@ -52,7 +69,7 @@ export function parseChangeset(contents: string): ParsedChangeset {
 
     return [
       {
-        name: (match[1] ?? match[2] ?? match[3]).trim(),
+        name: name.trim(),
         type,
       },
     ];
@@ -70,7 +87,7 @@ export function parseChangeset(contents: string): ParsedChangeset {
 export function getConventionalSummary(summary: string): {
   breaking: boolean;
   line: string;
-  type: string;
+  type: ConventionalType;
 } {
   const line = summary
     .split("\n")
@@ -89,10 +106,16 @@ export function getConventionalSummary(summary: string): {
     );
   }
 
+  const type = match[1];
+
+  if (!isConventionalType(type)) {
+    throw new Error(`Unsupported Changeset type: ${type}`);
+  }
+
   return {
     breaking: match[2] === "!",
     line,
-    type: match[1],
+    type,
   };
 }
 
