@@ -33,6 +33,11 @@
 - In commit bodies, state the problem in one or two sentences, then explain the fix.
 - Open every pull request description with a short, plain-language value pitch: in one or two sentences, explain what the change makes possible and why it matters. Keep implementation details out of the pitch.
 
+## Releases
+
+- Every non-release pull request needs a Changeset; use an empty one when package users are unaffected.
+- Write summaries as lowercase, imperative Conventional Commit subjects without a trailing period: `feat:` → minor; `fix:`, `perf:`, `refactor:`, `docs:`, `deps:` → patch; `<type>!:` → minor on `0.x`, major from `1.0.0`.
+
 ## Verifying
 
 - Run the narrowest checks that cover the change. Repo-wide checks require explicit user approval.
