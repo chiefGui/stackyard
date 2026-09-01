@@ -6,6 +6,7 @@ const started = await new BunProcessHost({ report() {} }).start({
   args: [resolve(import.meta.dir, "process-tree.ts")],
   env: { ...stringEnvironment(process.env) },
   executable: process.execPath,
+  logs: { write() {} },
   projectRoot: resolve(import.meta.dir, "../.."),
   workingDirectory: ".",
 });

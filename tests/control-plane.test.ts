@@ -7,9 +7,15 @@ import {
   type ProcessExit,
   type ProcessHandle,
   type ProcessHost,
+  type ProcessLogLine,
   type ProcessStart,
 } from "../packages/control-plane/src/index.ts";
-import { createDiagnostic, failure, success } from "../packages/diagnostics/src/index.ts";
+import {
+  createDiagnostic,
+  failure,
+  success,
+  type Result,
+} from "../packages/diagnostics/src/index.ts";
 import { createProjectSpec, type ProjectSpec } from "../packages/protocol/src/index.ts";
 
 describe("project manager", () => {
@@ -239,7 +245,13 @@ describe("project manager", () => {
   test("rolls back processes when their owner disconnects during startup", async () => {
     const ports = new FakePorts();
     const cancellation = new AbortController();
-    const processes = new FakeProcesses(-1, () => cancellation.abort());
+    let processes!: FakeProcesses;
+    processes = new FakeProcesses(-1, () => {
+      processes.starts[0]?.logs.write([
+        { observedAt: 1, stream: "stdout", text: "started before cancellation" },
+      ]);
+      cancellation.abort();
+    });
     const manager = createManager(ports, processes);
 
     const started = await manager.start({
@@ -258,6 +270,10 @@ describe("project manager", () => {
     expect(processes.handles[0]?.stopCount).toBe(1);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
     expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listRecentProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
+      "exited",
+      "failed",
+    ]);
   });
 
   test("stops endpoint allocation promptly when startup is canceled", async () => {
@@ -312,6 +328,109 @@ describe("project manager", () => {
     expect((await stopping).success).toBeTrue();
     expect(firstHandle.stopCount).toBe(2);
     expect(manager.listProjects().projects).toEqual([]);
+  });
+
+  test("uses the live resource feed for failure diagnostics", async () => {
+    const processes = new FakeProcesses();
+    const manager = createManager(new FakePorts(), processes);
+    const started = await startProject(manager, "/project", projectSpec());
+    if (!started.success) {
+      throw new Error("Expected project to start.");
+    }
+
+    processes.handles[0]?.write({
+      observedAt: 1,
+      stream: "stderr",
+      text: "database connection failed",
+    });
+    processes.handles[0]?.exit(7);
+    processes.handles[1]?.exit(0);
+
+    const completion = await started.output.completed;
+    expect(completion.kind).toBe("natural");
+    if (completion.kind === "natural" && !completion.result.success) {
+      expect(completion.result.diagnostics[0]).toMatchObject({
+        code: "SYD4006",
+        notes: [expect.stringContaining("database connection failed")],
+      });
+    }
+  });
+
+  test("keeps stopped resource logs available without keeping the project active", async () => {
+    const processes = new FakeProcesses();
+    const manager = createManager(new FakePorts(), processes);
+    const started = await startProject(manager, "/project", projectSpec());
+    if (!started.success) {
+      throw new Error("Expected project to start.");
+    }
+    processes.handles[0]?.write({ observedAt: 1, stream: "stdout", text: "listening" });
+
+    expect((await started.output.stop()).success).toBeTrue();
+
+    expect(manager.listProjects().projects).toEqual([]);
+    const recent = manager.listRecentProjects();
+    expect(recent.projects).toMatchObject([{ id: started.output.id }]);
+    expect(Object.isFrozen(recent.projects[0])).toBeTrue();
+    expect(Object.isFrozen(recent.projects[0]?.services)).toBeTrue();
+    expect(manager.getResourceLogs(started.output.id, "api")?.snapshot()).toMatchObject({
+      entries: [{ sequence: 1, text: "listening" }],
+      status: "complete",
+    });
+  });
+
+  test("publishes output capture failures through the feed and project completion", async () => {
+    const processes = new FakeProcesses();
+    const manager = createManager(new FakePorts(), processes);
+    const started = await startProject(manager, "/project", projectSpec());
+    if (!started.success) {
+      throw new Error("Expected project to start.");
+    }
+    const captureFailure = failure(
+      createDiagnostic({ code: "SYD4008", message: "Expected output capture failure." }),
+    );
+
+    processes.handles[0]?.exit(0, captureFailure);
+    processes.handles[1]?.exit(0);
+
+    const completion = await started.output.completed;
+    expect(completion).toMatchObject({
+      kind: "natural",
+      result: { diagnostics: [{ code: "SYD4008" }], success: false },
+    });
+    expect(manager.getResourceLogs(started.output.id, "api")?.snapshot()).toMatchObject({
+      completion: { diagnostics: [{ code: "SYD4008" }], success: false },
+      status: "failed",
+    });
+  });
+
+  test("bounds recent projects and makes eviction observable", async () => {
+    const ports = new FakePorts();
+    const processes = new FakeProcesses();
+    let id = 0;
+    const manager = new ProjectManager({
+      createId: () => `project-${++id}`,
+      ports,
+      processes,
+      recentProjectLimit: 1,
+    });
+    const first = await startProject(manager, "/first", projectSpec());
+    if (!first.success) {
+      throw new Error("Expected first project to start.");
+    }
+    const firstLogs = manager.getResourceLogs(first.output.id, "api");
+    expect((await first.output.stop()).success).toBeTrue();
+
+    const second = await startProject(manager, "/second", projectSpec());
+    if (!second.success) {
+      throw new Error("Expected second project to start.");
+    }
+    expect((await second.output.stop()).success).toBeTrue();
+
+    expect(manager.listRecentProjects().projects.map(({ id: projectId }) => projectId)).toEqual([
+      second.output.id,
+    ]);
+    expect(manager.getResourceLogs(first.output.id, "api")).toBeUndefined();
+    expect(firstLogs?.snapshot().status).toBe("removed");
   });
 });
 
@@ -428,7 +547,7 @@ class FakeProcesses implements ProcessHost {
       return failure(createDiagnostic({ code: "SYD4999", message: "Expected start failure." }));
     }
 
-    const handle = new FakeHandle(index + 1);
+    const handle = new FakeHandle(index + 1, input);
     this.handles.push(handle);
     this.afterStart?.();
     return success<ProcessHandle>(handle);
@@ -438,7 +557,6 @@ class FakeProcesses implements ProcessHost {
 class FakeHandle implements ProcessHandle {
   readonly exited: Promise<ProcessExit>;
   readonly leaderExited: Promise<number>;
-  readonly output = Promise.resolve(success({ stderr: "", stdout: "" }));
   stopGate: Promise<void> | undefined;
   stopFailures = 0;
   stopExitCode = 0;
@@ -446,7 +564,10 @@ class FakeHandle implements ProcessHandle {
   #exit!: (exit: ProcessExit) => void;
   #leaderExit!: (exitCode: number) => void;
 
-  constructor(readonly pid: number) {
+  constructor(
+    readonly pid: number,
+    private readonly input: ProcessStart,
+  ) {
     this.exited = new Promise((resolve) => {
       this.#exit = resolve;
     });
@@ -455,17 +576,21 @@ class FakeHandle implements ProcessHandle {
     });
   }
 
-  exit(code: number): void {
+  exit(code: number, logCapture: Result<void> = success(undefined)): void {
     this.exitLeader(code);
-    this.settle(code);
+    this.settle(code, logCapture);
   }
 
   exitLeader(code: number): void {
     this.#leaderExit(code);
   }
 
-  settle(code: number): void {
-    this.#exit({ cleanup: success(undefined), exitCode: code });
+  settle(code: number, logCapture: Result<void> = success(undefined)): void {
+    this.#exit({ cleanup: success(undefined), exitCode: code, logCapture });
+  }
+
+  write(...entries: ProcessLogLine[]): void {
+    this.input.logs.write(entries);
   }
 
   async stop() {

@@ -12,17 +12,16 @@ import type {
   ProcessExit,
   ProcessHandle,
   ProcessHost,
-  ProcessOutput,
   ProcessStart,
 } from "@stackyard/control-plane";
 
 import { superviseCleanup } from "./cleanup.ts";
+import { captureProcessLogs } from "./process-output.ts";
 import { createWindowsJob, type WindowsJob } from "./windows-job.ts";
 
-/* oxlint-disable eslint/no-await-in-loop -- Streams and process-group liveness are consumed sequentially. */
+/* oxlint-disable eslint/no-await-in-loop -- Process-group liveness checks are deliberately sequential. */
 
 const gracefulShutdownMilliseconds = 2_000;
-const outputLimitBytes = 16 * 1024;
 const windowsStartVariable = "STACKYARD_PROCESS_START";
 const windowsServiceHost = `
 const authorization = await Bun.stdin.text();
@@ -62,6 +61,8 @@ export class BunProcessHost implements ProcessHost {
   constructor(private readonly diagnostics: DiagnosticSink) {}
 
   async start(input: ProcessStart): Promise<Result<ProcessHandle>> {
+    let logCapture: Promise<Result<void>> | undefined;
+    let cancelLogCapture: (() => void) | undefined;
     try {
       const environment = { ...input.env };
       if (process.platform === "win32") {
@@ -90,25 +91,14 @@ export class BunProcessHost implements ProcessHost {
         stdout: "pipe",
         windowsHide: true,
       });
+      const captureController = new AbortController();
+      cancelLogCapture = () => captureController.abort();
+      const capture = captureProcessLogs(subprocess.stdout, subprocess.stderr, input.logs, {
+        signal: captureController.signal,
+      });
+      logCapture = capture;
       const windowsJob = await ownWindowsProcess(subprocess);
       await startOwnedProcess(subprocess, windowsJob);
-      const output = Promise.all([
-        captureTail(subprocess.stdout, outputLimitBytes),
-        captureTail(subprocess.stderr, outputLimitBytes),
-      ])
-        .then<Result<ProcessOutput>>(([stdout, stderr]) =>
-          success(Object.freeze({ stderr, stdout })),
-        )
-        .catch((error: unknown): Result<ProcessOutput> =>
-          failure(
-            createDiagnostic({
-              code: "SYD4008",
-              help: "Restart the service. If the problem persists, check its output streams.",
-              message: "Recent service output could not be captured.",
-              notes: [describeError(error)],
-            }),
-          ),
-        );
       let stopping: Promise<Result<void>> | undefined;
 
       const stop = (): Promise<Result<void>> => {
@@ -130,15 +120,20 @@ export class BunProcessHost implements ProcessHost {
         Object.freeze({
           exited: subprocess.exited.then(async (exitCode): Promise<ProcessExit> => {
             await superviseCleanup(stop, this.diagnostics);
-            return Object.freeze({ cleanup: success(undefined), exitCode });
+            return Object.freeze({
+              cleanup: success(undefined),
+              exitCode,
+              logCapture: await capture,
+            });
           }),
           leaderExited: subprocess.exited,
-          output,
           pid: subprocess.pid,
           stop,
         }),
       );
     } catch (error) {
+      cancelLogCapture?.();
+      await logCapture;
       return failure(
         createDiagnostic({
           code: "SYD4003",
@@ -324,30 +319,6 @@ function isProcessGroupAlive(pid: number): boolean {
   } catch (error) {
     return isProcessError(error) && error.code === "EPERM";
   }
-}
-
-async function captureTail(stream: ReadableStream<Uint8Array>, limit: number): Promise<string> {
-  const reader = stream.getReader();
-  let tail: Uint8Array = new Uint8Array();
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) {
-      break;
-    }
-    tail = appendTail(tail, chunk.value, limit);
-  }
-  return new TextDecoder().decode(tail);
-}
-
-function appendTail(current: Uint8Array, chunk: Uint8Array, limit: number): Uint8Array {
-  if (chunk.byteLength >= limit) {
-    return chunk.slice(chunk.byteLength - limit);
-  }
-  const retained = Math.min(current.byteLength, limit - chunk.byteLength);
-  const output = new Uint8Array(retained + chunk.byteLength);
-  output.set(current.subarray(current.byteLength - retained));
-  output.set(chunk, retained);
-  return output;
 }
 
 function isProcessError(error: unknown): error is NodeJS.ErrnoException {
