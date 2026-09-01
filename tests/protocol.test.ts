@@ -239,7 +239,11 @@ describe("ProjectSpec", () => {
     expect(result.success).toBeFalse();
     if (!result.success) {
       expect(result.diagnostics.map(({ code }) => code)).toEqual(["SYD1010", "SYD1011", "SYD1012"]);
-      expect(result.diagnostics[0].path).toEqual([
+      const [endpointDiagnostic, portDiagnostic, environmentDiagnostic] = result.diagnostics;
+      if (!portDiagnostic || !environmentDiagnostic) {
+        throw new Error("Expected three environment collision diagnostics.");
+      }
+      expect(endpointDiagnostic.path).toEqual([
         "resources",
         "api",
         "endpoints",
@@ -247,8 +251,8 @@ describe("ProjectSpec", () => {
         "port",
         "env",
       ]);
-      expect(result.diagnostics[1].path).toEqual(["resources", "api", "env", "Port"]);
-      expect(result.diagnostics[2].path).toEqual(["resources", "api", "env", "foo"]);
+      expect(portDiagnostic.path).toEqual(["resources", "api", "env", "Port"]);
+      expect(environmentDiagnostic.path).toEqual(["resources", "api", "env", "foo"]);
     }
   });
 });

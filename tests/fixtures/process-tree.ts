@@ -8,15 +8,15 @@ if (mode === "child") {
   });
   console.log("ready");
 } else {
-  const child = Bun.spawn({
+  const childOptions = {
     cmd: [process.execPath, import.meta.path, "child"],
     env: process.env,
-    stderr: "ignore",
-    stdin: "ignore",
-    stdout: mode === "orphan" ? "pipe" : "ignore",
+    stderr: "ignore" as const,
+    stdin: "ignore" as const,
     windowsHide: true,
-  });
+  };
   if (mode === "orphan") {
+    const child = Bun.spawn({ ...childOptions, stdout: "pipe" });
     const reader = child.stdout.getReader();
     await reader.read();
     await reader.cancel();
@@ -24,6 +24,7 @@ if (mode === "child") {
     child.unref();
     process.stdout.write(`${child.pid}\n`);
   } else {
+    Bun.spawn({ ...childOptions, stdout: "ignore" });
     setInterval(() => {}, 1_000);
   }
 }

@@ -48,10 +48,14 @@ test("run owns a real project through the global daemon", async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/snapshot`);
         const parsed = parseRuntimeSnapshot(await response.json());
-        const resource = parsed.success ? parsed.output.projects[0]?.resources[0] : undefined;
-        return resource?.state === "running" && resource.endpoints.length > 0
-          ? parsed.output
-          : undefined;
+        if (!parsed.success) {
+          return undefined;
+        }
+        const resource = parsed.output.projects[0]?.resources[0];
+        if (resource?.state !== "running" || resource.endpoints.length === 0) {
+          return undefined;
+        }
+        return parsed.output;
       } catch {
         return undefined;
       }
