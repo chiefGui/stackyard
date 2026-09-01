@@ -4,101 +4,92 @@ import { deepFreeze } from "./freeze.ts";
 import { isLoopbackHttpUrl } from "./loopback-url.ts";
 import { protocolVersion } from "./version.ts";
 
-export type ResourceState = "starting" | "running" | "stopping" | "exited" | "failed";
+export type ServiceState = "starting" | "running" | "stopping" | "exited" | "failed";
 
-export interface RuntimeEndpoint {
+export interface ServiceEndpoint {
   readonly name: string;
   readonly url: string;
 }
 
-export interface RuntimeResource {
-  readonly endpoints: readonly RuntimeEndpoint[];
+export interface Service {
+  readonly endpoints: readonly ServiceEndpoint[];
   readonly exitCode?: number | undefined;
   readonly name: string;
-  readonly state: ResourceState;
+  readonly state: ServiceState;
 }
 
-export interface RuntimeProject {
+export interface Project {
   readonly id: string;
   readonly name: string;
-  readonly resources: readonly RuntimeResource[];
+  readonly services: readonly Service[];
 }
 
-export interface RuntimeSnapshot {
-  readonly projects: readonly RuntimeProject[];
-  readonly revision: number;
+export interface ProjectList {
+  readonly projects: readonly Project[];
   readonly schemaVersion: typeof protocolVersion;
 }
 
-export function createRuntimeSnapshot(
-  input: Omit<RuntimeSnapshot, "schemaVersion">,
-): RuntimeSnapshot {
+export function createProjectList(input: Omit<ProjectList, "schemaVersion">): ProjectList {
   return deepFreeze({ ...input, schemaVersion: protocolVersion });
 }
 
-export function parseRuntimeSnapshot(input: unknown): Result<RuntimeSnapshot> {
-  if (!isPlainObject(input) || !hasExactKeys(input, ["projects", "revision", "schemaVersion"])) {
-    return invalidSnapshot();
+export function parseProjectList(input: unknown): Result<ProjectList> {
+  if (!isPlainObject(input) || !hasExactKeys(input, ["projects", "schemaVersion"])) {
+    return invalidProjectList();
   }
-  if (
-    input.schemaVersion !== protocolVersion ||
-    !isNonNegativeInteger(input.revision) ||
-    !Array.isArray(input.projects)
-  ) {
-    return invalidSnapshot();
+  if (input.schemaVersion !== protocolVersion || !Array.isArray(input.projects)) {
+    return invalidProjectList();
   }
 
-  const projects: RuntimeProject[] = [];
+  const projects: Project[] = [];
   for (const project of input.projects) {
-    const parsed = parseRuntimeProject(project);
+    const parsed = parseProject(project);
     if (!parsed) {
-      return invalidSnapshot();
+      return invalidProjectList();
     }
     projects.push(parsed);
   }
 
-  return success(
-    deepFreeze({ projects, revision: input.revision, schemaVersion: protocolVersion }),
-  );
+  return success(deepFreeze({ projects, schemaVersion: protocolVersion }));
 }
 
-function parseRuntimeProject(input: unknown): RuntimeProject | undefined {
+function parseProject(input: unknown): Project | undefined {
   if (
     !isPlainObject(input) ||
-    !hasExactKeys(input, ["id", "name", "resources"]) ||
+    !hasExactKeys(input, ["id", "name", "services"]) ||
     !isNonEmptyString(input.id) ||
     !isNonEmptyString(input.name) ||
-    !Array.isArray(input.resources)
+    !Array.isArray(input.services)
   ) {
     return undefined;
   }
 
-  const resources: RuntimeResource[] = [];
-  for (const resource of input.resources) {
-    const parsed = parseRuntimeResource(resource);
+  const services: Service[] = [];
+  for (const service of input.services) {
+    const parsed = parseService(service);
     if (!parsed) {
       return undefined;
     }
-    resources.push(parsed);
+    services.push(parsed);
   }
 
-  return { id: input.id, name: input.name, resources };
+  return { id: input.id, name: input.name, services };
 }
 
-function parseRuntimeResource(input: unknown): RuntimeResource | undefined {
+function parseService(input: unknown): Service | undefined {
   if (
     !isPlainObject(input) ||
     !hasExactKeys(input, ["endpoints", "name", "state"], ["exitCode"]) ||
     !Array.isArray(input.endpoints) ||
     !isNonEmptyString(input.name) ||
-    !isResourceState(input.state) ||
+    !isServiceState(input.state) ||
     (input.exitCode !== undefined &&
       (typeof input.exitCode !== "number" || !Number.isSafeInteger(input.exitCode)))
   ) {
     return undefined;
   }
 
-  const endpoints: RuntimeEndpoint[] = [];
+  const endpoints: ServiceEndpoint[] = [];
   for (const endpoint of input.endpoints) {
     if (
       !isPlainObject(endpoint) ||
@@ -139,11 +130,7 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isResourceState(value: unknown): value is ResourceState {
+function isServiceState(value: unknown): value is ServiceState {
   return (
     value === "starting" ||
     value === "running" ||
@@ -153,12 +140,12 @@ function isResourceState(value: unknown): value is ResourceState {
   );
 }
 
-function invalidSnapshot(): Result<RuntimeSnapshot> {
+function invalidProjectList(): Result<ProjectList> {
   return failure(
     createDiagnostic({
       code: "SYD1200",
       help: "Update Stackyard so the dashboard and daemon use the same protocol, then retry.",
-      message: "Runtime snapshot is invalid.",
+      message: "Project list is invalid.",
     }),
   );
 }

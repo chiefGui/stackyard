@@ -5,7 +5,7 @@ import type { UnhandledRequestHandler } from "./server.ts";
 export function createDashboardWebHandler(directory: string): UnhandledRequestHandler {
   const root = resolve(directory);
 
-  return async (_request, url) => {
+  return async (request, url) => {
     let decoded: string;
     try {
       decoded = decodeURIComponent(url.pathname);
@@ -25,15 +25,37 @@ export function createDashboardWebHandler(directory: string): UnhandledRequestHa
       return new Response("Not found.", { status: 404 });
     }
 
-    const file = Bun.file(filePath);
-    if (!(await file.exists())) {
-      return new Response("Not found.", { status: 404 });
+    const response = await fileResponse(filePath);
+    if (response) {
+      return response;
     }
 
-    let cacheControl = "public, max-age=31536000, immutable";
-    if (extname(filePath) === ".html") {
-      cacheControl = "no-cache";
+    if (isAppNavigation(request, decoded)) {
+      const indexResponse = await fileResponse(join(root, "index.html"));
+      if (indexResponse) {
+        return indexResponse;
+      }
     }
-    return new Response(file, { headers: { "cache-control": cacheControl } });
+    return new Response("Not found.", { status: 404 });
   };
+}
+
+async function fileResponse(filePath: string): Promise<Response | undefined> {
+  const file = Bun.file(filePath);
+  if (!(await file.exists())) {
+    return undefined;
+  }
+
+  const cacheControl =
+    extname(filePath) === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
+  return new Response(file, { headers: { "cache-control": cacheControl } });
+}
+
+function isAppNavigation(request: Request, path: string): boolean {
+  return (
+    request.method === "GET" &&
+    path !== "/api" &&
+    !path.startsWith("/api/") &&
+    request.headers.get("accept")?.includes("text/html") === true
+  );
 }

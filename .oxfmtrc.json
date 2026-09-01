@@ -1,6 +1,12 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["bun.lock", "coverage/**", "dist/**", "node_modules/**"],
+  "ignorePatterns": [
+    "apps/dashboard-web/src/routeTree.gen.ts",
+    "bun.lock",
+    "coverage/**",
+    "dist/**",
+    "node_modules/**"
+  ],
   "printWidth": 100,
   "semi": true,
   "singleQuote": false,

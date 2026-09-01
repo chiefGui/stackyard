@@ -10,9 +10,16 @@ export type {
   ProcessOutput,
   ProcessStart,
   ProjectCompletion,
-  RunManagerOptions,
+  ProjectManagerOptions,
   StartProjectFailure,
   StartProjectInput,
   StartProjectResult,
-} from "./run-manager.ts";
-export { RunManager } from "./run-manager.ts";
+} from "./project-manager.ts";
+export { ProjectManager } from "./project-manager.ts";
+export type {
+  Project,
+  ProjectList,
+  Service,
+  ServiceEndpoint,
+  ServiceState,
+} from "./project-list.ts";

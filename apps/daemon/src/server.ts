@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 
-import { RunManager, type ManagedProject } from "@stackyard/control-plane";
+import { ProjectManager, type ManagedProject } from "@stackyard/control-plane";
 import {
   createDiagnostic,
   createDiagnosticReport,
@@ -15,6 +15,7 @@ import {
   createProjectCompletedMessage,
   createProjectStartedMessage,
   createProjectStoppedMessage,
+  createProjectList,
   parseDaemonClientMessage,
   protocolVersion,
   type DaemonClientMessage,
@@ -39,7 +40,7 @@ export interface ControlServerOptions {
   readonly diagnostics: DiagnosticSink;
   readonly instanceId: string;
   readonly isShuttingDown: () => boolean;
-  readonly manager: RunManager;
+  readonly manager: ProjectManager;
   readonly port: number;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
@@ -98,8 +99,8 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         if (url.pathname === "/health") {
           return secureJson({ instanceId: options.instanceId, protocolVersion, status: "ok" });
         }
-        if (url.pathname === "/api/v1/snapshot") {
-          return secureJson(options.manager.snapshot());
+        if (url.pathname === "/api/v1/projects") {
+          return secureJson(createProjectList(options.manager.listProjects()));
         }
         if (!options.handleUnhandledRequest) {
           return secureResponse("Not found.", { status: 404 });
@@ -178,7 +179,7 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
 }
 
 export async function closeControlServer(
-  manager: RunManager,
+  manager: ProjectManager,
   sockets: ReadonlySet<Bun.ServerWebSocket<ControlData>>,
   diagnostics: DiagnosticSink,
 ): Promise<void> {
@@ -202,7 +203,7 @@ async function handleControlMessage(
   socket: Bun.ServerWebSocket<ControlData>,
   parsed: Result<DaemonClientMessage>,
   acceptedStart: boolean,
-  manager: RunManager,
+  manager: ProjectManager,
   diagnostics: DiagnosticSink,
 ): Promise<void> {
   if (!parsed.success) {
@@ -221,7 +222,7 @@ async function handleControlMessage(
         createDiagnostic({
           code: "SYD3012",
           help: "Start a project on this connection before requesting a stop.",
-          message: "This daemon connection does not own a project run.",
+          message: "This daemon connection does not own an active project.",
         }),
       );
       return;
@@ -240,8 +241,8 @@ async function handleControlMessage(
       socket,
       createDiagnostic({
         code: "SYD3008",
-        help: "Open a new Stackyard connection for each project run.",
-        message: "This daemon connection already owns a project run.",
+        help: "Open a new Stackyard connection for each active project.",
+        message: "This daemon connection already owns an active project.",
       }),
     );
     return;

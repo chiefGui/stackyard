@@ -7,15 +7,13 @@ import {
   type Success,
 } from "@stackyard/diagnostics";
 import {
-  createRuntimeSnapshot,
   environmentKey,
   type EndpointValueExpression,
   type ProcessResourceSpec,
   type ProjectSpec,
-  type ResourceState,
-  type RuntimeEndpoint,
-  type RuntimeSnapshot,
 } from "@stackyard/protocol";
+
+import { type ProjectList, type ServiceEndpoint, type ServiceState } from "./project-list.ts";
 
 /* oxlint-disable eslint/no-await-in-loop -- Allocation and launch are deliberately ordered transactions. */
 
@@ -60,7 +58,7 @@ export interface ProcessHost {
   start(input: ProcessStart): Promise<Result<ProcessHandle>>;
 }
 
-export interface RunManagerOptions {
+export interface ProjectManagerOptions {
   readonly createId: () => string;
   readonly ports: PortAllocator;
   readonly processes: ProcessHost;
@@ -100,8 +98,8 @@ export interface StartProjectFailure extends Failure {
 export type StartProjectResult = StartProjectFailure | Success<ManagedProject>;
 
 interface AllocatedEndpoint {
+  readonly endpoint: ServiceEndpoint;
   readonly lease: PortLease;
-  readonly runtime: RuntimeEndpoint;
 }
 
 interface ResourceRuntime {
@@ -110,7 +108,7 @@ interface ResourceRuntime {
   exitCode?: number;
   handle?: ProcessHandle;
   hasExited: boolean;
-  state: ResourceState;
+  state: ServiceState;
   stopRequested: boolean;
 }
 
@@ -128,34 +126,32 @@ interface ProjectRuntime {
 
 const compareNames = (left: string, right: string): number => left.localeCompare(right, "en");
 
-export class RunManager {
+export class ProjectManager {
   readonly #createId: () => string;
   readonly #ports: PortAllocator;
   readonly #processes: ProcessHost;
   readonly #projects = new Map<string, ProjectRuntime>();
   readonly #roots = new Map<string, ProjectRuntime>();
-  #revision = 0;
 
-  constructor(options: RunManagerOptions) {
+  constructor(options: ProjectManagerOptions) {
     this.#createId = options.createId;
     this.#ports = options.ports;
     this.#processes = options.processes;
   }
 
-  snapshot(): RuntimeSnapshot {
-    return createRuntimeSnapshot({
+  listProjects(): ProjectList {
+    return {
       projects: [...this.#projects.values()].map((project) => ({
         id: project.id,
         name: project.name,
-        resources: project.resources.map((resource) => ({
-          endpoints: [...resource.endpoints.values()].map(({ runtime }) => runtime),
+        services: project.resources.map((resource) => ({
+          endpoints: [...resource.endpoints.values()].map(({ endpoint }) => endpoint),
           ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
           name: resource.name,
           state: resource.state,
         })),
       })),
-      revision: this.#revision,
-    });
+    };
   }
 
   async start(input: StartProjectInput): Promise<StartProjectResult> {
@@ -163,7 +159,7 @@ export class RunManager {
       return failure(
         createDiagnostic({
           code: "SYD4000",
-          help: "Stop the existing run before starting this project again.",
+          help: "Stop the active project before starting it again.",
           message: `Project '${input.spec.name}' is already running from this directory.`,
         }),
       );
@@ -172,7 +168,6 @@ export class RunManager {
     const project = createProject(input, this.#createId());
     this.#roots.set(input.root, project);
     this.#projects.set(project.id, project);
-    this.#publish();
 
     const canceled = cancellationFailure(input.signal);
     if (canceled) {
@@ -240,10 +235,9 @@ export class RunManager {
         }
         const lease = reserved.output;
         resource.endpoints.set(name, {
+          endpoint: Object.freeze({ name, url: `http://${lease.host}:${lease.port}` }),
           lease,
-          runtime: Object.freeze({ name, url: `http://${lease.host}:${lease.port}` }),
         });
-        this.#publish();
         const canceledAfterReservation = cancellationFailure(signal);
         if (canceledAfterReservation) {
           return canceledAfterReservation;
@@ -266,7 +260,6 @@ export class RunManager {
       const environment = this.#resolveEnvironment(resource.name, spec, project, input);
       if (!environment.success) {
         resource.state = "failed";
-        this.#publish();
         return environment;
       }
       starts.push({
@@ -307,12 +300,10 @@ export class RunManager {
       const started = await this.#processes.start(start);
       if (!started.success) {
         resource.state = "failed";
-        this.#publish();
         return started;
       }
       resource.handle = started.output;
       resource.state = "running";
-      this.#publish();
     }
     return success(undefined);
   }
@@ -366,17 +357,9 @@ export class RunManager {
         continue;
       }
       void handle.leaderExited.then((exitCode) => {
-        let changed = false;
-        if (resource.exitCode !== exitCode) {
-          resource.exitCode = exitCode;
-          changed = true;
-        }
+        resource.exitCode = exitCode;
         if (resource.state === "running") {
           resource.state = "stopping";
-          changed = true;
-        }
-        if (changed) {
-          this.#publish();
         }
       });
       void handle.exited.then(({ cleanup, exitCode }) => {
@@ -385,7 +368,6 @@ export class RunManager {
         if (resource.state === "running" || resource.state === "stopping") {
           resource.state =
             cleanup.success && (resource.stopRequested || exitCode === 0) ? "exited" : "failed";
-          this.#publish();
         }
         void this.#completeIfTerminal(project);
       });
@@ -460,7 +442,6 @@ export class RunManager {
       return disposed;
     }
     this.#forget(project);
-    this.#publish();
     if (!project.completionPublished) {
       project.completionPublished = true;
       project.complete({ kind: "stopped" });
@@ -474,19 +455,11 @@ export class RunManager {
   }
 
   async #stopResources(project: ProjectRuntime): Promise<Result<void>> {
-    let stateChanged = false;
     for (const resource of project.resources) {
       if (resource.handle && !resource.hasExited) {
         resource.stopRequested = true;
-        if (resource.state !== "stopping") {
-          resource.state = "stopping";
-          stateChanged = true;
-        }
+        resource.state = "stopping";
       }
-    }
-    if (stateChanged) {
-      this.#publish();
-      stateChanged = false;
     }
 
     const results = await Promise.all(
@@ -496,27 +469,17 @@ export class RunManager {
         }
         const stopped = await resource.handle.stop();
         if (!stopped.success) {
-          if (resource.state !== "failed") {
-            resource.state = "failed";
-            stateChanged = true;
-          }
+          resource.state = "failed";
           return stopped;
         }
 
         const { exitCode } = await resource.handle.exited;
-        const state = resource.stopRequested || exitCode === 0 ? "exited" : "failed";
-        if (resource.exitCode !== exitCode || !resource.hasExited || resource.state !== state) {
-          resource.exitCode = exitCode;
-          resource.hasExited = true;
-          resource.state = state;
-          stateChanged = true;
-        }
+        resource.exitCode = exitCode;
+        resource.hasExited = true;
+        resource.state = resource.stopRequested || exitCode === 0 ? "exited" : "failed";
         return stopped;
       }),
     );
-    if (stateChanged) {
-      this.#publish();
-    }
     const failed = results.find((result) => !result.success);
     return failed && !failed.success ? failed : success(undefined);
   }
@@ -541,7 +504,6 @@ export class RunManager {
       return this.#retainedStartFailure(project, disposed, cause);
     }
     this.#forget(project);
-    this.#publish();
     return cause;
   }
 
@@ -558,15 +520,10 @@ export class RunManager {
     cleanupFailure: Failure,
     cause: Failure,
   ): StartProjectFailure {
-    let stateChanged = false;
     for (const resource of project.resources) {
       if (resource.state === "starting") {
         resource.state = "failed";
-        stateChanged = true;
       }
-    }
-    if (stateChanged) {
-      this.#publish();
     }
     const [first, ...remaining] = cleanupFailure.diagnostics;
     const combined = failure(first, ...remaining, ...cause.diagnostics);
@@ -586,10 +543,6 @@ export class RunManager {
     if (this.#roots.get(project.root) === project) {
       this.#roots.delete(project.root);
     }
-  }
-
-  #publish(): void {
-    this.#revision += 1;
   }
 }
 
@@ -635,25 +588,25 @@ function resolveEndpointValue(
   expression: EndpointValueExpression,
   project: ProjectRuntime,
 ): Result<string> {
-  const endpoint = project.resources
+  const allocatedEndpoint = project.resources
     .find(({ name }) => name === expression.resource)
     ?.endpoints.get(expression.endpoint);
-  if (!endpoint) {
+  if (!allocatedEndpoint) {
     return failure(
       createDiagnostic({
         code: "SYD4002",
         help: "Reference an endpoint defined by a service in this project.",
-        message: `Runtime endpoint '${expression.resource}.${expression.endpoint}' does not exist.`,
+        message: `Endpoint '${expression.resource}.${expression.endpoint}' is not available in the active project.`,
       }),
     );
   }
   if (expression.kind === "endpoint-host") {
-    return success(endpoint.lease.host);
+    return success(allocatedEndpoint.lease.host);
   }
   if (expression.kind === "endpoint-port") {
-    return success(String(endpoint.lease.port));
+    return success(String(allocatedEndpoint.lease.port));
   }
-  return success(endpoint.runtime.url);
+  return success(allocatedEndpoint.endpoint.url);
 }
 
 function setEnvironmentValue(
