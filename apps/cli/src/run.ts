@@ -1,4 +1,4 @@
-import { ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
+import { daemonUrl, ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
   reportDiagnostics,
@@ -85,13 +85,15 @@ function parsePath(args: readonly string[]): InvalidPath | ParsedPath {
     return { path: args[0], success: true };
   }
 
+  let message = "Run accepts at most one project path.";
+  if (args[0]?.startsWith("-")) {
+    message = `Unknown option '${args[0]}'.`;
+  }
   return {
     diagnostic: createDiagnostic({
       code: "SYD2009",
       help: "Use: stackyard run [path]",
-      message: args[0]?.startsWith("-")
-        ? `Unknown option '${args[0]}'.`
-        : "Run accepts at most one project path.",
+      message,
     }),
     success: false,
   };
@@ -106,7 +108,9 @@ function runSession(
   return new Promise((resolve) => {
     let socket: WebSocket;
     try {
-      socket = new WebSocket(`ws://127.0.0.1:${locator.port}/api/v1/control`, {
+      const controlUrl = new URL("api/v1/control", daemonUrl(locator));
+      controlUrl.protocol = "ws:";
+      socket = new WebSocket(controlUrl, {
         headers: { authorization: `Bearer ${locator.token}` },
       });
     } catch {
@@ -184,9 +188,7 @@ function runSession(
       if (message.output.kind === "started") {
         started = true;
         clearTimeout(timeout);
-        dependencies.writeOutput(
-          `${spec.name} is running. Dashboard: ${message.output.dashboardUrl}\n`,
-        );
+        dependencies.writeOutput(`${spec.name} is running. Dashboard: ${daemonUrl(locator)}\n`);
       } else if (message.output.kind === "failed") {
         reportDiagnostics(dependencies.diagnostics, message.output.report.diagnostics);
         finish(1);
@@ -204,13 +206,11 @@ function runSession(
     });
     socket.addEventListener("close", () => {
       if (!settled) {
-        dependencies.diagnostics.report(
-          connectionDiagnostic(
-            started
-              ? "The daemon connection closed while the project was running."
-              : "The daemon closed the connection before starting the project.",
-          ),
-        );
+        let note = "The daemon closed the connection before starting the project.";
+        if (started) {
+          note = "The daemon connection closed while the project was running.";
+        }
+        dependencies.diagnostics.report(connectionDiagnostic(note));
         finish(1);
       }
     });
@@ -229,7 +229,10 @@ function serviceEnvironment(environment: NodeJS.ProcessEnv): Readonly<Record<str
 }
 
 function isStackyardVariable(name: string): boolean {
-  const comparable = process.platform === "win32" ? name.toUpperCase() : name;
+  let comparable = name;
+  if (process.platform === "win32") {
+    comparable = name.toUpperCase();
+  }
   return comparable.startsWith("STACKYARD_");
 }
 

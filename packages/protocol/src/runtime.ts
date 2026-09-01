@@ -9,7 +9,6 @@ import {
 
 import { deepFreeze } from "./freeze.ts";
 import { parseProjectSpec, type ProjectSpec } from "./project.ts";
-import { isLoopbackHttpUrl } from "./loopback-url.ts";
 import { protocolVersion } from "./version.ts";
 
 export interface StartProjectMessage {
@@ -28,7 +27,6 @@ export interface StopProjectMessage {
 export type DaemonClientMessage = StartProjectMessage | StopProjectMessage;
 
 export interface ProjectStartedMessage {
-  readonly dashboardUrl: string;
   readonly kind: "started";
   readonly projectId: string;
   readonly schemaVersion: typeof protocolVersion;
@@ -69,12 +67,8 @@ export function createStopProjectMessage(): StopProjectMessage {
   return Object.freeze({ kind: "stop", schemaVersion: protocolVersion });
 }
 
-export function createProjectStartedMessage(
-  projectId: string,
-  dashboardUrl: string,
-): ProjectStartedMessage {
+export function createProjectStartedMessage(projectId: string): ProjectStartedMessage {
   return Object.freeze({
-    dashboardUrl,
     kind: "started",
     projectId,
     schemaVersion: protocolVersion,
@@ -100,9 +94,10 @@ export function parseDaemonClientMessage(input: unknown): Result<DaemonClientMes
   }
 
   if (envelope.output.kind === "stop") {
-    return Object.keys(envelope.output).length === 2
-      ? success(createStopProjectMessage())
-      : invalidMessage("Daemon stop message contains unsupported properties.");
+    if (Object.keys(envelope.output).length !== 2) {
+      return invalidMessage("Daemon stop message contains unsupported properties.");
+    }
+    return success(createStopProjectMessage());
   }
 
   if (envelope.output.kind !== "start") {
@@ -137,13 +132,11 @@ export function parseDaemonServerMessage(input: unknown): Result<DaemonServerMes
   const value = envelope.output;
   if (value.kind === "started") {
     if (
-      Object.keys(value).length === 4 &&
-      typeof value.dashboardUrl === "string" &&
-      isLoopbackHttpUrl(value.dashboardUrl) &&
+      Object.keys(value).length === 3 &&
       typeof value.projectId === "string" &&
       value.projectId.length > 0
     ) {
-      return success(createProjectStartedMessage(value.projectId, value.dashboardUrl));
+      return success(createProjectStartedMessage(value.projectId));
     }
   } else if (value.kind === "completed") {
     if (
@@ -194,12 +187,21 @@ function isStringRecord(value: unknown): value is Readonly<Record<string, string
 }
 
 function invalidMessage<T>(message: string, note?: string): Result<T> {
+  if (note) {
+    return failure(
+      createDiagnostic({
+        code: "SYD1200",
+        help: "Update Stackyard so the CLI and daemon use the same protocol, then retry.",
+        message,
+        notes: [note],
+      }),
+    );
+  }
   return failure(
     createDiagnostic({
       code: "SYD1200",
       help: "Update Stackyard so the CLI and daemon use the same protocol, then retry.",
       message,
-      ...(note ? { notes: [note] } : {}),
     }),
   );
 }

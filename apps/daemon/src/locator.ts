@@ -12,6 +12,7 @@ import {
 import { protocolVersion } from "@stackyard/protocol";
 
 export const internalDaemonCommand = "__stackyard_daemon__";
+export const daemonHostname = "127.0.0.1";
 
 const version = 1;
 const diagnosticsName = "daemon.log";
@@ -41,6 +42,10 @@ export interface EnsureDaemonOptions {
   readonly dashboardWebDirectory: string;
   readonly daemonEntrypoint: string;
   readonly runtimeDirectory?: string;
+}
+
+export function daemonUrl(locator: Pick<DaemonLocator, "port">): string {
+  return `http://${daemonHostname}:${locator.port}/`;
 }
 
 export function runtimeDirectory(override?: string): string {
@@ -310,7 +315,7 @@ function isLocator(value: unknown): value is DaemonLocator {
 
 async function isReachable(locator: DaemonLocator): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${locator.port}/health`, {
+    const response = await fetch(new URL("health", daemonUrl(locator)), {
       signal: AbortSignal.timeout(500),
     });
     const body: unknown = await response.json();

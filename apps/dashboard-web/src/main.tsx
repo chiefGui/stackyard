@@ -14,9 +14,14 @@ const refreshMilliseconds = 1_000;
 
 function Dashboard() {
   const { error, snapshot } = useRuntimeSnapshot();
-  const connection = error ? "Unavailable" : snapshot ? "Connected" : "Connecting";
-  const resourceCount =
-    snapshot?.projects.reduce((total, project) => total + project.resources.length, 0) ?? 0;
+  let connection = "Connecting";
+  let connectionClassName = "connection";
+  if (error) {
+    connection = "Unavailable";
+    connectionClassName = "connection connection-error";
+  } else if (snapshot) {
+    connection = "Connected";
+  }
 
   return (
     <main>
@@ -25,48 +30,71 @@ function Dashboard() {
           <p className="eyebrow">Local runtime</p>
           <h1>Stackyard</h1>
         </div>
-        <p className={`connection ${error ? "connection-error" : ""}`}>
+        <p className={connectionClassName}>
           <span aria-hidden="true" />
           {connection}
         </p>
       </header>
-
-      {error && !snapshot ? (
-        <section className="empty-state" aria-live="polite">
-          <h2>Dashboard unavailable</h2>
-          <p>{error}</p>
-        </section>
-      ) : resourceCount === 0 ? (
-        <section className="empty-state" aria-live="polite">
-          <h2>No projects running</h2>
-          <p>Start one with stackyard run.</p>
-        </section>
-      ) : (
-        <section className="resource-panel" aria-label="Running services">
-          <table>
-            <thead>
-              <tr>
-                <th>Project</th>
-                <th>Service</th>
-                <th>Status</th>
-                <th>Endpoint</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot?.projects.flatMap((project) =>
-                project.resources.map((resource) => (
-                  <ResourceRow
-                    key={`${project.id}:${resource.name}`}
-                    project={project.name}
-                    resource={resource}
-                  />
-                )),
-              )}
-            </tbody>
-          </table>
-        </section>
-      )}
+      <DashboardContent error={error} snapshot={snapshot} />
     </main>
+  );
+}
+
+function DashboardContent({
+  error,
+  snapshot,
+}: {
+  readonly error: string | undefined;
+  readonly snapshot: RuntimeSnapshot | undefined;
+}) {
+  if (!snapshot && !error) {
+    return <section className="empty-state" aria-busy="true" aria-label="Loading runtime state" />;
+  }
+
+  if (error && !snapshot) {
+    return (
+      <section className="empty-state" aria-live="polite">
+        <h2>Dashboard unavailable</h2>
+        <p>{error}</p>
+      </section>
+    );
+  }
+
+  const resourceCount =
+    snapshot?.projects.reduce((total, project) => total + project.resources.length, 0) ?? 0;
+  if (resourceCount === 0) {
+    return (
+      <section className="empty-state" aria-live="polite">
+        <h2>No projects running</h2>
+        <p>Start one with stackyard run.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="resource-panel" aria-label="Running services">
+      <table>
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Service</th>
+            <th>Status</th>
+            <th>Endpoint</th>
+          </tr>
+        </thead>
+        <tbody>
+          {snapshot?.projects.flatMap((project) =>
+            project.resources.map((resource) => (
+              <ResourceRow
+                key={`${project.id}:${resource.name}`}
+                project={project.name}
+                resource={resource}
+              />
+            )),
+          )}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
@@ -79,20 +107,26 @@ function ResourceRow({ project, resource }: { project: string; resource: Runtime
         <span className={`state state-${resource.state}`}>{resource.state}</span>
       </td>
       <td>
-        <div className="endpoints">
-          {resource.endpoints.length === 0 ? (
-            <span className="muted">—</span>
-          ) : (
-            resource.endpoints.map((endpoint) => (
-              <a href={endpoint.url} key={endpoint.name} target="_blank" rel="noreferrer">
-                {endpoint.name}
-                <span>{endpoint.url}</span>
-              </a>
-            ))
-          )}
-        </div>
+        <ResourceEndpoints resource={resource} />
       </td>
     </tr>
+  );
+}
+
+function ResourceEndpoints({ resource }: { readonly resource: RuntimeResource }) {
+  if (resource.endpoints.length === 0) {
+    return <span className="muted">None</span>;
+  }
+
+  return (
+    <div className="endpoints">
+      {resource.endpoints.map((endpoint) => (
+        <a href={endpoint.url} key={endpoint.name} target="_blank" rel="noreferrer">
+          {endpoint.name}
+          <span>{endpoint.url}</span>
+        </a>
+      ))}
+    </div>
   );
 }
 
@@ -126,7 +160,11 @@ function useRuntimeSnapshot(): {
         setError(undefined);
       } catch (caught) {
         if (!controller.signal.aborted) {
-          setError(caught instanceof Error ? caught.message : "The daemon did not respond.");
+          let message = "The daemon did not respond.";
+          if (caught instanceof Error) {
+            message = caught.message;
+          }
+          setError(message);
         }
       } finally {
         if (!controller.signal.aborted) {

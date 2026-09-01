@@ -4,7 +4,7 @@ const daemon = service({
   command: ["bun", "run", "dev"],
   cwd: "apps/daemon",
   endpoints: {
-    http: endpoint.http({
+    control: endpoint.http({
       env: "PORT",
       preferredPort: 3000,
     }),
@@ -19,6 +19,9 @@ const dashboardWeb = service({
       env: "PORT",
       preferredPort: 5173,
     }),
+  },
+  env: {
+    STACKYARD_CONTROL_URL: daemon.endpoints.control.url,
   },
 });
 

@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 
 import { readPort } from "../apps/daemon/src/config.ts";
-import { startDaemonServer } from "../apps/daemon/src/managed.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
+import { startControlServer } from "../apps/daemon/src/server.ts";
 import {
   RunManager,
   type PortAllocator,
@@ -69,7 +69,7 @@ describe("HTTP server", () => {
     }
   });
 
-  test("serves health and secure dashboard responses over a real socket", async () => {
+  test("serves health and returns secure not-found responses", async () => {
     const result = startTestServer(0);
 
     expect(result.success).toBeTrue();
@@ -90,6 +90,11 @@ describe("HTTP server", () => {
         protocolVersion: 1,
         status: "ok",
       });
+
+      const root = await fetch(server.url);
+      expect(root.status).toBe(404);
+      expect(root.headers.get("content-security-policy")).toContain("default-src 'self'");
+      expect(await root.text()).toBe("Not found.");
 
       const missing = await fetch(new URL("/missing", server.url));
       expect(missing.status).toBe(404);
@@ -451,10 +456,9 @@ function startTestServer(
     ports: new BunPortAllocator(),
     processes: new BunProcessHost({ report() {} }),
   }),
-  onOpen: Parameters<typeof startDaemonServer>[0]["onOpen"] = () => {},
+  onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
 ) {
-  return startDaemonServer({
-    dashboardWebDirectory: resolve(import.meta.dir, "../apps/dashboard-web/dist"),
+  return startControlServer({
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,

@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 
 import {
+  createProjectStartedMessage,
   createProjectSpec,
   createRuntimeSnapshot,
   createStartProjectMessage,
   parseDaemonClientMessage,
+  parseDaemonServerMessage,
   parseRuntimeSnapshot,
 } from "../packages/protocol/src/index.ts";
 
@@ -65,6 +67,23 @@ test("project start messages reject non-string environment values", () => {
   if (!parsed.success) {
     expect(parsed.diagnostics[0].code).toBe("SYD1200");
   }
+});
+
+test("project started messages round-trip and reject unknown properties", () => {
+  const message = createProjectStartedMessage("project-1");
+
+  expect(message).toEqual({
+    kind: "started",
+    projectId: "project-1",
+    schemaVersion: 1,
+  });
+  expect(parseDaemonServerMessage(JSON.parse(JSON.stringify(message)))).toEqual({
+    output: message,
+    success: true,
+  });
+  expect(
+    parseDaemonServerMessage({ ...message, dashboardUrl: "http://127.0.0.1:3000" }).success,
+  ).toBeFalse();
 });
 
 function projectSpec() {
