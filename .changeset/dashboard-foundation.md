@@ -1,5 +1,6 @@
 ---
-"stackyard": patch
+"stackyard": minor
 ---
 
-Improve the dashboard's project and service experience with reliable navigation, data loading, and styling foundations.
+pr: #11
+refactor!: establish the dashboard application foundation

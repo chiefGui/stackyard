@@ -1,5 +1,5 @@
 ---
-"stackyard": patch
+"stackyard": minor
 ---
 
-Improve failed-service diagnostics by reliably capturing recent stdout and stderr.
+feat: capture bounded resource logs

@@ -66,6 +66,16 @@ Then require two-factor authentication and disallow granular access tokens for p
 3. Review the version, generated changelog, and lockfile in that pull request.
 4. Merge the version pull request. The publish workflow packs the npm archive, runs the external-consumer test against that exact archive, publishes it with provenance, creates `stackyard@<version>`, and creates the matching GitHub release.
 
+Changeset summaries use Conventional Commit prefixes:
+
+| Summary                                        | Release                            |
+| ---------------------------------------------- | ---------------------------------- |
+| `feat:`                                        | minor                              |
+| `fix:`, `perf:`, `refactor:`, `docs:`, `deps:` | patch                              |
+| `<type>!:`                                     | minor on `0.x`; major from `1.0.0` |
+
+Use `bun run changeset --empty` for changes that do not affect package users.
+
 The version pull request is the release gate. Leave it open while accumulating changes and merge it only when that release should become public.
 
 ## Recovery

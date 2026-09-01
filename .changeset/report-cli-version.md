@@ -1,5 +1,5 @@
 ---
-"stackyard": patch
+"stackyard": minor
 ---
 
-Report the installed Stackyard version with `stackyard --version` or `stackyard -v`.
+feat: add `stackyard --version` and `stackyard -v`

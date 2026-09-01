@@ -40,6 +40,9 @@ jobs:
           github.head_ref != 'changeset-release/main')
         run: bun run changeset status --since="${{ github.event.pull_request.base.sha }}"
 
+      - name: Validate release notes
+        run: bun run validate:changesets
+
       - name: Check formatting
         run: bun run format:check
 
