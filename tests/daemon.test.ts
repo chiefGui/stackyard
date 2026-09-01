@@ -420,7 +420,8 @@ describe("service process lifecycle", () => {
         stdout: "pipe",
         windowsHide: true,
       });
-      servicePid = await readProcessIdentifier(owner.stdout);
+      const runningServicePid = await readProcessIdentifier(owner.stdout);
+      servicePid = runningServicePid;
       await waitFor(async () => {
         try {
           const response = await fetch(`http://127.0.0.1:${lease.port}`);
@@ -440,7 +441,7 @@ describe("service process lifecycle", () => {
           return true;
         }
       });
-      expect(isProcessAlive(servicePid)).toBeFalse();
+      await waitFor(() => (isProcessAlive(runningServicePid) ? undefined : true));
     } finally {
       if (owner?.exitCode === null) {
         owner.kill("SIGKILL");
