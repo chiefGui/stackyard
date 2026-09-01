@@ -1,22 +1,23 @@
 import { expect, test } from "bun:test";
 
-import { runCli, type CliCommand } from "../apps/cli/src/cli.ts";
+import { defineCliCommand, runCli, type CliDependencies } from "../apps/cli/src/cli.ts";
 import { createInspectCommand } from "../apps/cli/src/inspect.ts";
 import { createDiagnostic, failure, type Diagnostic } from "../packages/diagnostics/src/index.ts";
 
 test("the CLI dispatches injected commands without knowing their implementation", async () => {
-  const receivedArguments: string[][] = [];
+  const receivedValues: string[] = [];
   const reportedDiagnostics: Diagnostic[] = [];
   const output: string[] = [];
-  const command: CliCommand = {
-    description: "A test command",
-    name: "custom",
-    async run(args) {
-      receivedArguments.push([...args]);
+  const command = defineCliCommand("custom", "SYD9000", {
+    args: {
+      value: { required: true, type: "positional" },
+    },
+    meta: { description: "A test command" },
+    async run({ args }) {
+      receivedValues.push(args.value);
       return 7;
     },
-    usage: "custom [value]",
-  };
+  });
 
   const exitCode = await runCli(["custom", "value"], {
     commands: [command],
@@ -31,9 +32,34 @@ test("the CLI dispatches injected commands without knowing their implementation"
   });
 
   expect(exitCode).toBe(7);
-  expect(receivedArguments).toEqual([["value"]]);
+  expect(receivedValues).toEqual(["value"]);
   expect(reportedDiagnostics).toEqual([]);
   expect(output).toEqual([]);
+});
+
+test("the CLI generates help from the command definitions", async () => {
+  const output: string[] = [];
+  const command = defineCliCommand("custom", "SYD9000", {
+    args: {
+      value: { description: "Input value", required: false, type: "positional" },
+    },
+    meta: { description: "A test command" },
+    run() {
+      throw new Error("Help must not run the command.");
+    },
+  });
+
+  const exitCode = await runCli(["custom", "--help"], {
+    commands: [command],
+    diagnostics: { report() {} },
+    writeOutput(value) {
+      output.push(value);
+    },
+  });
+
+  expect(exitCode).toBe(0);
+  expect(output.join("\n")).toContain("USAGE stackyard custom");
+  expect(output.join("\n")).toContain("Input value");
 });
 
 test("unknown CLI commands report actionable diagnostics", async () => {
@@ -70,10 +96,29 @@ test("invalid inspect arguments report the accepted syntax", async () => {
     writeOutput() {},
   });
 
-  expect(await command.run(["--unknown"])).toBe(1);
+  const cliDependencies: CliDependencies = {
+    commands: [command],
+    diagnostics: {
+      report(diagnostic) {
+        reportedDiagnostics.push(diagnostic);
+      },
+    },
+    writeOutput() {},
+  };
+
+  expect(await runCli(["inspect", "--unknown"], cliDependencies)).toBe(1);
   expect(reportedDiagnostics).toHaveLength(1);
   expect(reportedDiagnostics[0]?.code).toBe("SYD2005");
-  expect(reportedDiagnostics[0]?.help).toBe("Use: stackyard inspect [path] [--json]");
+  expect(reportedDiagnostics[0]?.message).toBe("Unknown option '--unknown'.");
+  expect(reportedDiagnostics[0]?.help).toBe(
+    "Run 'stackyard inspect --help' to see the accepted arguments.",
+  );
+
+  reportedDiagnostics.length = 0;
+  expect(await runCli(["inspect", "one", "two"], cliDependencies)).toBe(1);
+  expect(reportedDiagnostics[0]?.message).toBe(
+    "Command 'inspect' accepts at most one positional argument.",
+  );
 });
 
 test("inspect reports when captured project output was truncated", async () => {
@@ -98,7 +143,17 @@ test("inspect reports when captured project output was truncated", async () => {
     writeOutput() {},
   });
 
-  expect(await command.run([])).toBe(1);
+  const exitCode = await runCli(["inspect"], {
+    commands: [command],
+    diagnostics: {
+      report(diagnostic) {
+        reportedDiagnostics.push(diagnostic);
+      },
+    },
+    writeOutput() {},
+  });
+
+  expect(exitCode).toBe(1);
   expect(errors.join("")).toBe("partial output\n");
   expect(reportedDiagnostics.map(({ code }) => code)).toEqual(["SYD2008", "SYD9000"]);
   expect(reportedDiagnostics[0]?.severity).toBe("warning");

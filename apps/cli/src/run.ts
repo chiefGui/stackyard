@@ -13,7 +13,7 @@ import {
   type ProjectSpec,
 } from "@stackyard/protocol";
 
-import type { CliCommand } from "./cli.ts";
+import { defineCliCommand, type CliCommand } from "./cli.ts";
 import { writeProjectEvaluationOutput } from "./project-output.ts";
 
 export interface RunCommandDependencies {
@@ -26,27 +26,28 @@ export interface RunCommandDependencies {
 }
 
 export function createRunCommand(dependencies: RunCommandDependencies): CliCommand {
-  return {
-    description: "Start a project and its dashboard",
-    name: "run",
-    run(args) {
-      return runProject(args, dependencies);
+  return defineCliCommand("run", "SYD2009", {
+    args: {
+      path: {
+        description: "Project directory",
+        required: false,
+        type: "positional",
+      },
     },
-    usage: "run [path]",
-  };
+    meta: {
+      description: "Start a project and its dashboard",
+    },
+    run({ args }) {
+      return runProject(args.path, dependencies);
+    },
+  });
 }
 
 async function runProject(
-  args: readonly string[],
+  path: string | undefined,
   dependencies: RunCommandDependencies,
 ): Promise<number> {
-  const path = parsePath(args);
-  if (!path.success) {
-    dependencies.diagnostics.report(path.diagnostic);
-    return 1;
-  }
-
-  const project = await dependencies.loadProject(path.path);
+  const project = await dependencies.loadProject(path);
   writeProjectEvaluationOutput(project, dependencies);
   if (!project.result.success) {
     reportDiagnostics(dependencies.diagnostics, project.result.diagnostics);
@@ -68,35 +69,6 @@ async function runProject(
     project.result.output.spec,
     dependencies,
   );
-}
-
-interface ParsedPath {
-  readonly path: string | undefined;
-  readonly success: true;
-}
-
-interface InvalidPath {
-  readonly diagnostic: Diagnostic;
-  readonly success: false;
-}
-
-function parsePath(args: readonly string[]): InvalidPath | ParsedPath {
-  if (args.length <= 1 && !args[0]?.startsWith("-")) {
-    return { path: args[0], success: true };
-  }
-
-  let message = "Run accepts at most one project path.";
-  if (args[0]?.startsWith("-")) {
-    message = `Unknown option '${args[0]}'.`;
-  }
-  return {
-    diagnostic: createDiagnostic({
-      code: "SYD2009",
-      help: "Use: stackyard run [path]",
-      message,
-    }),
-    success: false,
-  };
 }
 
 function runSession(
