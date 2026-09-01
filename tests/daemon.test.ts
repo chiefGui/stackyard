@@ -454,7 +454,7 @@ function startTestServer(
   onOpen: Parameters<typeof startDaemonServer>[0]["onOpen"] = () => {},
 ) {
   return startDaemonServer({
-    dashboardDirectory: resolve(import.meta.dir, "../apps/dashboard-web/dist"),
+    dashboardWebDirectory: resolve(import.meta.dir, "../apps/dashboard-web/dist"),
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,

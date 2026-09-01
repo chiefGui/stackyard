@@ -18,7 +18,7 @@ import { writeProjectEvaluationOutput } from "./project-output.ts";
 
 export interface RunCommandDependencies {
   readonly daemonEntrypoint: string;
-  readonly dashboardDirectory: string;
+  readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
   loadProject(path: string | undefined): Promise<ProjectLoadOutcome>;
   writeError(output: string): void;
@@ -55,7 +55,7 @@ async function runProject(
 
   const daemon = await ensureDaemon({
     daemonEntrypoint: dependencies.daemonEntrypoint,
-    dashboardDirectory: dependencies.dashboardDirectory,
+    dashboardWebDirectory: dependencies.dashboardWebDirectory,
   });
   if (!daemon.success) {
     reportDiagnostics(dependencies.diagnostics, daemon.diagnostics);

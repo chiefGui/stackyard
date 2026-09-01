@@ -52,13 +52,13 @@ test("the packed package works in an external Bun project", async () => {
     expect((await readdir(installedPackage)).toSorted()).toEqual(["dist", "package.json"]);
     expect((await readdir(join(installedPackage, "dist"))).toSorted()).toEqual([
       "cli.js",
-      "dashboard",
+      "dashboard-web",
       "index.d.ts",
       "index.js",
     ]);
-    expect(await readFile(join(installedPackage, "dist/dashboard/index.html"), "utf8")).toContain(
-      '<div id="root"></div>',
-    );
+    expect(
+      await readFile(join(installedPackage, "dist/dashboard-web/index.html"), "utf8"),
+    ).toContain('<div id="root"></div>');
 
     const typecheck = await runCommand(
       [process.execPath, "x", "tsc", "--noEmit"],

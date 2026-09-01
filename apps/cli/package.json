@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "bun run --filter @stackyard/dashboard-web build && tsdown && bun build ./src/main.ts --outfile ./dist/cli.js --target bun && bun ./scripts/copy-dashboard.ts",
+    "build": "bun run --filter @stackyard/dashboard-web build && tsdown && bun build ./src/main.ts --outfile ./dist/cli.js --target bun && bun ./scripts/copy-dashboard-web.ts",
     "pack:local": "bun pm pack --destination ../../artifacts",
     "prepack": "bun run build",
     "typecheck": "tsc -p ./tsconfig.json"

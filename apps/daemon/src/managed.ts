@@ -40,7 +40,7 @@ interface ControlData {
 }
 
 export interface ManagedDaemonOptions {
-  readonly dashboardDirectory: string;
+  readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
   readonly runtimeDirectory?: string;
 }
@@ -70,7 +70,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
 
   try {
     const started = startDaemonServer({
-      dashboardDirectory: options.dashboardDirectory,
+      dashboardWebDirectory: options.dashboardWebDirectory,
       diagnostics: options.diagnostics,
       instanceId,
       isShuttingDown: () => shuttingDown,
@@ -180,7 +180,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
 }
 
 export interface ForegroundDaemonOptions {
-  readonly dashboardDirectory: string;
+  readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
   readonly onStarted?: (url: string) => void;
   readonly port: number;
@@ -191,7 +191,7 @@ export async function runForegroundDaemon(options: ForegroundDaemonOptions): Pro
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   let shuttingDown = false;
   const started = startDaemonServer({
-    dashboardDirectory: options.dashboardDirectory,
+    dashboardWebDirectory: options.dashboardWebDirectory,
     diagnostics: options.diagnostics,
     instanceId: crypto.randomUUID(),
     isShuttingDown: () => shuttingDown,
@@ -251,7 +251,7 @@ function createRunManager(diagnostics: DiagnosticSink): RunManager {
 }
 
 export interface DaemonServerOptions {
-  readonly dashboardDirectory: string;
+  readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
   readonly instanceId: string;
   readonly isShuttingDown: () => boolean;
@@ -265,7 +265,7 @@ export interface DaemonServerOptions {
 
 export function startDaemonServer(options: DaemonServerOptions): Result<Bun.Server<ControlData>> {
   try {
-    const dashboardRoot = resolve(options.dashboardDirectory);
+    const dashboardWebRoot = resolve(options.dashboardWebDirectory);
     let server!: Bun.Server<ControlData>;
     server = Bun.serve<ControlData>({
       error(error) {
@@ -317,7 +317,7 @@ export function startDaemonServer(options: DaemonServerOptions): Result<Bun.Serv
           return secureJson(options.manager.snapshot());
         }
 
-        return dashboardResponse(dashboardRoot, url.pathname);
+        return dashboardWebResponse(dashboardWebRoot, url.pathname);
       },
       hostname,
       maxRequestBodySize: maximumControlMessageBytes,
@@ -544,7 +544,7 @@ function parseControlPayload(
   }
 }
 
-async function dashboardResponse(root: string, pathname: string): Promise<Response> {
+async function dashboardWebResponse(root: string, pathname: string): Promise<Response> {
   let decoded: string;
   try {
     decoded = decodeURIComponent(pathname);

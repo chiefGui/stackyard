@@ -22,12 +22,12 @@ const [command, ...args] = Bun.argv.slice(2);
 const diagnostics = createDiagnosticSink(
   command === internalDaemonCommand ? Bun.env.STACKYARD_DIAGNOSTICS_PATH : undefined,
 );
-const dashboardDirectory = resolveDashboardDirectory(cliEntrypoint);
+const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
 
 process.exitCode =
   command === internalDaemonCommand
     ? await runManagedDaemon({
-        dashboardDirectory: Bun.env.STACKYARD_DASHBOARD_DIR ?? dashboardDirectory,
+        dashboardWebDirectory: Bun.env.STACKYARD_DASHBOARD_WEB_DIR ?? dashboardWebDirectory,
         diagnostics,
         ...(Bun.env.STACKYARD_RUNTIME_DIR
           ? { runtimeDirectory: Bun.env.STACKYARD_RUNTIME_DIR }
@@ -55,7 +55,7 @@ process.exitCode =
             }),
             createRunCommand({
               daemonEntrypoint: cliEntrypoint,
-              dashboardDirectory,
+              dashboardWebDirectory,
               diagnostics,
               loadProject(path) {
                 return loadProjectDefinition({
@@ -78,11 +78,11 @@ process.exitCode =
           },
         });
 
-function resolveDashboardDirectory(entrypoint: string): string {
+function resolveDashboardWebDirectory(entrypoint: string): string {
   const directory = dirname(entrypoint);
   return basename(directory) === "src"
     ? resolve(directory, "../../dashboard-web/dist")
-    : join(directory, "dashboard");
+    : join(directory, "dashboard-web");
 }
 
 function createDiagnosticSink(path: string | undefined): DiagnosticSink {

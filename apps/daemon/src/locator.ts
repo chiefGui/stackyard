@@ -38,7 +38,7 @@ export interface DaemonLock {
 }
 
 export interface EnsureDaemonOptions {
-  readonly dashboardDirectory: string;
+  readonly dashboardWebDirectory: string;
   readonly daemonEntrypoint: string;
   readonly runtimeDirectory?: string;
 }
@@ -94,7 +94,7 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result
   const environment = stringEnvironment(process.env);
   environment.STACKYARD_DIAGNOSTICS_PATH = diagnosticsPath;
   environment.STACKYARD_RUNTIME_DIR = directory;
-  environment.STACKYARD_DASHBOARD_DIR = resolve(options.dashboardDirectory);
+  environment.STACKYARD_DASHBOARD_WEB_DIR = resolve(options.dashboardWebDirectory);
 
   try {
     const subprocess = Bun.spawn({
