@@ -24,6 +24,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Bun
@@ -37,11 +38,7 @@ jobs:
           github.event_name == 'pull_request' &&
           (github.event.pull_request.head.repo.full_name != github.repository ||
           github.head_ref != 'changeset-release/main')
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          bun run changeset status --since="$BASE_SHA"
+        run: bun run changeset status --since="${{ github.event.pull_request.base.sha }}"
 
       - name: Check formatting
         run: bun run format:check
