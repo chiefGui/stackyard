@@ -5,7 +5,7 @@
     {
       "repo": "chiefGui/stackyard",
       "disableThanks": true,
-      "template": "\n\n- {summary} {ref}"
+      "template": "- {summary} {ref}"
     }
   ],
   "commit": false,
