@@ -10,4 +10,4 @@ Choose `patch` for compatible fixes, `minor` for compatible features, and `major
 
 Write the summary for Stackyard's users. Explain what changed and why it matters; do not restate implementation details or the pull request title.
 
-Pull requests that do not affect the published package can add an empty changeset with `bun run changeset --empty`, or explain in the pull request why no changeset is required.
+If a pull request changes the package without affecting its users, add an empty changeset with `bun run changeset --empty` so CI records that decision explicitly.
