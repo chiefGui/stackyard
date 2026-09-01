@@ -4,6 +4,8 @@ import { defineCliCommand, runCli, type CliDependencies } from "../apps/cli/src/
 import { createInspectCommand } from "../apps/cli/src/inspect.ts";
 import { createDiagnostic, failure, type Diagnostic } from "../packages/diagnostics/src/index.ts";
 
+const cliVersion = "1.2.3";
+
 test("the CLI dispatches injected commands without knowing their implementation", async () => {
   const receivedValues: string[] = [];
   const reportedDiagnostics: Diagnostic[] = [];
@@ -26,6 +28,7 @@ test("the CLI dispatches injected commands without knowing their implementation"
         reportedDiagnostics.push(diagnostic);
       },
     },
+    version: cliVersion,
     writeOutput(value) {
       output.push(value);
     },
@@ -52,6 +55,7 @@ test("the CLI generates help from the command definitions", async () => {
   const exitCode = await runCli(["custom", "--help"], {
     commands: [command],
     diagnostics: { report() {} },
+    version: cliVersion,
     writeOutput(value) {
       output.push(value);
     },
@@ -60,6 +64,41 @@ test("the CLI generates help from the command definitions", async () => {
   expect(exitCode).toBe(0);
   expect(output.join("\n")).toContain("USAGE stackyard custom");
   expect(output.join("\n")).toContain("Input value");
+});
+
+test("the CLI reports its version through either root flag", async () => {
+  const output: string[] = [];
+  const dependencies: CliDependencies = {
+    commands: [],
+    diagnostics: {
+      report() {
+        throw new Error("Version output must not report a diagnostic.");
+      },
+    },
+    version: cliVersion,
+    writeOutput(value) {
+      output.push(value);
+    },
+  };
+
+  expect(await runCli(["--version"], dependencies)).toBe(0);
+  expect(await runCli(["-v"], dependencies)).toBe(0);
+  expect(output).toEqual([`${cliVersion}\n`, `${cliVersion}\n`]);
+});
+
+test("root help identifies the running CLI version", async () => {
+  const output: string[] = [];
+  const exitCode = await runCli([], {
+    commands: [],
+    diagnostics: { report() {} },
+    version: cliVersion,
+    writeOutput(value) {
+      output.push(value);
+    },
+  });
+
+  expect(exitCode).toBe(0);
+  expect(output.join("\n")).toContain(`stackyard v${cliVersion}`);
 });
 
 test("unknown CLI commands report actionable diagnostics", async () => {
@@ -72,6 +111,7 @@ test("unknown CLI commands report actionable diagnostics", async () => {
         reportedDiagnostics.push(diagnostic);
       },
     },
+    version: cliVersion,
     writeOutput() {},
   });
 
@@ -103,6 +143,7 @@ test("invalid inspect arguments report the accepted syntax", async () => {
         reportedDiagnostics.push(diagnostic);
       },
     },
+    version: cliVersion,
     writeOutput() {},
   };
 
@@ -150,6 +191,7 @@ test("inspect reports when captured project output was truncated", async () => {
         reportedDiagnostics.push(diagnostic);
       },
     },
+    version: cliVersion,
     writeOutput() {},
   });
 

@@ -35,6 +35,9 @@ test("the packed package works in an external Bun project", async () => {
     if (typeof manifest !== "object" || manifest === null) {
       throw new TypeError("The installed package manifest must be an object.");
     }
+    if (!("version" in manifest) || typeof manifest.version !== "string") {
+      throw new TypeError("The installed package manifest must declare a version.");
+    }
 
     expect("dependencies" in manifest).toBeFalse();
     expect((await readdir(installedPackage)).toSorted()).toEqual([
@@ -60,6 +63,12 @@ test("the packed package works in an external Bun project", async () => {
     expect(
       await readFile(join(installedPackage, "dist/dashboard-web/index.html"), "utf8"),
     ).toContain('<div id="root"></div>');
+
+    const version = await runCommand(
+      [process.execPath, "x", "stackyard", "--version"],
+      consumerDirectory,
+    );
+    expect(version).toEqual({ exitCode: 0, stderr: "", stdout: `${manifest.version}\n` });
 
     const typecheck = await runCommand(
       [process.execPath, "x", "tsc", "--noEmit"],

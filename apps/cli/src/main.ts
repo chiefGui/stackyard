@@ -13,6 +13,7 @@ import {
   runProjectEvaluator,
 } from "@stackyard/project-loader";
 
+import packageManifest from "../package.json" with { type: "json" };
 import { runCli } from "./cli.ts";
 import { createInspectCommand } from "./inspect.ts";
 import { createRunCommand } from "./run.ts";
@@ -81,6 +82,7 @@ function runPublicCli(): Promise<number> {
       }),
     ],
     diagnostics,
+    version: packageManifest.version,
     writeOutput(output) {
       process.stdout.write(output);
     },

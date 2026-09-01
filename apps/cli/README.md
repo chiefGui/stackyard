@@ -23,6 +23,7 @@ npm install --global stackyard
 ## Usage
 
 ```sh
+stackyard --version
 stackyard help
 ```
 

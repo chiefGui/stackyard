@@ -34,6 +34,7 @@ export type CliCommandDefinition<T extends ArgsDef> = Omit<
 export interface CliDependencies {
   readonly commands: readonly CliCommand[];
   readonly diagnostics: DiagnosticSink;
+  readonly version: string;
   writeOutput(output: string): void;
 }
 
@@ -84,6 +85,10 @@ export async function runCli(
   dependencies: CliDependencies,
 ): Promise<number> {
   const [commandName, ...commandArguments] = args;
+  if (commandName && args.length === 1 && isVersionFlag(commandName)) {
+    dependencies.writeOutput(`${dependencies.version}\n`);
+    return 0;
+  }
   if (!commandName || commandName === "help" || isHelpFlag(commandName)) {
     await writeRootHelp(dependencies);
     return 0;
@@ -115,14 +120,16 @@ export async function runCli(
 }
 
 async function writeRootHelp(dependencies: CliDependencies): Promise<void> {
-  dependencies.writeOutput(`${await renderUsage(createRootCommand(dependencies.commands))}\n`);
+  dependencies.writeOutput(
+    `${await renderUsage(createRootCommand(dependencies.commands, dependencies.version))}\n`,
+  );
 }
 
 async function writeCommandHelp(command: CliCommand, dependencies: CliDependencies): Promise<void> {
   dependencies.writeOutput(`${await command.renderHelp()}\n`);
 }
 
-function createRootCommand(commands: CliDependencies["commands"]): CommandDef {
+function createRootCommand(commands: CliDependencies["commands"], version: string): CommandDef {
   const subCommands: SubCommandsDef = {};
   for (const command of commands) {
     subCommands[command.name] = command.definition;
@@ -132,6 +139,7 @@ function createRootCommand(commands: CliDependencies["commands"]): CommandDef {
     meta: {
       description: "Run and inspect local projects",
       name: cliName,
+      version,
     },
     subCommands,
   });
@@ -230,6 +238,10 @@ function isPositional(definition: ArgsDef[string]): boolean {
 
 function isHelpFlag(argument: string): boolean {
   return argument === "--help" || argument === "-h";
+}
+
+function isVersionFlag(argument: string): boolean {
+  return argument === "--version" || argument === "-v";
 }
 
 function isCittyArgumentError(error: unknown): error is Error & { readonly code: "EARG" } {
