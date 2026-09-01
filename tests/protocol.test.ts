@@ -206,6 +206,55 @@ describe("ProjectSpec", () => {
     ]);
     expect(diagnostics.map(({ code }) => code)).toEqual(["SYD1002", "SYD1005", "SYD1006"]);
   });
+
+  test("rejects projects without resources", () => {
+    const diagnostics = parseDiagnostics({ ...validSpec, resources: {} });
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.code).toBe("SYD1009");
+    expect(diagnostics[0]?.path).toEqual(["resources"]);
+    expect(diagnostics[0]?.help).toBe("Add at least one service to the project resources.");
+  });
+
+  test("rejects non-portable endpoint environment ownership", () => {
+    const input = {
+      ...validSpec,
+      resources: {
+        api: {
+          ...validSpec.resources.api,
+          endpoints: {
+            ...validSpec.resources.api.endpoints,
+            management: {
+              kind: "http",
+              port: { env: "port", kind: "allocated" },
+            },
+          },
+          env: { FOO: "one", Port: "3000", foo: "two" },
+        },
+      },
+    };
+
+    const result = parseProjectSpec(input);
+
+    expect(result.success).toBeFalse();
+    if (!result.success) {
+      expect(result.diagnostics.map(({ code }) => code)).toEqual(["SYD1010", "SYD1011", "SYD1012"]);
+      const [endpointDiagnostic, portDiagnostic, environmentDiagnostic] = result.diagnostics;
+      if (!portDiagnostic || !environmentDiagnostic) {
+        throw new Error("Expected three environment collision diagnostics.");
+      }
+      expect(endpointDiagnostic.path).toEqual([
+        "resources",
+        "api",
+        "endpoints",
+        "management",
+        "port",
+        "env",
+      ]);
+      expect(portDiagnostic.path).toEqual(["resources", "api", "env", "Port"]);
+      expect(environmentDiagnostic.path).toEqual(["resources", "api", "env", "foo"]);
+    }
+  });
 });
 
 function parseDiagnostics(input: unknown): NonEmptyDiagnostics {

@@ -9,6 +9,14 @@
     ],
     "catalog": {
       "@types/bun": "1.4.0",
+      "@types/node": "26.4.0",
+      "@types/react": "19.2.18",
+      "@types/react-dom": "19.2.5",
+      "@vitejs/plugin-react": "6.1.1",
+      "react": "19.2.8",
+      "react-dom": "19.2.8",
+      "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
+      "vite-plus": "0.3.0",
       "typescript": "7.0.2"
     }
   },
@@ -25,6 +33,7 @@
     "lint:fix": "oxlint --fix --deny-warnings .",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
+    "stackyard": "bun ./apps/cli/src/main.ts",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test:coverage && bun run build"
   },
   "devDependencies": {
@@ -33,7 +42,12 @@
     "oxfmt": "0.65.0",
     "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
+    "stackyard": "workspace:*",
     "typescript": "catalog:"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
+    "vitest": "4.1.11"
   },
   "packageManager": "bun@1.4.0"
 }

@@ -135,7 +135,6 @@ function compileService(
   diagnostics: DiagnosticSink,
 ): ProcessResourceSpec {
   const endpoints: Record<string, ProcessResourceSpec["endpoints"][string]> = {};
-  const endpointEnvironmentNames = new Map<string, string>();
 
   for (const [name, descriptor] of Object.entries(state.endpoints).sort(compareEntries)) {
     const endpointState = getEndpointState(descriptor);
@@ -153,20 +152,6 @@ function compileService(
       continue;
     }
 
-    const previousEndpoint = endpointEnvironmentNames.get(endpointState.env);
-    if (previousEndpoint) {
-      diagnostics.report(
-        createDiagnostic({
-          code: "SYD1104",
-          help: "Assign a distinct environment variable to each endpoint.",
-          message: `Environment variable '${endpointState.env}' is already assigned to endpoint '${previousEndpoint}'.`,
-          path: [...path, "port", "env"],
-        }),
-      );
-    } else {
-      endpointEnvironmentNames.set(endpointState.env, name);
-    }
-
     endpoints[name] = {
       kind: "http",
       port: {
@@ -182,18 +167,6 @@ function compileService(
   const env: Record<string, EnvironmentValueSpec> = {};
 
   for (const [name, value] of Object.entries(state.env).sort(compareEntries)) {
-    if (endpointEnvironmentNames.has(name)) {
-      diagnostics.report(
-        createDiagnostic({
-          code: "SYD1105",
-          help: "Remove the explicit value or assign a different variable to the endpoint.",
-          message: `Environment variable '${name}' is managed by an endpoint and cannot also be set explicitly.`,
-          path: ["resources", resourceName, "env", name],
-        }),
-      );
-      continue;
-    }
-
     if (typeof value === "string") {
       env[name] = value;
       continue;

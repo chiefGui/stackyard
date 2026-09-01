@@ -74,11 +74,46 @@ describe("project definitions", () => {
             api: service({
               command: ["bun", "api.ts"],
               endpoints: { http: endpoint.http({ env: "PORT" }) },
-              env: { PORT: "3000" },
+              env: { port: "3000" },
             }),
           },
         }),
-      "SYD1105",
+      "SYD1011",
+    );
+  });
+
+  test("rejects endpoint environment variables that differ only by case", () => {
+    expectProjectError(
+      () =>
+        defineProject({
+          name: "example",
+          resources: {
+            api: service({
+              command: ["bun", "api.ts"],
+              endpoints: {
+                http: endpoint.http({ env: "PORT" }),
+                management: endpoint.http({ env: "port" }),
+              },
+            }),
+          },
+        }),
+      "SYD1010",
+    );
+  });
+
+  test("rejects explicit environment variables that differ only by case", () => {
+    expectProjectError(
+      () =>
+        defineProject({
+          name: "example",
+          resources: {
+            api: service({
+              command: ["bun", "api.ts"],
+              env: { FOO: "one", foo: "two" },
+            }),
+          },
+        }),
+      "SYD1012",
     );
   });
 

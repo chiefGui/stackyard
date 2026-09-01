@@ -1,7 +1,11 @@
 #!/usr/bin/env bun
 
+import { writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { internalDaemonCommand } from "@stackyard/daemon/locator";
+import { runManagedDaemon } from "@stackyard/daemon/managed";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
   loadProject as loadProjectDefinition,
@@ -11,39 +15,113 @@ import {
 
 import { runCli } from "./cli.ts";
 import { createInspectCommand } from "./inspect.ts";
+import { createRunCommand } from "./run.ts";
 
 const cliEntrypoint = fileURLToPath(import.meta.url);
-const [command, ...args] = Bun.argv.slice(2);
-const diagnostics: DiagnosticSink = {
-  report(diagnostic) {
-    process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
-  },
-};
+const cliArguments = Bun.argv.slice(2);
+const [command, ...commandArguments] = cliArguments;
+let diagnosticsPath: string | undefined;
+if (command === internalDaemonCommand) {
+  diagnosticsPath = Bun.env.STACKYARD_DIAGNOSTICS_PATH;
+}
+const diagnostics = createDiagnosticSink(diagnosticsPath);
 
-process.exitCode =
-  command === projectEvaluatorCommand
-    ? await runProjectEvaluator(args[0] ?? "")
-    : await runCli(Bun.argv.slice(2), {
-        commands: [
-          createInspectCommand({
-            diagnostics,
-            loadProject(path) {
-              return loadProjectDefinition({
-                currentDirectory: process.cwd(),
-                evaluatorEntrypoint: cliEntrypoint,
-                ...(path ? { path } : {}),
-              });
-            },
-            writeError(output) {
-              process.stderr.write(output);
-            },
-            writeOutput(output) {
-              process.stdout.write(output);
-            },
-          }),
-        ],
+process.exitCode = await main();
+
+function main(): Promise<number> {
+  if (command === internalDaemonCommand) {
+    return runDaemon();
+  }
+  if (command === projectEvaluatorCommand) {
+    return runProjectEvaluator(commandArguments[0] ?? "");
+  }
+  return runPublicCli();
+}
+
+function runDaemon(): Promise<number> {
+  const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
+  const dashboardWebDirectory =
+    configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
+  const configuredRuntimeDirectory = Bun.env.STACKYARD_RUNTIME_DIR;
+  if (configuredRuntimeDirectory) {
+    return runManagedDaemon({
+      dashboardWebDirectory,
+      diagnostics,
+      runtimeDirectory: configuredRuntimeDirectory,
+    });
+  }
+  return runManagedDaemon({ dashboardWebDirectory, diagnostics });
+}
+
+function runPublicCli(): Promise<number> {
+  const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
+  return runCli(cliArguments, {
+    commands: [
+      createInspectCommand({
         diagnostics,
+        loadProject,
+        writeError(output) {
+          process.stderr.write(output);
+        },
         writeOutput(output) {
           process.stdout.write(output);
         },
-      });
+      }),
+      createRunCommand({
+        daemonEntrypoint: cliEntrypoint,
+        dashboardWebDirectory,
+        diagnostics,
+        loadProject,
+        writeError(output) {
+          process.stderr.write(output);
+        },
+        writeOutput(output) {
+          process.stdout.write(output);
+        },
+      }),
+    ],
+    diagnostics,
+    writeOutput(output) {
+      process.stdout.write(output);
+    },
+  });
+}
+
+function loadProject(path: string | undefined) {
+  const options = {
+    currentDirectory: process.cwd(),
+    evaluatorEntrypoint: cliEntrypoint,
+  };
+  if (path) {
+    return loadProjectDefinition({ ...options, path });
+  }
+  return loadProjectDefinition(options);
+}
+
+function resolveDashboardWebDirectory(entrypoint: string): string {
+  const directory = dirname(entrypoint);
+  if (basename(directory) === "src") {
+    return resolve(directory, "../../dashboard-web/dist");
+  }
+  return join(directory, "dashboard-web");
+}
+
+function createDiagnosticSink(path: string | undefined): DiagnosticSink {
+  let captured = "";
+  return {
+    report(diagnostic) {
+      const formatted = `${formatDiagnostic(diagnostic)}\n`;
+      if (!path) {
+        process.stderr.write(formatted);
+        return;
+      }
+
+      captured = `${captured}${formatted}`.slice(-64 * 1024);
+      try {
+        writeFileSync(path, captured, { encoding: "utf8", mode: 0o600 });
+      } catch {
+        process.stderr.write(formatted);
+      }
+    },
+  };
+}

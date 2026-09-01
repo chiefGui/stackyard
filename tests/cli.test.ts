@@ -11,8 +11,8 @@ test("inspect discovers and evaluates a project in an isolated process", async (
     join(repositoryRoot, "examples/basic/stackyard"),
   );
 
-  expect(result.exitCode).toBe(0);
   expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
 
   const parsedSpec = parseProjectSpec(JSON.parse(result.stdout));
   expect(parsedSpec.success).toBeTrue();
@@ -24,6 +24,35 @@ test("inspect discovers and evaluates a project in an isolated process", async (
   expect(spec.name).toBe("basic");
   expect(spec.schemaVersion).toBe(1);
   expect(Object.keys(spec.resources)).toEqual(["api", "web"]);
+});
+
+test("Stackyard describes its own daemon through the public project API", async () => {
+  const result = await runCli(["inspect", "--json"], repositoryRoot);
+
+  expect(result.stderr).toBe("");
+  expect(result.exitCode).toBe(0);
+
+  const parsedSpec = parseProjectSpec(JSON.parse(result.stdout));
+  expect(parsedSpec.success).toBeTrue();
+  if (!parsedSpec.success) {
+    throw new Error("Expected Stackyard's definition to produce a valid project specification.");
+  }
+
+  expect(parsedSpec.output.name).toBe("stackyard");
+  expect(Object.keys(parsedSpec.output.resources)).toEqual(["daemon", "dashboard-web"]);
+
+  const daemon = parsedSpec.output.resources.daemon;
+  expect(daemon?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
+  expect(daemon?.cwd).toBe("apps/daemon");
+  expect(daemon?.endpoints.http?.port).toEqual({
+    env: "PORT",
+    kind: "allocated",
+    preferred: 3000,
+  });
+
+  const dashboardWeb = parsedSpec.output.resources["dashboard-web"];
+  expect(dashboardWeb?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
+  expect(dashboardWeb?.cwd).toBe("apps/dashboard-web");
 });
 
 test("inspect preserves structured definition errors across the evaluator boundary", async () => {
