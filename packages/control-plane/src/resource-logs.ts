@@ -24,6 +24,7 @@ export interface ResourceLogSnapshot {
   readonly droppedEntries: number;
   readonly entries: readonly ResourceLogEntry[];
   readonly hasMore: boolean;
+  readonly latestCursor: number;
   readonly nextCursor: number;
   readonly retainedFrom: number;
   readonly revision: number;
@@ -287,7 +288,8 @@ class BoundedResourceLogFeed implements ResourceLogFeed {
       droppedEntries: Math.max(0, retainedFrom - after - 1),
       entries: Object.freeze(entries),
       hasMore,
-      nextCursor: entries.at(-1)?.sequence ?? after,
+      latestCursor: this.#nextSequence - 1,
+      nextCursor: entries.at(-1)?.sequence ?? Math.max(after, retainedFrom - 1),
       retainedFrom,
       revision: this.#revision,
       status: this.#status,
