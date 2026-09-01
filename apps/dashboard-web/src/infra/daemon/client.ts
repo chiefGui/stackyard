@@ -1,6 +1,6 @@
 import { parseProjectList, type ProjectList } from "@stackyard/protocol/projects";
 
-type Requester = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type Requester = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface ListProjectsOptions {
   readonly signal?: AbortSignal;
