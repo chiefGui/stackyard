@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { defineCliCommand, runCli } from "../apps/cli/src/cli.ts";
+import { defineCliCommand, runCli, type CliDependencies } from "../apps/cli/src/cli.ts";
 import { createInspectCommand } from "../apps/cli/src/inspect.ts";
 import { createDiagnostic, failure, type Diagnostic } from "../packages/diagnostics/src/index.ts";
 
@@ -8,24 +8,16 @@ test("the CLI dispatches injected commands without knowing their implementation"
   const receivedValues: string[] = [];
   const reportedDiagnostics: Diagnostic[] = [];
   const output: string[] = [];
-  const command = defineCliCommand(
-    "custom",
-    {
-      args: {
-        value: { required: true, type: "positional" },
-      },
-      meta: { description: "A test command" },
-      async run({ args }) {
-        receivedValues.push(args.value);
-        return 7;
-      },
+  const command = defineCliCommand("custom", "SYD9000", {
+    args: {
+      value: { required: true, type: "positional" },
     },
-    {
-      code: "SYD9000",
-      help: "Use: stackyard custom <value>",
-      tooManyPositionals: "Custom accepts exactly one value.",
+    meta: { description: "A test command" },
+    async run({ args }) {
+      receivedValues.push(args.value);
+      return 7;
     },
-  );
+  });
 
   const exitCode = await runCli(["custom", "value"], {
     commands: [command],
@@ -47,23 +39,15 @@ test("the CLI dispatches injected commands without knowing their implementation"
 
 test("the CLI generates help from the command definitions", async () => {
   const output: string[] = [];
-  const command = defineCliCommand(
-    "custom",
-    {
-      args: {
-        value: { description: "Input value", required: false, type: "positional" },
-      },
-      meta: { description: "A test command" },
-      run() {
-        throw new Error("Help must not run the command.");
-      },
+  const command = defineCliCommand("custom", "SYD9000", {
+    args: {
+      value: { description: "Input value", required: false, type: "positional" },
     },
-    {
-      code: "SYD9000",
-      help: "Use: stackyard custom [value]",
-      tooManyPositionals: "Custom accepts at most one value.",
+    meta: { description: "A test command" },
+    run() {
+      throw new Error("Help must not run the command.");
     },
-  );
+  });
 
   const exitCode = await runCli(["custom", "--help"], {
     commands: [command],
@@ -112,7 +96,7 @@ test("invalid inspect arguments report the accepted syntax", async () => {
     writeOutput() {},
   });
 
-  const exitCode = await runCli(["inspect", "--unknown"], {
+  const cliDependencies: CliDependencies = {
     commands: [command],
     diagnostics: {
       report(diagnostic) {
@@ -120,13 +104,21 @@ test("invalid inspect arguments report the accepted syntax", async () => {
       },
     },
     writeOutput() {},
-  });
+  };
 
-  expect(exitCode).toBe(1);
+  expect(await runCli(["inspect", "--unknown"], cliDependencies)).toBe(1);
   expect(reportedDiagnostics).toHaveLength(1);
   expect(reportedDiagnostics[0]?.code).toBe("SYD2005");
   expect(reportedDiagnostics[0]?.message).toBe("Unknown option '--unknown'.");
-  expect(reportedDiagnostics[0]?.help).toBe("Use: stackyard inspect [path] [--json]");
+  expect(reportedDiagnostics[0]?.help).toBe(
+    "Run 'stackyard inspect --help' to see the accepted arguments.",
+  );
+
+  reportedDiagnostics.length = 0;
+  expect(await runCli(["inspect", "one", "two"], cliDependencies)).toBe(1);
+  expect(reportedDiagnostics[0]?.message).toBe(
+    "Command 'inspect' accepts at most one positional argument.",
+  );
 });
 
 test("inspect reports when captured project output was truncated", async () => {

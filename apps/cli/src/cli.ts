@@ -12,17 +12,14 @@ import {
   type SubCommandsDef,
 } from "citty";
 
-export interface CliArgumentDiagnostics {
-  readonly code: string;
-  readonly help: string;
-  readonly tooManyPositionals: string;
-}
+const cliName = "stackyard";
 
 export interface CliCommand {
+  readonly diagnosticCode: string;
   readonly definition: SubCommandsDef[string];
-  readonly invalidArguments: CliArgumentDiagnostics;
   readonly name: string;
   execute(args: readonly string[]): Promise<number>;
+  renderHelp(): Promise<string>;
 }
 
 export type CliCommandDefinition<T extends ArgsDef> = Omit<
@@ -42,12 +39,12 @@ export interface CliDependencies {
 
 export function defineCliCommand<const T extends ArgsDef>(
   name: string,
+  diagnosticCode: string,
   definition: CliCommandDefinition<T>,
-  invalidArguments: CliArgumentDiagnostics,
 ): CliCommand {
   const command = defineCommand({
     ...definition,
-    meta: { ...definition.meta, name },
+    meta: { ...definition.meta, name: `${cliName} ${name}` },
   });
   const validatedCommand = defineCommand({
     ...command,
@@ -56,7 +53,7 @@ export function defineCliCommand<const T extends ArgsDef>(
         context.args,
         context.rawArgs,
         definition.args ?? {},
-        invalidArguments.tooManyPositionals,
+        name,
       );
       if (invalidArgument) {
         throw new InvalidArgumentsError(invalidArgument);
@@ -66,8 +63,8 @@ export function defineCliCommand<const T extends ArgsDef>(
   });
 
   return {
+    diagnosticCode,
     definition: command,
-    invalidArguments,
     name,
     async execute(args) {
       const execution = await runCommand(validatedCommand, { rawArgs: [...args] });
@@ -75,6 +72,9 @@ export function defineCliCommand<const T extends ArgsDef>(
         throw new TypeError("A CLI command did not return an exit code.");
       }
       return execution.result;
+    },
+    renderHelp() {
+      return renderUsage(command);
     },
   };
 }
@@ -84,13 +84,9 @@ export async function runCli(
   dependencies: CliDependencies,
 ): Promise<number> {
   const [commandName, ...commandArguments] = args;
-  if (!commandName || isHelpFlag(commandName)) {
+  if (!commandName || commandName === "help" || isHelpFlag(commandName)) {
     await writeRootHelp(dependencies);
     return 0;
-  }
-
-  if (commandName === "help") {
-    return writeRequestedHelp(commandArguments[0], dependencies);
   }
 
   const command = findCommand(commandName, dependencies.commands);
@@ -118,32 +114,12 @@ export async function runCli(
   }
 }
 
-async function writeRequestedHelp(
-  commandName: string | undefined,
-  dependencies: CliDependencies,
-): Promise<number> {
-  if (!commandName) {
-    await writeRootHelp(dependencies);
-    return 0;
-  }
-
-  const command = findCommand(commandName, dependencies.commands);
-  if (!command) {
-    return reportUnknownCommand(commandName, dependencies);
-  }
-
-  await writeCommandHelp(command, dependencies);
-  return 0;
-}
-
 async function writeRootHelp(dependencies: CliDependencies): Promise<void> {
   dependencies.writeOutput(`${await renderUsage(createRootCommand(dependencies.commands))}\n`);
 }
 
 async function writeCommandHelp(command: CliCommand, dependencies: CliDependencies): Promise<void> {
-  const definition = await resolveCommand(command.definition);
-  const root = createRootCommand(dependencies.commands);
-  dependencies.writeOutput(`${await renderUsage(definition, root)}\n`);
+  dependencies.writeOutput(`${await command.renderHelp()}\n`);
 }
 
 function createRootCommand(commands: CliDependencies["commands"]): CommandDef {
@@ -155,17 +131,10 @@ function createRootCommand(commands: CliDependencies["commands"]): CommandDef {
   return defineCommand({
     meta: {
       description: "Run and inspect local projects",
-      name: "stackyard",
+      name: cliName,
     },
     subCommands,
   });
-}
-
-async function resolveCommand(definition: SubCommandsDef[string]) {
-  if (typeof definition === "function") {
-    return definition();
-  }
-  return definition;
 }
 
 function findCommand(name: string, commands: readonly CliCommand[]): CliCommand | undefined {
@@ -181,7 +150,7 @@ function validateParsedArguments(
   args: Readonly<Record<string, boolean | number | string | string[]>> & { readonly _: string[] },
   rawArguments: readonly string[],
   definitions: ArgsDef,
-  tooManyPositionals: string,
+  commandName: string,
 ): string | undefined {
   const knownArguments = new Set(["_", ...Object.keys(definitions)]);
   for (const name of Object.keys(definitions)) {
@@ -208,9 +177,19 @@ function validateParsedArguments(
 
   const positionalLimit = Object.values(definitions).filter(isPositional).length;
   if (args._.length > positionalLimit) {
-    return tooManyPositionals;
+    return describePositionalLimit(commandName, positionalLimit);
   }
   return undefined;
+}
+
+function describePositionalLimit(commandName: string, limit: number): string {
+  if (limit === 0) {
+    return `Command '${commandName}' does not accept positional arguments.`;
+  }
+  if (limit === 1) {
+    return `Command '${commandName}' accepts at most one positional argument.`;
+  }
+  return `Command '${commandName}' accepts at most ${limit} positional arguments.`;
 }
 
 function toCamelCase(value: string): string {
@@ -277,8 +256,8 @@ function reportInvalidArguments(
 ): void {
   dependencies.diagnostics.report(
     createDiagnostic({
-      code: command.invalidArguments.code,
-      help: command.invalidArguments.help,
+      code: command.diagnosticCode,
+      help: `Run '${cliName} ${command.name} --help' to see the accepted arguments.`,
       message,
     }),
   );

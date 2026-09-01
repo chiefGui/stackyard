@@ -26,29 +26,21 @@ export interface RunCommandDependencies {
 }
 
 export function createRunCommand(dependencies: RunCommandDependencies): CliCommand {
-  return defineCliCommand(
-    "run",
-    {
-      args: {
-        path: {
-          description: "Project directory",
-          required: false,
-          type: "positional",
-        },
-      },
-      meta: {
-        description: "Start a project and its dashboard",
-      },
-      run({ args }) {
-        return runProject(args.path, dependencies);
+  return defineCliCommand("run", "SYD2009", {
+    args: {
+      path: {
+        description: "Project directory",
+        required: false,
+        type: "positional",
       },
     },
-    {
-      code: "SYD2009",
-      help: "Use: stackyard run [path]",
-      tooManyPositionals: "Run accepts at most one project path.",
+    meta: {
+      description: "Start a project and its dashboard",
     },
-  );
+    run({ args }) {
+      return runProject(args.path, dependencies);
+    },
+  });
 }
 
 async function runProject(

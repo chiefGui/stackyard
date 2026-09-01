@@ -12,33 +12,25 @@ export interface InspectCommandDependencies {
 }
 
 export function createInspectCommand(dependencies: InspectCommandDependencies): CliCommand {
-  return defineCliCommand(
-    "inspect",
-    {
-      args: {
-        path: {
-          description: "Project directory",
-          required: false,
-          type: "positional",
-        },
-        json: {
-          description: "Print compact JSON",
-          type: "boolean",
-        },
+  return defineCliCommand("inspect", "SYD2005", {
+    args: {
+      path: {
+        description: "Project directory",
+        required: false,
+        type: "positional",
       },
-      meta: {
-        description: "Evaluate and print a project definition",
-      },
-      run({ args }) {
-        return runInspect(args.path, args.json ?? false, dependencies);
+      json: {
+        description: "Print compact JSON",
+        type: "boolean",
       },
     },
-    {
-      code: "SYD2005",
-      help: "Use: stackyard inspect [path] [--json]",
-      tooManyPositionals: "Inspect accepts at most one project path.",
+    meta: {
+      description: "Evaluate and print a project definition",
     },
-  );
+    run({ args }) {
+      return runInspect(args.path, args.json ?? false, dependencies);
+    },
+  });
 }
 
 async function runInspect(
