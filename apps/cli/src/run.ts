@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+
 import { daemonUrl, ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
@@ -5,23 +7,19 @@ import {
   type Diagnostic,
   type DiagnosticSink,
 } from "@stackyard/diagnostics";
-import type { ProjectLoadOutcome } from "@stackyard/project-loader";
+import { discoverProject } from "@stackyard/project-loader";
 import {
   createStartProjectMessage,
   createStopProjectMessage,
   parseDaemonServerMessage,
-  type ProjectSpec,
 } from "@stackyard/protocol";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
-import { writeProjectEvaluationOutput } from "./project-output.ts";
-
 export interface RunCommandDependencies {
+  readonly currentDirectory: string;
   readonly daemonEntrypoint: string;
   readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
-  loadProject(path: string | undefined): Promise<ProjectLoadOutcome>;
-  writeError(output: string): void;
   writeOutput(output: string): void;
 }
 
@@ -47,10 +45,24 @@ async function runProject(
   path: string | undefined,
   dependencies: RunCommandDependencies,
 ): Promise<number> {
-  const project = await dependencies.loadProject(path);
-  writeProjectEvaluationOutput(project, dependencies);
-  if (!project.result.success) {
-    reportDiagnostics(dependencies.diagnostics, project.result.diagnostics);
+  const discovered = await discoverProject(path, dependencies.currentDirectory);
+  if (!discovered.success) {
+    reportDiagnostics(dependencies.diagnostics, discovered.diagnostics);
+    return 1;
+  }
+
+  let root: string;
+  try {
+    root = await realpath(discovered.output.root);
+  } catch (error) {
+    dependencies.diagnostics.report(
+      createDiagnostic({
+        code: "SYD2006",
+        help: "Verify that the project directory exists and is readable, then retry.",
+        message: "The project directory could not be resolved.",
+        notes: [error instanceof Error ? error.message : String(error)],
+      }),
+    );
     return 1;
   }
 
@@ -63,18 +75,12 @@ async function runProject(
     return 1;
   }
 
-  return runSession(
-    daemon.output,
-    project.result.output.location.root,
-    project.result.output.spec,
-    dependencies,
-  );
+  return runSession(daemon.output, root, dependencies);
 }
 
 function runSession(
   locator: DaemonLocator,
   root: string,
-  spec: ProjectSpec,
   dependencies: RunCommandDependencies,
 ): Promise<number> {
   return new Promise((resolve) => {
@@ -136,9 +142,7 @@ function runSession(
         finish(0);
         return;
       }
-      socket.send(
-        JSON.stringify(createStartProjectMessage(root, spec, serviceEnvironment(process.env))),
-      );
+      socket.send(JSON.stringify(createStartProjectMessage(root, serviceEnvironment(process.env))));
     });
     socket.addEventListener("message", (event) => {
       let value: unknown;
@@ -160,7 +164,9 @@ function runSession(
       if (message.output.kind === "started") {
         started = true;
         clearTimeout(timeout);
-        dependencies.writeOutput(`${spec.name} is running. Dashboard: ${daemonUrl(locator)}\n`);
+        dependencies.writeOutput(
+          `${message.output.projectName} is running. Dashboard: ${daemonUrl(locator)}\n`,
+        );
       } else if (message.output.kind === "failed") {
         reportDiagnostics(dependencies.diagnostics, message.output.report.diagnostics);
         finish(1);

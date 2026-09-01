@@ -3,11 +3,10 @@ import { resolve } from "node:path";
 import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
-import type { RegistrationClient } from "./registration-client.ts";
-import { registeredProjectLabel } from "./registration-output.ts";
+import type { ProjectClient } from "./project-client.ts";
 
 export interface AddCommandDependencies {
-  readonly client: RegistrationClient;
+  readonly client: ProjectClient;
   readonly diagnostics: DiagnosticSink;
   readonly currentDirectory: string;
   writeOutput(output: string): void;
@@ -22,7 +21,7 @@ export function createAddCommand(dependencies: AddCommandDependencies): CliComma
         type: "positional",
       },
     },
-    meta: { description: "Register a project with Stackyard" },
+    meta: { description: "Add a project to Stackyard" },
     run({ args }) {
       return addProject(args.path, dependencies);
     },
@@ -40,14 +39,10 @@ async function addProject(
   }
 
   const project = added.output;
-  dependencies.writeOutput(
-    `Registered '${registeredProjectLabel(project)}' with Stackyard.\nRoot: ${project.root}\n`,
-  );
-  if (project.definition.kind === "invalid" || project.definition.kind === "missing") {
-    dependencies.writeOutput(
-      `The project remains registered, but its definition is ${project.definition.kind}.\n`,
-    );
-    reportDiagnostics(dependencies.diagnostics, project.definition.diagnostics);
+  dependencies.writeOutput(`Added '${project.name}' to Stackyard.\nRoot: ${project.root}\n`);
+  if (project.issue) {
+    dependencies.writeOutput("The project needs attention before it can run.\n");
+    reportDiagnostics(dependencies.diagnostics, project.issue.diagnostics);
     return 1;
   }
   return 0;

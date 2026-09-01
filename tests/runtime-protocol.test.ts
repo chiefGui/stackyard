@@ -4,14 +4,11 @@ import { createDiagnostic, createDiagnosticReport } from "../packages/diagnostic
 import {
   createResourceLogBatch,
   createProjectStartedMessage,
-  createProjectSpec,
   createProjectList,
-  createRegisteredProjectList,
   createStartProjectMessage,
   parseDaemonClientMessage,
   parseDaemonServerMessage,
   parseProjectList,
-  parseRegisteredProjectList,
   parseResourceLogBatch,
 } from "../packages/protocol/src/index.ts";
 
@@ -21,6 +18,8 @@ test("project lists round-trip as immutable public state", () => {
       {
         id: "project-1",
         name: "demo",
+        restartRequired: false,
+        root: "/project",
         services: [
           {
             endpoints: [{ name: "http", url: "http://127.0.0.1:4000" }],
@@ -28,6 +27,7 @@ test("project lists round-trip as immutable public state", () => {
             state: "running",
           },
         ],
+        state: "running",
       },
     ],
   });
@@ -38,75 +38,54 @@ test("project lists round-trip as immutable public state", () => {
   expect(Object.isFrozen(projectList.projects[0]?.services[0]?.endpoints)).toBeTrue();
 });
 
-test("registered projects round-trip with their evaluated definitions", () => {
-  const list = createRegisteredProjectList([
-    {
-      definition: { kind: "valid", spec: projectSpec() },
-      id: "registration-1",
-      root: "/project",
-    },
-  ]);
-
-  const parsed = parseRegisteredProjectList(JSON.parse(JSON.stringify(list)));
-
-  expect(parsed).toEqual({ output: list, success: true });
-  expect(list.schemaVersion).toBe(1);
-  expect(Object.isFrozen(list.projects[0]?.definition)).toBeTrue();
-});
-
-test("registered project lists reject unsupported schema versions", () => {
-  const parsed = parseRegisteredProjectList({ projects: [], schemaVersion: 2 });
-
-  expect(parsed.success).toBeFalse();
-  if (!parsed.success) {
-    expect(parsed.diagnostics[0].code).toBe("SYD1201");
-  }
-});
-
-test("registered project lists reject relative roots and duplicate registrations", () => {
-  const definition = { kind: "valid" as const, spec: projectSpec() };
-  const relative = parseRegisteredProjectList({
-    projects: [{ definition, id: "registration-1", root: "project" }],
-    schemaVersion: 1,
-  });
-  const duplicate = parseRegisteredProjectList({
-    projects: [
-      { definition, id: "registration-1", root: "/project-one" },
-      { definition, id: "registration-1", root: "/project-two" },
-    ],
-    schemaVersion: 1,
-  });
-  const duplicateRoot = parseRegisteredProjectList({
-    projects: [
-      { definition, id: "registration-1", root: "/project" },
-      { definition, id: "registration-2", root: "/project" },
-    ],
-    schemaVersion: 1,
-  });
-
-  expect(relative.success).toBeFalse();
-  expect(duplicate.success).toBeFalse();
-  expect(duplicateRoot.success).toBeFalse();
-});
-
 test("invalid project lists produce actionable protocol diagnostics", () => {
   const parsed = parseProjectList({ projects: "invalid", schemaVersion: 1 });
 
   expect(parsed.success).toBeFalse();
   if (!parsed.success) {
     expect(parsed.diagnostics[0].code).toBe("SYD1200");
-    expect(parsed.diagnostics[0].help).toContain("dashboard and daemon");
+    expect(parsed.diagnostics[0].help).toContain("client and daemon");
   }
 });
 
-test("project start messages carry an isolated service environment", () => {
-  const spec = projectSpec();
-  const message = createStartProjectMessage("/project", spec, { COLOR: "1", TOKEN: "value" });
+test("project lists reject relative roots and duplicate durable identities", () => {
+  const project = {
+    id: "project-1",
+    name: "demo",
+    restartRequired: false,
+    root: "/project-one",
+    services: [],
+    state: "stopped",
+  } as const;
+
+  expect(
+    parseProjectList({
+      projects: [{ ...project, root: "relative" }],
+      schemaVersion: 1,
+    }).success,
+  ).toBeFalse();
+  expect(
+    parseProjectList({
+      projects: [project, { ...project, root: "/project-two" }],
+      schemaVersion: 1,
+    }).success,
+  ).toBeFalse();
+  expect(
+    parseProjectList({
+      projects: [project, { ...project, id: "project-2" }],
+      schemaVersion: 1,
+    }).success,
+  ).toBeFalse();
+});
+
+test("project start messages identify a project without duplicating its definition", () => {
+  const message = createStartProjectMessage("/project", { COLOR: "1", TOKEN: "value" });
 
   const parsed = parseDaemonClientMessage(JSON.parse(JSON.stringify(message)));
 
   expect(parsed).toEqual({ output: message, success: true });
   expect(Object.isFrozen(message.environment)).toBeTrue();
+  expect(message).not.toHaveProperty("spec");
 });
 
 test("project start messages reject non-string environment values", () => {
@@ -115,7 +94,6 @@ test("project start messages reject non-string environment values", () => {
     kind: "start",
     root: "/project",
     schemaVersion: 1,
-    spec: projectSpec(),
   });
 
   expect(parsed.success).toBeFalse();
@@ -125,11 +103,12 @@ test("project start messages reject non-string environment values", () => {
 });
 
 test("project started messages round-trip and reject unknown properties", () => {
-  const message = createProjectStartedMessage("project-1");
+  const message = createProjectStartedMessage("project-1", "demo");
 
   expect(message).toEqual({
     kind: "started",
     projectId: "project-1",
+    projectName: "demo",
     schemaVersion: 1,
   });
   expect(parseDaemonServerMessage(JSON.parse(JSON.stringify(message)))).toEqual({
@@ -213,22 +192,3 @@ test("resource log batches reject ambiguous cursors and unsupported properties",
     parseResourceLogBatch({ ...batch, entries: [{ ...batch.entries[0], sequence: 0 }] }).success,
   ).toBeFalse();
 });
-
-function projectSpec() {
-  const created = createProjectSpec({
-    name: "demo",
-    resources: {
-      api: {
-        command: { args: [], executable: "bun" },
-        cwd: ".",
-        endpoints: {},
-        env: {},
-        kind: "process",
-      },
-    },
-  });
-  if (!created.success) {
-    throw new Error("Test project specification is invalid.");
-  }
-  return created.output;
-}

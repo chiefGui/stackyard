@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import type { ProjectList } from "@stackyard/protocol/projects";
 
-import { colors, radii, spacing } from "../../styling/theme.stylex.ts";
+import { colors, fonts, radii, spacing } from "../../styling/theme.stylex.ts";
 import { ProjectServicesTable } from "./project-services-table.tsx";
 import { projectsQueryOptions } from "./projects-query.ts";
 
@@ -15,7 +15,7 @@ export function ProjectsPage() {
     <main {...stylex.props(styles.main)}>
       <header {...stylex.props(styles.header)}>
         <div>
-          <p {...stylex.props(styles.eyebrow)}>Active projects</p>
+          <p {...stylex.props(styles.eyebrow)}>Projects</p>
           <h1 {...stylex.props(styles.heading)}>Stackyard</h1>
         </div>
         <p {...stylex.props(styles.connection)} aria-live="polite">
@@ -66,8 +66,10 @@ function ProjectsContent({
   if (!projectList?.projects.length) {
     return (
       <section {...stylex.props(styles.emptyState)} aria-live="polite">
-        <h2 {...stylex.props(styles.emptyHeading)}>No projects running</h2>
-        <p {...stylex.props(styles.emptyCopy)}>Start one with stackyard run.</p>
+        <h2 {...stylex.props(styles.emptyHeading)}>No projects yet</h2>
+        <p {...stylex.props(styles.emptyCopy)}>
+          Add one with <code {...stylex.props(styles.command)}>stackyard add .</code>.
+        </p>
       </section>
     );
   }
@@ -95,6 +97,10 @@ const styles = stylex.create({
   },
   connectionIndicatorError: {
     backgroundColor: colors.dangerIndicator,
+  },
+  command: {
+    fontFamily: fonts.mono,
+    fontSize: "0.95em",
   },
   emptyCopy: {
     fontSize: 13,

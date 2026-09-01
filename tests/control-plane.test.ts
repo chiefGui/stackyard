@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import {
   ProjectManager,
-  ProjectRegistry,
+  ProjectCatalog,
+  ProjectOrchestrator,
   type ProjectDefinitionLoad,
   type ProjectDefinitionObservation,
-  type ProjectRegistrationRecord,
-  type ProjectRegistrationStore,
+  type ProjectRecord,
+  type ProjectStore,
   type PortAllocator,
   type PortLease,
   type ProcessExit,
@@ -64,7 +65,7 @@ describe("project manager", () => {
       executable: "web-command",
     });
 
-    const projects = manager.listProjects();
+    const projects = manager.listActiveProjects();
     expect(projects).not.toHaveProperty("schemaVersion");
     expect(projects).toMatchObject({
       projects: [
@@ -100,7 +101,7 @@ describe("project manager", () => {
     }
     expect(processes.handles[0]?.stopCount).toBe(1);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
 
     expect((await startProject(manager, "/project", projectSpec())).success).toBeTrue();
   });
@@ -117,14 +118,14 @@ describe("project manager", () => {
 
     const started = await startProject(manager, "/project", projectSpec());
 
-    expect(manager.listProjects().projects).toHaveLength(1);
+    expect(manager.listActiveProjects().projects).toHaveLength(1);
     expect(started.success).toBeFalse();
     if (!started.success) {
       expect(started.diagnostics.map(({ code }) => code)).toEqual(["SYD4998", "SYD4999"]);
       expect(started.cleanup?.id).toBeString();
       expect((await started.cleanup?.stop())?.success).toBeTrue();
     }
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
   });
 
   test("reports later exits independently and completes after every service exits", async () => {
@@ -138,16 +139,16 @@ describe("project manager", () => {
 
     processes.handles[0]?.exitLeader(7);
     await tick();
-    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
+    expect(manager.listActiveProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "stopping",
       "running",
     ]);
-    expect(manager.listProjects().projects[0]?.services[0]?.exitCode).toBe(7);
+    expect(manager.listActiveProjects().projects[0]?.services[0]?.exitCode).toBe(7);
     expect(processes.handles[1]?.stopCount).toBe(0);
 
     processes.handles[0]?.settle(7);
     await tick();
-    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
+    expect(manager.listActiveProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "failed",
       "running",
     ]);
@@ -186,7 +187,7 @@ describe("project manager", () => {
     expect(left.success).toBeTrue();
     expect(right.success).toBeTrue();
     expect(processes.handles.every(({ stopCount }) => stopCount === 1)).toBeTrue();
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
   });
 
   test("retains failed cleanup for inspection and permits a later retry", async () => {
@@ -206,7 +207,7 @@ describe("project manager", () => {
     const firstStop = await started.output.stop();
 
     expect(firstStop.success).toBeFalse();
-    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
+    expect(manager.listActiveProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "failed",
       "exited",
     ]);
@@ -216,7 +217,7 @@ describe("project manager", () => {
     expect(secondStop.success).toBeTrue();
     expect(firstHandle.stopCount).toBe(2);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
     expect(await started.output.completed).toEqual({ kind: "stopped" });
   });
 
@@ -240,7 +241,7 @@ describe("project manager", () => {
     const stopped = await started.output.stop();
 
     expect(stopped.success).toBeFalse();
-    expect(manager.listProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
+    expect(manager.listActiveProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "exited",
       "exited",
     ]);
@@ -262,6 +263,8 @@ describe("project manager", () => {
     const started = await manager.start({
       environment: {},
       environmentNamesCaseInsensitive: false,
+      id: "/project",
+      revision: 1,
       root: "/project",
       signal: cancellation.signal,
       spec: projectSpec(),
@@ -274,7 +277,7 @@ describe("project manager", () => {
     expect(processes.handles).toHaveLength(1);
     expect(processes.handles[0]?.stopCount).toBe(1);
     expect(ports.leases.every(({ disposed }) => disposed === 1)).toBeTrue();
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
     expect(manager.listRecentProjects().projects[0]?.services.map(({ state }) => state)).toEqual([
       "exited",
       "failed",
@@ -290,6 +293,8 @@ describe("project manager", () => {
     const started = await manager.start({
       environment: {},
       environmentNamesCaseInsensitive: false,
+      id: "/project",
+      revision: 1,
       root: "/project",
       signal: cancellation.signal,
       spec: projectSpec(),
@@ -302,7 +307,7 @@ describe("project manager", () => {
     expect(ports.leases).toHaveLength(1);
     expect(ports.leases[0]?.disposed).toBe(1);
     expect(processes.starts).toEqual([]);
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
   });
 
   test("serializes an explicit stop behind natural cleanup", async () => {
@@ -332,7 +337,7 @@ describe("project manager", () => {
     gate.resolve();
     expect((await stopping).success).toBeTrue();
     expect(firstHandle.stopCount).toBe(2);
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
   });
 
   test("uses the live resource feed for failure diagnostics", async () => {
@@ -372,7 +377,7 @@ describe("project manager", () => {
 
     expect((await started.output.stop()).success).toBeTrue();
 
-    expect(manager.listProjects().projects).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
     const recent = manager.listRecentProjects();
     expect(recent.projects).toMatchObject([{ id: started.output.id }]);
     expect(Object.isFrozen(recent.projects[0])).toBeTrue();
@@ -411,9 +416,7 @@ describe("project manager", () => {
   test("bounds recent projects and makes eviction observable", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses();
-    let id = 0;
     const manager = new ProjectManager({
-      createId: () => `project-${++id}`,
       ports,
       processes,
       recentProjectLimit: 1,
@@ -439,30 +442,28 @@ describe("project manager", () => {
   });
 });
 
-describe("project registry", () => {
-  test("persists canonical roots and refreshes definitions without re-registering", async () => {
-    const store = new FakeRegistrationStore();
+describe("project catalog", () => {
+  test("persists canonical roots and refreshes definitions without re-adding", async () => {
+    const store = new FakeProjectStore();
     const observer = new FakeDefinitionObserver();
     let definition: ProjectDefinitionLoad = { kind: "valid", spec: projectSpec() };
-    let active = false;
-    const opened = await ProjectRegistry.open({
+    const opened = await ProjectCatalog.open({
       canonicalize: async () => success("/canonical/project"),
-      createId: () => "registration-one",
+      createId: () => "project-one",
       diagnostics: { report() {} },
-      isActive: () => active,
       loadDefinition: async () => definition,
       observer,
       store,
     });
     if (!opened.success) {
-      throw new Error("Expected the registry to open.");
+      throw new Error("Expected the catalog to open.");
     }
-    const registry = opened.output;
+    const catalog = opened.output;
 
-    const added = await registry.add("/input/project");
+    const added = await catalog.add("/input/project");
     expect(added.success).toBeTrue();
-    expect(store.records).toEqual([{ id: "registration-one", root: "/canonical/project" }]);
-    expect(registry.list()[0]?.definition.kind).toBe("valid");
+    expect(store.records).toEqual([{ id: "project-one", root: "/canonical/project" }]);
+    expect(catalog.list()[0]?.definition.kind).toBe("valid");
 
     definition = {
       diagnostics: [createDiagnostic({ code: "SYD4996", message: "Expected invalid definition." })],
@@ -472,55 +473,123 @@ describe("project registry", () => {
     await tick();
     await tick();
 
-    expect(registry.list()[0]).toMatchObject({
+    expect(catalog.list()[0]).toMatchObject({
       definition: {
         diagnostics: [{ code: "SYD4996" }],
         kind: "invalid",
         lastValidSpec: { name: "demo" },
       },
     });
-    expect((await registry.add("/input/project")).success).toBeTrue();
+    expect((await catalog.add("/input/project")).success).toBeTrue();
     expect(store.saveCount).toBe(1);
 
-    active = true;
-    const refused = await registry.remove("registration-one");
-    expect(refused.success).toBeFalse();
-    if (!refused.success) {
-      expect(refused.diagnostics[0].code).toBe("SYD4102");
-    }
-    active = false;
-    expect((await registry.remove("registration-one")).success).toBeTrue();
+    expect((await catalog.remove("project-one")).success).toBeTrue();
     expect(store.records).toEqual([]);
     expect(observer.closedRoots).toEqual(["/canonical/project"]);
-    await registry.close();
+    await catalog.close();
 
-    const closed = await registry.add("/input/project");
+    const closed = await catalog.add("/input/project");
     expect(closed.success).toBeFalse();
     if (!closed.success) {
       expect(closed.diagnostics[0].code).toBe("SYD4105");
     }
     expect(store.saveCount).toBe(2);
   });
+
+  test("keeps one durable project while definition and runtime state change", async () => {
+    const store = new FakeProjectStore();
+    const observer = new FakeDefinitionObserver();
+    let definition: ProjectDefinitionLoad = { kind: "valid", spec: projectSpec() };
+    const opened = await ProjectCatalog.open({
+      canonicalize: async () => success("/canonical/project"),
+      createId: () => "project-one",
+      diagnostics: { report() {} },
+      loadDefinition: async () => definition,
+      observer,
+      store,
+    });
+    if (!opened.success) {
+      throw new Error("Expected the catalog to open.");
+    }
+    const manager = createManager(new FakePorts(), new FakeProcesses());
+    const projects = new ProjectOrchestrator(opened.output, manager);
+
+    const missing = await projects.start({
+      environment: {},
+      environmentNamesCaseInsensitive: true,
+      root: "/canonical/project",
+    });
+    expect(missing.success).toBeFalse();
+    if (!missing.success) {
+      expect(missing.diagnostics[0].code).toBe("SYD4100");
+    }
+
+    const added = await projects.add("/input/project");
+    expect(added).toMatchObject({
+      output: {
+        id: "project-one",
+        services: [
+          { name: "api", state: "stopped" },
+          { name: "web", state: "stopped" },
+        ],
+        state: "stopped",
+      },
+      success: true,
+    });
+
+    const started = await projects.start({
+      environment: {},
+      environmentNamesCaseInsensitive: true,
+      root: "/canonical/project",
+    });
+    if (!started.success) {
+      throw new Error("Expected the durable project to start.");
+    }
+    expect(started.output.id).toBe("project-one");
+    expect(projects.list()[0]).toMatchObject({ id: "project-one", state: "running" });
+
+    definition = { kind: "valid", spec: projectSpecWithWorker() };
+    observer.change("/canonical/project");
+    await tick();
+    await tick();
+
+    expect(projects.list()[0]).toMatchObject({
+      id: "project-one",
+      restartRequired: true,
+      services: [
+        { name: "api", state: "running" },
+        { name: "web", state: "running" },
+        { name: "worker", state: "stopped" },
+      ],
+    });
+    const refused = await projects.remove("project-one");
+    expect(refused.success).toBeFalse();
+    if (!refused.success) {
+      expect(refused.diagnostics[0].code).toBe("SYD4102");
+    }
+
+    expect((await started.output.stop()).success).toBeTrue();
+    expect((await projects.remove("project-one")).success).toBeTrue();
+    await opened.output.close();
+  });
 });
 
 function createManager(ports: PortAllocator, processes: ProcessHost): ProjectManager {
-  let id = 0;
   return new ProjectManager({
-    createId: () => `project-${++id}`,
     ports,
     processes,
   });
 }
 
-class FakeRegistrationStore implements ProjectRegistrationStore {
-  records: readonly ProjectRegistrationRecord[] = [];
+class FakeProjectStore implements ProjectStore {
+  records: readonly ProjectRecord[] = [];
   saveCount = 0;
 
   async load() {
     return success(this.records);
   }
 
-  async save(records: readonly ProjectRegistrationRecord[]) {
+  async save(records: readonly ProjectRecord[]) {
     this.saveCount += 1;
     this.records = records;
     return success(undefined);
@@ -556,6 +625,8 @@ function startProject(
   return manager.start({
     environment,
     environmentNamesCaseInsensitive: true,
+    id: root,
+    revision: 1,
     root,
     spec,
   });
@@ -585,6 +656,27 @@ function projectSpec(): ProjectSpec {
           API_PORT: { endpoint: "http", kind: "endpoint-port", resource: "api" },
           API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
         },
+        kind: "process",
+      },
+    },
+  });
+  if (!result.success) {
+    throw new Error("Test project specification is invalid.");
+  }
+  return result.output;
+}
+
+function projectSpecWithWorker(): ProjectSpec {
+  const current = projectSpec();
+  const result = createProjectSpec({
+    name: current.name,
+    resources: {
+      ...current.resources,
+      worker: {
+        command: { args: [], executable: "worker-command" },
+        cwd: "apps/worker",
+        endpoints: {},
+        env: {},
         kind: "process",
       },
     },

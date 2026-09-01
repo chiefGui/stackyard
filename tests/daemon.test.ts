@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readPort } from "../apps/daemon/src/config.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
-import { startControlServer, type RegisteredProjects } from "../apps/daemon/src/server.ts";
+import { startControlServer, type Projects } from "../apps/daemon/src/server.ts";
 import {
   ProjectManager,
   type PortAllocator,
@@ -20,7 +20,7 @@ import {
   createStartProjectMessage,
   createStopProjectMessage,
   parseDaemonServerMessage,
-  type RegisteredProject,
+  type Project,
 } from "../packages/protocol/src/index.ts";
 
 describe("daemon configuration", () => {
@@ -139,47 +139,48 @@ describe("HTTP server", () => {
     }
   });
 
-  test("lists and mutates project registrations through authenticated requests", async () => {
-    const project: RegisteredProject = {
-      definition: { kind: "valid", spec: projectSpec() },
-      id: "registration-one",
+  test("lists and mutates durable projects through one endpoint", async () => {
+    const project: Project = {
+      id: "project-one",
+      name: "demo",
+      restartRequired: false,
       root: resolve(import.meta.dir, "../project"),
+      services: [{ endpoints: [], name: "api", state: "stopped" }],
+      state: "stopped",
     };
-    const registrations: RegisteredProjects = {
+    const projects: Projects = {
       list: () => [project],
       async add(path) {
         expect(path).toBe(project.root);
         return success(project);
       },
       async remove(target) {
-        expect(target).toBe("registration-one");
+        expect(target).toBe("project-one");
         return success(project);
       },
+      async start() {
+        throw new Error("Unexpected project start request.");
+      },
     };
-    const result = startTestServer(0, undefined, undefined, registrations);
+    const result = startTestServer(0, undefined, undefined, projects);
     if (!result.success) {
       throw new Error("The test server could not start.");
     }
 
     const server = result.output;
     try {
-      const unauthorized = await fetch(new URL("/api/v1/registrations", server.url));
-      expect(unauthorized.status).toBe(401);
-
-      const listed = await fetch(new URL("/api/v1/registrations", server.url), {
-        headers: { authorization: "Bearer test-token" },
-      });
+      const listed = await fetch(new URL("/api/v1/projects", server.url));
       expect(listed.status).toBe(200);
       expect(await listed.json()).toEqual({ projects: [project], schemaVersion: 1 });
 
-      const unauthorizedMutation = await fetch(new URL("/api/v1/registrations", server.url), {
+      const unauthorizedMutation = await fetch(new URL("/api/v1/projects", server.url), {
         body: JSON.stringify({ path: project.root }),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
       expect(unauthorizedMutation.status).toBe(401);
 
-      const added = await fetch(new URL("/api/v1/registrations", server.url), {
+      const added = await fetch(new URL("/api/v1/projects", server.url), {
         body: JSON.stringify({ path: project.root }),
         headers: {
           authorization: "Bearer test-token",
@@ -190,8 +191,8 @@ describe("HTTP server", () => {
       expect(added.status).toBe(200);
       expect(await added.json()).toEqual(project);
 
-      const removed = await fetch(new URL("/api/v1/registrations", server.url), {
-        body: JSON.stringify({ target: "registration-one" }),
+      const removed = await fetch(new URL("/api/v1/projects", server.url), {
+        body: JSON.stringify({ target: "project-one" }),
         headers: {
           authorization: "Bearer test-token",
           "content-type": "application/json",
@@ -201,7 +202,7 @@ describe("HTTP server", () => {
       expect(removed.status).toBe(200);
       expect(await removed.json()).toEqual(project);
 
-      const malformed = await fetch(new URL("/api/v1/registrations", server.url), {
+      const malformed = await fetch(new URL("/api/v1/projects", server.url), {
         body: "{}",
         headers: {
           authorization: "Bearer test-token",
@@ -216,17 +217,17 @@ describe("HTTP server", () => {
     }
   });
 
-  test("does not advertise project registration when the daemon mode lacks it", async () => {
+  test("does not advertise projects when the daemon mode lacks a catalog", async () => {
     const result = startTestServer(0, undefined, undefined, null);
     if (!result.success) {
       throw new Error("The test server could not start.");
     }
 
     try {
-      const listed = await fetch(new URL("/api/v1/registrations", result.output.url));
+      const listed = await fetch(new URL("/api/v1/projects", result.output.url));
       expect(listed.status).toBe(404);
 
-      const added = await fetch(new URL("/api/v1/registrations", result.output.url), {
+      const added = await fetch(new URL("/api/v1/projects", result.output.url), {
         method: "POST",
       });
       expect(added.status).toBe(404);
@@ -238,7 +239,6 @@ describe("HTTP server", () => {
   test("cleans up a project when its control lease disconnects during startup", async () => {
     const processes = new BlockingProcesses();
     const manager = new ProjectManager({
-      createId: () => "project-one",
       ports: new UnusedPorts(),
       processes,
     });
@@ -250,17 +250,13 @@ describe("HTTP server", () => {
     const server = result.output;
     const socket = await connectControl(server.url, "test-token");
     try {
-      socket.send(
-        JSON.stringify(
-          createStartProjectMessage(resolve(import.meta.dir, ".."), projectSpec(), {}),
-        ),
-      );
+      socket.send(JSON.stringify(createStartProjectMessage(resolve(import.meta.dir, ".."), {})));
       await processes.started;
       socket.terminate();
       processes.continue();
 
       await waitFor(() =>
-        processes.handle.stopCount === 1 && manager.listProjects().projects.length === 0
+        processes.handle.stopCount === 1 && manager.listActiveProjects().projects.length === 0
           ? true
           : undefined,
       );
@@ -275,7 +271,6 @@ describe("HTTP server", () => {
     processes.handle.stopFailures = 1;
     let cancellation: AbortSignal | undefined;
     const manager = new ProjectManager({
-      createId: () => "project-one",
       ports: new UnusedPorts(),
       processes,
     });
@@ -289,11 +284,7 @@ describe("HTTP server", () => {
     const server = result.output;
     const socket = await connectControl(server.url, "test-token");
     try {
-      socket.send(
-        JSON.stringify(
-          createStartProjectMessage(resolve(import.meta.dir, ".."), projectSpec(), {}),
-        ),
-      );
+      socket.send(JSON.stringify(createStartProjectMessage(resolve(import.meta.dir, ".."), {})));
       await processes.started;
       const response = nextMessage(socket);
       socket.send(JSON.stringify(createStopProjectMessage()));
@@ -306,7 +297,7 @@ describe("HTTP server", () => {
         expect(parsed.output.kind).toBe("stopped");
       }
       expect(processes.handle.stopCount).toBe(2);
-      expect(manager.listProjects().projects).toEqual([]);
+      expect(manager.listActiveProjects().projects).toEqual([]);
     } finally {
       processes.continue();
       socket.terminate();
@@ -320,11 +311,15 @@ describe("HTTP server", () => {
     processes.handle.stopFailures = 1;
     processes.handle.stopGate = cleanupGate.promise;
     const manager = new ProjectManager({
-      createId: () => "project-one",
       ports: new UnusedPorts(),
       processes,
     });
-    const result = startTestServer(0, manager);
+    const result = startTestServer(
+      0,
+      manager,
+      undefined,
+      testProjects(manager, twoResourceProjectSpec()),
+    );
     if (!result.success) {
       throw new Error("The test server could not start.");
     }
@@ -333,11 +328,7 @@ describe("HTTP server", () => {
     const socket = await connectControl(server.url, "test-token");
     try {
       const response = nextMessage(socket);
-      socket.send(
-        JSON.stringify(
-          createStartProjectMessage(resolve(import.meta.dir, ".."), twoResourceProjectSpec(), {}),
-        ),
-      );
+      socket.send(JSON.stringify(createStartProjectMessage(resolve(import.meta.dir, ".."), {})));
 
       const parsed = parseDaemonServerMessage(JSON.parse(await response));
       expect(parsed.success).toBeTrue();
@@ -348,10 +339,10 @@ describe("HTTP server", () => {
         "SYD4998",
         "SYD4999",
       ]);
-      expect(manager.listProjects().projects).toHaveLength(1);
+      expect(manager.listActiveProjects().projects).toHaveLength(1);
 
       cleanupGate.resolve();
-      await waitFor(() => (manager.listProjects().projects.length === 0 ? true : undefined));
+      await waitFor(() => (manager.listActiveProjects().projects.length === 0 ? true : undefined));
     } finally {
       cleanupGate.resolve();
       socket.terminate();
@@ -564,15 +555,14 @@ describe("service process lifecycle", () => {
 function startTestServer(
   port: number,
   manager = new ProjectManager({
-    createId: () => crypto.randomUUID(),
     ports: new BunPortAllocator(),
     processes: new BunProcessHost({ report() {} }),
   }),
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
-  registrations: RegisteredProjects | null = emptyRegistrations,
+  projects: Projects | null = testProjects(manager),
 ) {
   return startControlServer({
-    ...(registrations ? { registrations } : {}),
+    ...(projects ? { projects } : {}),
     acquireLongLivedActivity: () => () => {},
     diagnostics: { report() {} },
     instanceId: "test-daemon",
@@ -586,17 +576,27 @@ function startTestServer(
   });
 }
 
-const emptyRegistrations = {
-  list(): readonly RegisteredProject[] {
-    return [];
-  },
-  async add() {
-    throw new Error("Unexpected registration add request.");
-  },
-  async remove() {
-    throw new Error("Unexpected registration remove request.");
-  },
-};
+function testProjects(manager: ProjectManager, spec = projectSpec()): Projects {
+  return {
+    list(): readonly Project[] {
+      return [];
+    },
+    async add() {
+      throw new Error("Unexpected project add request.");
+    },
+    async remove() {
+      throw new Error("Unexpected project remove request.");
+    },
+    start(input) {
+      return manager.start({
+        ...input,
+        id: "project-one",
+        revision: 1,
+        spec,
+      });
+    },
+  };
+}
 
 function connectControl(serverUrl: URL, token: string): Promise<WebSocket> {
   return new Promise((resolveConnection, rejectConnection) => {

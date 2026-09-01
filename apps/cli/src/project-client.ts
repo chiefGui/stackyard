@@ -7,56 +7,56 @@ import {
   type Result,
 } from "@stackyard/diagnostics";
 import {
-  parseRegisteredProject,
-  parseRegisteredProjectList,
-  type RegisteredProject,
-  type RegisteredProjectList,
+  parseProject,
+  parseProjectList,
+  type Project,
+  type ProjectList,
 } from "@stackyard/protocol";
 
-export interface RegistrationClient {
-  add(path: string): Promise<Result<RegisteredProject>>;
-  list(): Promise<Result<RegisteredProjectList>>;
-  remove(target: string): Promise<Result<RegisteredProject>>;
+export interface ProjectClient {
+  add(path: string): Promise<Result<Project>>;
+  list(): Promise<Result<ProjectList>>;
+  remove(target: string): Promise<Result<Project>>;
 }
 
-export interface DaemonRegistrationClientOptions {
+export interface DaemonProjectClientOptions {
   readonly daemonEntrypoint: string;
   readonly dashboardWebDirectory: string;
 }
 
-export class DaemonRegistrationClient implements RegistrationClient {
-  readonly #options: DaemonRegistrationClientOptions;
+export class DaemonProjectClient implements ProjectClient {
+  readonly #options: DaemonProjectClientOptions;
   #daemon: Promise<Result<DaemonLocator>> | undefined;
 
-  constructor(options: DaemonRegistrationClientOptions) {
+  constructor(options: DaemonProjectClientOptions) {
     this.#options = options;
   }
 
-  add(path: string): Promise<Result<RegisteredProject>> {
+  add(path: string): Promise<Result<Project>> {
     return this.#requestProject("POST", { path });
   }
 
-  async list(): Promise<Result<RegisteredProjectList>> {
+  async list(): Promise<Result<ProjectList>> {
     const response = await this.#request("GET");
     if (!response.success) {
       return response;
     }
-    return parseRegisteredProjectList(response.output);
+    return parseProjectList(response.output);
   }
 
-  remove(target: string): Promise<Result<RegisteredProject>> {
+  remove(target: string): Promise<Result<Project>> {
     return this.#requestProject("DELETE", { target });
   }
 
   async #requestProject(
     method: "DELETE" | "POST",
     body: Readonly<Record<string, string>>,
-  ): Promise<Result<RegisteredProject>> {
+  ): Promise<Result<Project>> {
     const response = await this.#request(method, body);
     if (!response.success) {
       return response;
     }
-    return parseRegisteredProject(response.output);
+    return parseProject(response.output);
   }
 
   async #request(
@@ -70,7 +70,7 @@ export class DaemonRegistrationClient implements RegistrationClient {
     }
 
     try {
-      const response = await fetch(new URL("api/v1/registrations", daemonUrl(daemon.output)), {
+      const response = await fetch(new URL("api/v1/projects", daemonUrl(daemon.output)), {
         ...(body ? { body: JSON.stringify(body) } : {}),
         headers: {
           accept: "application/json",
@@ -112,7 +112,7 @@ function connectionFailure<T>(note: string): Result<T> {
     createDiagnostic({
       code: "SYD2012",
       help: "Run the command again. If the problem persists, stop the stale Stackyard daemon.",
-      message: "The project registry request failed.",
+      message: "The project request failed.",
       notes: [note],
     }),
   );

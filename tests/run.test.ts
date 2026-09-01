@@ -10,7 +10,7 @@ const repositoryRoot = resolve(import.meta.dir, "..");
 const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
 const secondProjectRoot = join(repositoryRoot, "tests/fixtures/run-project-two");
 
-test("run owns a real project through the global daemon", async () => {
+test("run starts durable projects through the global daemon", async () => {
   const runtimeRoot = await mkdtemp(join(tmpdir(), "stackyard-run-"));
   const dataDirectory = join(runtimeRoot, "data");
   let cli: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
@@ -27,14 +27,34 @@ test("run owns a real project through the global daemon", async () => {
     });
     expect(await dashboardBuild.exited).toBe(0);
 
+    const commandEnvironment = {
+      ...stringEnvironment(process.env),
+      STACKYARD_DATA_DIR: dataDirectory,
+      STACKYARD_RUNTIME_DIR: runtimeRoot,
+    };
+    for (const root of [projectRoot, secondProjectRoot]) {
+      const added = Bun.spawn({
+        cmd: [process.execPath, join(repositoryRoot, "apps/cli/src/main.ts"), "add", root],
+        cwd: repositoryRoot,
+        env: commandEnvironment,
+        stderr: "pipe",
+        stdout: "ignore",
+        windowsHide: true,
+      });
+      const addedError = new Response(added.stderr).text();
+      /* oxlint-disable-next-line eslint/no-await-in-loop -- Project additions intentionally complete in order. */
+      expect(await added.exited).toBe(0);
+      /* oxlint-disable-next-line eslint/no-await-in-loop -- Output belongs to the project addition above. */
+      expect(await addedError).toBe("");
+    }
+
     cli = Bun.spawn({
       cmd: [process.execPath, join(repositoryRoot, "apps/cli/src/main.ts"), "run", projectRoot],
       cwd: repositoryRoot,
       env: {
         ...stringEnvironment(process.env),
         RUN_FIXTURE_VALUE: "first-run",
-        STACKYARD_DATA_DIR: dataDirectory,
-        STACKYARD_RUNTIME_DIR: runtimeRoot,
+        ...commandEnvironment,
       },
       stderr: "pipe",
       stdout: "pipe",
@@ -53,7 +73,8 @@ test("run owns a real project through the global daemon", async () => {
         if (!parsed.success) {
           return undefined;
         }
-        const service = parsed.output.projects[0]?.services[0];
+        const service = parsed.output.projects.find(({ name }) => name === "run-fixture")
+          ?.services[0];
         if (service?.state !== "running" || service.endpoints.length === 0) {
           return undefined;
         }
@@ -62,10 +83,10 @@ test("run owns a real project through the global daemon", async () => {
         return undefined;
       }
     });
-    expect(projectList.projects[0]?.name).toBe("run-fixture");
-    expect(projectList.projects[0]?.services[0]?.state).toBe("running");
+    const firstProject = projectList.projects.find(({ name }) => name === "run-fixture");
+    expect(firstProject?.services[0]?.state).toBe("running");
 
-    const endpoint = projectList.projects[0]?.services[0]?.endpoints[0]?.url;
+    const endpoint = firstProject?.services[0]?.endpoints[0]?.url;
     expect(endpoint).toBeString();
     expect(
       await waitFor(async () => {
@@ -97,8 +118,7 @@ test("run owns a real project through the global daemon", async () => {
       env: {
         ...stringEnvironment(process.env),
         RUN_FIXTURE_VALUE: "second-run",
-        STACKYARD_DATA_DIR: dataDirectory,
-        STACKYARD_RUNTIME_DIR: runtimeRoot,
+        ...commandEnvironment,
       },
       stderr: "pipe",
       stdout: "pipe",
@@ -113,7 +133,13 @@ test("run owns a real project through the global daemon", async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
         const parsed = parseProjectList(await response.json());
-        return parsed.success && parsed.output.projects.length === 2 ? parsed.output : undefined;
+        if (!parsed.success) {
+          return undefined;
+        }
+        const second = parsed.output.projects.find(({ name }) => name === "run-fixture-two");
+        return second?.services[0]?.state === "running" && second.services[0].endpoints.length > 0
+          ? parsed.output
+          : undefined;
       } catch {
         return undefined;
       }
@@ -145,11 +171,13 @@ test("run owns a real project through the global daemon", async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
         const parsed = parseProjectList(await response.json());
-        return parsed.success &&
-          parsed.output.projects.length === 1 &&
-          parsed.output.projects[0]?.name === "run-fixture-two"
-          ? true
+        const first = parsed.success
+          ? parsed.output.projects.find(({ name }) => name === "run-fixture")
           : undefined;
+        const second = parsed.success
+          ? parsed.output.projects.find(({ name }) => name === "run-fixture-two")
+          : undefined;
+        return first?.state === "stopped" && second?.state === "running" ? true : undefined;
       } catch {
         return undefined;
       }
@@ -174,7 +202,11 @@ test("run owns a real project through the global daemon", async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
         const parsed = parseProjectList(await response.json());
-        return parsed.success && parsed.output.projects.length === 0 ? true : undefined;
+        return parsed.success &&
+          parsed.output.projects.length === 2 &&
+          parsed.output.projects.every(({ state }) => state === "stopped")
+          ? true
+          : undefined;
       } catch {
         return undefined;
       }

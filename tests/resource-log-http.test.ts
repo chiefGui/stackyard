@@ -30,13 +30,14 @@ describe("resource log HTTP API", () => {
   test("streams authenticated live logs and resumes completed history by cursor", async () => {
     const processes = new TestProcesses();
     const manager = new ProjectManager({
-      createId: () => "project-1",
       ports: new NoPorts(),
       processes,
     });
     const startedProject = await manager.start({
       environment: {},
       environmentNamesCaseInsensitive: true,
+      id: "project-1",
+      revision: 1,
       root: "C:/project",
       spec: projectSpec(),
     });

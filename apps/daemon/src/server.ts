@@ -1,9 +1,9 @@
-import { realpath } from "node:fs/promises";
-
 import {
   ProjectManager,
   type ManagedProject,
-  type ProjectRegistration,
+  type Project,
+  type StartCatalogProjectInput,
+  type StartProjectResult,
 } from "@stackyard/control-plane";
 import {
   createDiagnostic,
@@ -17,11 +17,10 @@ import {
 import {
   createDaemonFailureMessage,
   createProjectCompletedMessage,
+  createProject,
   createProjectStartedMessage,
   createProjectStoppedMessage,
   createProjectList,
-  createRegisteredProject,
-  createRegisteredProjectList,
   parseDaemonClientMessage,
   protocolVersion,
   type DaemonClientMessage,
@@ -43,10 +42,11 @@ export interface ControlData {
 
 export type UnhandledRequestHandler = (request: Request, url: URL) => Promise<Response> | Response;
 
-export interface RegisteredProjects {
-  list(): readonly ProjectRegistration[];
-  add(path: string): Promise<Result<ProjectRegistration>>;
-  remove(target: string): Promise<Result<ProjectRegistration>>;
+export interface Projects {
+  list(): readonly Project[];
+  add(path: string): Promise<Result<Project>>;
+  remove(target: string): Promise<Result<Project>>;
+  start(input: StartCatalogProjectInput): Promise<StartProjectResult>;
 }
 
 export interface ControlServerOptions {
@@ -55,7 +55,7 @@ export interface ControlServerOptions {
   readonly isShuttingDown: () => boolean;
   readonly manager: ProjectManager;
   readonly port: number;
-  readonly registrations?: RegisteredProjects;
+  readonly projects?: Projects;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
   acquireLongLivedActivity(): () => void;
@@ -108,19 +108,15 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
           return secureResponse("WebSocket upgrade required.", { status: 426 });
         }
 
-        if (url.pathname === "/api/v1/registrations") {
-          if (!options.registrations) {
+        if (url.pathname === "/api/v1/projects") {
+          if (!options.projects) {
             return secureResponse("Not found.", { status: 404 });
+          }
+          if (request.method === "GET") {
+            return secureJson(createProjectList({ projects: options.projects.list() }));
           }
           if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
             return secureResponse("Unauthorized.", { status: 401 });
-          }
-          if (request.method === "GET") {
-            return secureJson(
-              createRegisteredProjectList(
-                options.registrations.list().map((project) => createRegisteredProject(project)),
-              ),
-            );
           }
           if (request.method !== "POST" && request.method !== "DELETE") {
             return secureResponse("Method not allowed.", { status: 405 });
@@ -128,7 +124,7 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
           if (options.isShuttingDown()) {
             return secureResponse("Daemon is shutting down.", { status: 503 });
           }
-          return handleRegistrationRequest(request, options.registrations);
+          return handleProjectRequest(request, options.projects);
         }
 
         if (request.method !== "GET") {
@@ -136,9 +132,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         }
         if (url.pathname === "/health") {
           return secureJson({ instanceId: options.instanceId, protocolVersion, status: "ok" });
-        }
-        if (url.pathname === "/api/v1/projects") {
-          return secureJson(createProjectList(options.manager.listProjects()));
         }
         const resourceLogResponse = handleResourceLogHttpRequest(request, url, {
           acquireActivity: () => options.acquireLongLivedActivity(),
@@ -197,7 +190,7 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
                 socket,
                 parsed,
                 acceptedStart,
-                options.manager,
+                options.projects,
                 options.diagnostics,
               ),
             )
@@ -226,33 +219,30 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
   }
 }
 
-async function handleRegistrationRequest(
-  request: Request,
-  registrations: RegisteredProjects,
-): Promise<Response> {
+async function handleProjectRequest(request: Request, projects: Projects): Promise<Response> {
   let input: unknown;
   try {
     input = await request.json();
   } catch {
-    return registrationFailureResponse(invalidRegistrationRequest(), 400);
+    return projectFailureResponse(invalidProjectRequest(), 400);
   }
 
   const field = request.method === "POST" ? "path" : "target";
   const value = singleStringProperty(input, field);
   if (!value) {
-    return registrationFailureResponse(invalidRegistrationRequest(), 400);
+    return projectFailureResponse(invalidProjectRequest(), 400);
   }
 
   const result =
-    request.method === "POST" ? await registrations.add(value) : await registrations.remove(value);
+    request.method === "POST" ? await projects.add(value) : await projects.remove(value);
   if (!result.success) {
-    const status = registrationFailureStatus(result.diagnostics[0]?.code);
-    return registrationFailureResponse(result.diagnostics, status);
+    const status = projectFailureStatus(result.diagnostics[0]?.code);
+    return projectFailureResponse(result.diagnostics, status);
   }
-  return secureJson(createRegisteredProject(result.output));
+  return secureJson(createProject(result.output));
 }
 
-function registrationFailureResponse(
+function projectFailureResponse(
   diagnostics: Parameters<typeof createDiagnosticReport>[0],
   status: number,
 ): Response {
@@ -264,7 +254,7 @@ function registrationFailureResponse(
   );
 }
 
-function registrationFailureStatus(code: string | undefined): number {
+function projectFailureStatus(code: string | undefined): number {
   if (code === "SYD4100") {
     return 404;
   }
@@ -274,12 +264,12 @@ function registrationFailureStatus(code: string | undefined): number {
   return code === "SYD2000" || code === "SYD2006" ? 400 : 500;
 }
 
-function invalidRegistrationRequest() {
+function invalidProjectRequest() {
   return [
     createDiagnostic({
       code: "SYD3016",
       help: "Update Stackyard so the CLI and daemon use the same protocol, then retry.",
-      message: "The daemon received an invalid project registration request.",
+      message: "The daemon received an invalid project request.",
     }),
   ] as const;
 }
@@ -323,7 +313,7 @@ async function handleControlMessage(
   socket: Bun.ServerWebSocket<ControlData>,
   parsed: Result<DaemonClientMessage>,
   acceptedStart: boolean,
-  manager: ProjectManager,
+  projects: Projects | undefined,
   diagnostics: DiagnosticSink,
 ): Promise<void> {
   if (!parsed.success) {
@@ -371,28 +361,23 @@ async function handleControlMessage(
     return;
   }
 
-  let root: string;
-  try {
-    root = await realpath(parsed.output.root);
-  } catch (error) {
+  if (!projects) {
     sendFailure(
       socket,
       createDiagnostic({
         code: "SYD3009",
-        help: "Verify that the project directory still exists, then retry.",
-        message: "The project root could not be resolved.",
-        notes: [describeError(error)],
+        help: "Start the managed Stackyard daemon, then retry.",
+        message: "The daemon does not have a project catalog.",
       }),
     );
     return;
   }
 
-  const started = await manager.start({
+  const started = await projects.start({
     environment: parsed.output.environment,
     environmentNamesCaseInsensitive: process.platform === "win32",
-    root,
+    root: parsed.output.root,
     signal: socket.data.cancellation.signal,
-    spec: parsed.output.spec,
   });
   if (!started.success) {
     if (!socket.data.cancellation.signal.aborted) {
@@ -410,7 +395,10 @@ async function handleControlMessage(
     await superviseCleanup(() => started.output.stop(), diagnostics);
     return;
   }
-  const announced = sendMessage(socket, createProjectStartedMessage(started.output.id));
+  const announced = sendMessage(
+    socket,
+    createProjectStartedMessage(started.output.id, started.output.name),
+  );
   if (!announced) {
     await superviseCleanup(() => started.output.stop(), diagnostics);
     return;

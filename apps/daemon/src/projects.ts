@@ -3,12 +3,12 @@ import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promis
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import {
-  ProjectRegistry,
+  ProjectCatalog,
   type ProjectDefinitionLoad,
   type ProjectDefinitionObservation,
   type ProjectDefinitionObserver,
-  type ProjectRegistrationRecord,
-  type ProjectRegistrationStore,
+  type ProjectRecord,
+  type ProjectStore,
 } from "@stackyard/control-plane";
 import {
   createDiagnostic,
@@ -20,69 +20,67 @@ import {
 } from "@stackyard/diagnostics";
 import { discoverProject, loadProject } from "@stackyard/project-loader";
 
-const registrySchemaVersion = 1;
-const registryFileName = "projects.json";
+const projectStoreSchemaVersion = 1;
+const projectStoreFileName = "projects.json";
 const watchDebounceMilliseconds = 100;
 
-export interface OpenProjectRegistryOptions {
+export interface OpenProjectCatalogOptions {
   readonly dataDirectory: string;
   readonly diagnostics: DiagnosticSink;
   readonly evaluatorEntrypoint: string;
-  readonly isActive: (root: string) => boolean;
 }
 
-export function openProjectRegistry(
-  options: OpenProjectRegistryOptions,
-): Promise<Result<ProjectRegistry>> {
-  return ProjectRegistry.open({
+export function openProjectCatalog(
+  options: OpenProjectCatalogOptions,
+): Promise<Result<ProjectCatalog>> {
+  return ProjectCatalog.open({
     canonicalize: (path) => canonicalProjectRoot(path),
     createId: () => crypto.randomUUID(),
     diagnostics: options.diagnostics,
-    isActive: (root) => options.isActive(root),
     loadDefinition: (root) => loadProjectDefinition(root, options.evaluatorEntrypoint),
     observer: new FileProjectDefinitionObserver(options.diagnostics),
-    store: new FileProjectRegistrationStore(options.dataDirectory),
+    store: new FileProjectStore(options.dataDirectory),
   });
 }
 
-export class FileProjectRegistrationStore implements ProjectRegistrationStore {
+export class FileProjectStore implements ProjectStore {
   readonly #directory: string;
   readonly #path: string;
 
   constructor(directory: string) {
     this.#directory = resolve(directory);
-    this.#path = join(this.#directory, registryFileName);
+    this.#path = join(this.#directory, projectStoreFileName);
   }
 
-  async load(): Promise<Result<readonly ProjectRegistrationRecord[]>> {
+  async load(): Promise<Result<readonly ProjectRecord[]>> {
     let text: string;
     try {
       text = await readFile(this.#path, "utf8");
     } catch (error) {
-      return isMissing(error) ? success([]) : registryStorageFailure("read", this.#path, error);
+      return isMissing(error) ? success([]) : projectStorageFailure("read", this.#path, error);
     }
 
     try {
       const parsed: unknown = JSON.parse(text);
-      const records = parseRegistryFile(parsed);
+      const records = parseProjectFile(parsed);
       return records
         ? success(records)
-        : registryStorageFailure("parse", this.#path, new Error("The file has an invalid schema."));
+        : projectStorageFailure("parse", this.#path, new Error("The file has an invalid schema."));
     } catch (error) {
-      return registryStorageFailure("parse", this.#path, error);
+      return projectStorageFailure("parse", this.#path, error);
     }
   }
 
-  async save(registrations: readonly ProjectRegistrationRecord[]): Promise<Result<void>> {
+  async save(projects: readonly ProjectRecord[]): Promise<Result<void>> {
     const temporaryPath = join(
       this.#directory,
-      `${registryFileName}.${process.pid}.${crypto.randomUUID()}.tmp`,
+      `${projectStoreFileName}.${process.pid}.${crypto.randomUUID()}.tmp`,
     );
     const value = {
-      projects: registrations
+      projects: projects
         .map(({ id, root }) => ({ id, root }))
         .toSorted((left, right) => left.root.localeCompare(right.root, "en")),
-      schemaVersion: registrySchemaVersion,
+      schemaVersion: projectStoreSchemaVersion,
     };
 
     try {
@@ -99,7 +97,7 @@ export class FileProjectRegistrationStore implements ProjectRegistrationStore {
       } catch {
         // The original storage failure is more useful than temporary-file cleanup failure.
       }
-      return registryStorageFailure("write", this.#path, error);
+      return projectStorageFailure("write", this.#path, error);
     }
   }
 }
@@ -240,11 +238,11 @@ async function loadProjectDefinition(
   };
 }
 
-function parseRegistryFile(input: unknown): readonly ProjectRegistrationRecord[] | undefined {
+function parseProjectFile(input: unknown): readonly ProjectRecord[] | undefined {
   if (
     !isPlainObject(input) ||
     !hasExactKeys(input, ["projects", "schemaVersion"]) ||
-    input.schemaVersion !== registrySchemaVersion ||
+    input.schemaVersion !== projectStoreSchemaVersion ||
     !Array.isArray(input.projects)
   ) {
     return undefined;
@@ -252,7 +250,7 @@ function parseRegistryFile(input: unknown): readonly ProjectRegistrationRecord[]
 
   const identifiers = new Set<string>();
   const roots = new Set<string>();
-  const records: ProjectRegistrationRecord[] = [];
+  const records: ProjectRecord[] = [];
   for (const value of input.projects) {
     if (
       !isPlainObject(value) ||
@@ -272,7 +270,7 @@ function parseRegistryFile(input: unknown): readonly ProjectRegistrationRecord[]
   return Object.freeze(records);
 }
 
-function registryStorageFailure<T>(
+function projectStorageFailure<T>(
   operation: "parse" | "read" | "write",
   path: string,
   error: unknown,
@@ -283,9 +281,9 @@ function registryStorageFailure<T>(
       code: "SYD3014",
       help:
         operation === "parse"
-          ? "Repair or remove the registry file, then restart Stackyard. Removing it forgets every registered project."
+          ? "Repair or remove the project file, then restart Stackyard. Removing it forgets every project."
           : "Verify that the Stackyard data directory is writable, then retry.",
-      message: `The Stackyard project registry ${action}.`,
+      message: `The Stackyard project catalog ${action}.`,
       notes: [path, describeError(error)],
     }),
   );
@@ -294,8 +292,8 @@ function registryStorageFailure<T>(
 function watchFailure(root: string, error: unknown) {
   return createDiagnostic({
     code: "SYD3015",
-    help: "Verify that the registered project is readable. Stackyard will retry when its directory changes.",
-    message: "A registered project watcher failed.",
+    help: "Verify that the project is readable. Stackyard will retry when its directory changes.",
+    message: "A project watcher failed.",
     notes: [root, describeError(error)],
     severity: "warning",
   });
