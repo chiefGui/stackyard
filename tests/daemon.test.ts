@@ -474,6 +474,7 @@ function startTestServer(
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
 ) {
   return startControlServer({
+    acquireLongLivedActivity: () => () => {},
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,

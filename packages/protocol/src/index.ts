@@ -29,4 +29,12 @@ export {
 } from "./runtime.ts";
 export type { Project, ProjectList, Service, ServiceEndpoint, ServiceState } from "./projects.ts";
 export { createProjectList, parseProjectList } from "./projects.ts";
+export type {
+  ResourceLogBatch,
+  ResourceLogBatchInput,
+  ResourceLogEntry,
+  ResourceLogStatus,
+  ResourceLogStream,
+} from "./resource-logs.ts";
+export { createResourceLogBatch, parseResourceLogBatch } from "./resource-logs.ts";
 export { protocolVersion } from "./version.ts";

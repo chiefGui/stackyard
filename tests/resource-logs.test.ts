@@ -64,6 +64,26 @@ describe("resource log store", () => {
     ]);
   });
 
+  test("advances the cursor across a fully evicted gap", () => {
+    const store = new ResourceLogStore({
+      maxBytesPerResource: 100,
+      maxEntriesPerResource: 10,
+      maxTotalBytes: 100,
+      maxTotalEntries: 1,
+    });
+    const feed = store.createFeed();
+    const other = store.createFeed();
+    feed.write([{ observedAt: 1, stream: "stdout", text: "first" }]);
+    other.write([{ observedAt: 2, stream: "stdout", text: "second" }]);
+
+    expect(feed.snapshot()).toMatchObject({
+      droppedEntries: 1,
+      entries: [],
+      nextCursor: 1,
+      retainedFrom: 2,
+    });
+  });
+
   test("evicts the globally oldest entries across resources", () => {
     const store = new ResourceLogStore({
       maxBytesPerResource: 100,

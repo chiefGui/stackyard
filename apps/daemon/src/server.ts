@@ -23,6 +23,7 @@ import {
 
 import { superviseCleanup } from "./cleanup.ts";
 import { daemonHostname } from "./locator.ts";
+import { handleResourceLogHttpRequest } from "./resource-log-http.ts";
 
 const maximumControlMessageBytes = 4 * 1024 * 1024;
 
@@ -44,6 +45,7 @@ export interface ControlServerOptions {
   readonly port: number;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
+  acquireLongLivedActivity(): () => void;
   onActivity(): void;
   onClose(socket: Bun.ServerWebSocket<ControlData>): void;
   onOpen(socket: Bun.ServerWebSocket<ControlData>): void;
@@ -101,6 +103,16 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         }
         if (url.pathname === "/api/v1/projects") {
           return secureJson(createProjectList(options.manager.listProjects()));
+        }
+        const resourceLogResponse = handleResourceLogHttpRequest(request, url, {
+          acquireActivity: () => options.acquireLongLivedActivity(),
+          disableRequestTimeout: () => activeServer.timeout(request, 0),
+          isShuttingDown: () => options.isShuttingDown(),
+          manager: options.manager,
+          token: options.token,
+        });
+        if (resourceLogResponse) {
+          return secure(resourceLogResponse);
         }
         if (!options.handleUnhandledRequest) {
           return secureResponse("Not found.", { status: 404 });
