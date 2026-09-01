@@ -1,12 +1,7 @@
-import {
-  createDiagnostic,
-  reportDiagnostics,
-  type Diagnostic,
-  type DiagnosticSink,
-} from "@stackyard/diagnostics";
+import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
 import type { ProjectLoadOutcome } from "@stackyard/project-loader";
 
-import type { CliCommand } from "./cli.ts";
+import { defineCliCommand, type CliCommand } from "./cli.ts";
 import { writeProjectEvaluationOutput } from "./project-output.ts";
 
 export interface InspectCommandDependencies {
@@ -17,38 +12,41 @@ export interface InspectCommandDependencies {
 }
 
 export function createInspectCommand(dependencies: InspectCommandDependencies): CliCommand {
-  return {
-    description: "Evaluate and print a project definition",
-    name: "inspect",
-    run(args) {
-      return runInspect(args, dependencies);
+  return defineCliCommand(
+    "inspect",
+    {
+      args: {
+        path: {
+          description: "Project directory",
+          required: false,
+          type: "positional",
+        },
+        json: {
+          description: "Print compact JSON",
+          type: "boolean",
+        },
+      },
+      meta: {
+        description: "Evaluate and print a project definition",
+      },
+      run({ args }) {
+        return runInspect(args.path, args.json ?? false, dependencies);
+      },
     },
-    usage: "inspect [path] [--json]",
-  };
-}
-
-interface InspectOptions {
-  readonly json: boolean;
-  readonly path: string | undefined;
-  readonly success: true;
-}
-
-interface InvalidInspectOptions {
-  readonly diagnostics: readonly Diagnostic[];
-  readonly success: false;
+    {
+      code: "SYD2005",
+      help: "Use: stackyard inspect [path] [--json]",
+      tooManyPositionals: "Inspect accepts at most one project path.",
+    },
+  );
 }
 
 async function runInspect(
-  args: readonly string[],
+  path: string | undefined,
+  json: boolean,
   dependencies: InspectCommandDependencies,
 ): Promise<number> {
-  const options = parseInspectArguments(args);
-  if (!options.success) {
-    reportDiagnostics(dependencies.diagnostics, options.diagnostics);
-    return 1;
-  }
-
-  const project = await dependencies.loadProject(options.path);
+  const project = await dependencies.loadProject(path);
   writeProjectEvaluationOutput(project, dependencies);
 
   if (!project.result.success) {
@@ -56,45 +54,12 @@ async function runInspect(
     return 1;
   }
 
+  let indentation: number | undefined = 2;
+  if (json) {
+    indentation = undefined;
+  }
   dependencies.writeOutput(
-    `${JSON.stringify(project.result.output.spec, undefined, options.json ? undefined : 2)}\n`,
+    `${JSON.stringify(project.result.output.spec, undefined, indentation)}\n`,
   );
   return 0;
-}
-
-function parseInspectArguments(args: readonly string[]): InspectOptions | InvalidInspectOptions {
-  let json = false;
-  let path: string | undefined;
-
-  for (const argument of args) {
-    if (argument === "--json") {
-      json = true;
-      continue;
-    }
-
-    if (argument.startsWith("-")) {
-      return invalidArguments(`Unknown option '${argument}'.`);
-    }
-
-    if (path) {
-      return invalidArguments("Inspect accepts at most one project path.");
-    }
-
-    path = argument;
-  }
-
-  return { json, path, success: true };
-}
-
-function invalidArguments(message: string): InvalidInspectOptions {
-  return {
-    diagnostics: [
-      createDiagnostic({
-        code: "SYD2005",
-        help: "Use: stackyard inspect [path] [--json]",
-        message,
-      }),
-    ],
-    success: false,
-  };
 }
