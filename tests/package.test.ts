@@ -19,21 +19,9 @@ test("the packed package works in an external Bun project", async () => {
   let daemonPid: number | undefined;
 
   try {
-    await Promise.all([
-      mkdir(artifactDirectory),
-      cp(fixtureRoot, consumerDirectory, { recursive: true }),
-    ]);
+    await cp(fixtureRoot, consumerDirectory, { recursive: true });
 
-    const packed = await runCommand(
-      [process.execPath, "pm", "pack", "--destination", artifactDirectory],
-      packageRoot,
-    );
-    expect(packed.exitCode).toBe(0);
-
-    const artifacts = (await readdir(artifactDirectory)).filter((name) => name.endsWith(".tgz"));
-    expect(artifacts).toHaveLength(1);
-
-    const artifact = join(artifactDirectory, artifacts[0] ?? "");
+    const artifact = await resolvePackageArtifact(artifactDirectory);
     const installed = await runCommand(
       [process.execPath, "add", "--dev", artifact],
       consumerDirectory,
@@ -49,7 +37,20 @@ test("the packed package works in an external Bun project", async () => {
     }
 
     expect("dependencies" in manifest).toBeFalse();
-    expect((await readdir(installedPackage)).toSorted()).toEqual(["dist", "package.json"]);
+    expect((await readdir(installedPackage)).toSorted()).toEqual([
+      "CHANGELOG.md",
+      "LICENSE",
+      "README.md",
+      "dist",
+      "package.json",
+    ]);
+    expect(await readFile(join(installedPackage, "LICENSE"), "utf8")).toBe(
+      await readFile(join(repositoryRoot, "LICENSE"), "utf8"),
+    );
+    expect(await readFile(join(installedPackage, "README.md"), "utf8")).toContain(
+      "bun add --global stackyard",
+    );
+    expect(await readFile(join(installedPackage, "CHANGELOG.md"), "utf8")).toContain("# stackyard");
     expect((await readdir(join(installedPackage, "dist"))).toSorted()).toEqual([
       "cli.js",
       "dashboard-web",
@@ -186,6 +187,24 @@ interface CommandResult {
   readonly exitCode: number;
   readonly stderr: string;
   readonly stdout: string;
+}
+
+async function resolvePackageArtifact(artifactDirectory: string): Promise<string> {
+  const configuredArtifact = process.env.STACKYARD_PACKAGE_TARBALL;
+  if (configuredArtifact !== undefined) {
+    return resolve(repositoryRoot, configuredArtifact);
+  }
+
+  await mkdir(artifactDirectory);
+  const packed = await runCommand(
+    [process.execPath, "pm", "pack", "--destination", artifactDirectory],
+    packageRoot,
+  );
+  expect(packed.exitCode).toBe(0);
+
+  const artifacts = (await readdir(artifactDirectory)).filter((name) => name.endsWith(".tgz"));
+  expect(artifacts).toHaveLength(1);
+  return join(artifactDirectory, artifacts[0] ?? "");
 }
 
 async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {

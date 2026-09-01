@@ -1,10 +1,31 @@
 {
   "name": "stackyard",
   "version": "0.0.0",
+  "description": "A machine-global control plane for local development projects.",
+  "keywords": [
+    "bun",
+    "cli",
+    "development",
+    "local-development",
+    "process-manager"
+  ],
+  "homepage": "https://github.com/chiefGui/stackyard#readme",
+  "bugs": {
+    "url": "https://github.com/chiefGui/stackyard/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chiefGui/stackyard.git",
+    "directory": "apps/cli"
+  },
   "bin": {
     "stackyard": "./dist/cli.js"
   },
   "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
     "dist"
   ],
   "type": "module",
@@ -14,10 +35,13 @@
       "import": "./dist/index.js"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "bun run --filter @stackyard/dashboard-web build && tsdown && bun build ./src/main.ts --outfile ./dist/cli.js --target bun && bun ./scripts/copy-dashboard-web.ts",
     "pack:local": "bun pm pack --destination ../../artifacts",
-    "prepack": "bun run build",
+    "prepack": "bun run build && bun ./scripts/prepare-package.ts",
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "devDependencies": {
@@ -30,5 +54,8 @@
     "citty": "0.2.2",
     "tsdown": "0.22.14",
     "typescript": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
   }
 }

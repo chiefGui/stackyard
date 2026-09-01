@@ -2,6 +2,7 @@ node_modules/
 dist/
 artifacts/
 coverage/
+apps/cli/LICENSE
 .DS_Store
 Thumbs.db
 *.log
