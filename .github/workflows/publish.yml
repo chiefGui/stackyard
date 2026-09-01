@@ -93,17 +93,17 @@ jobs:
       - name: Keep release pull request concise
         env:
           GH_TOKEN: ${{ steps.release-app.outputs.token }}
-          PR_BODY: |-
-            Review the version and changelog in this pull request. Merging publishes the release to npm.
-
-            Changesets updates this pull request as release notes land on `main`.
           PR_NUMBER: ${{ steps.version.outputs.pr-number }}
-        run: >-
-          gh api
-          --method PATCH
-          "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"
-          --field body="${PR_BODY}"
-          --silent
+        run: |
+          release_body="$(
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .body |
+              bun scripts/format-release-pr-body.ts
+          )"
+          gh api \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --raw-field body="${release_body}" \
+            --silent
 
   pack:
     name: Pack release
