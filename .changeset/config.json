@@ -3,7 +3,9 @@
   "changelog": [
     "@changesets/changelog-github",
     {
-      "repo": "chiefGui/stackyard"
+      "repo": "chiefGui/stackyard",
+      "disableThanks": true,
+      "template": "\n\n- {summary} {ref}"
     }
   ],
   "commit": false,

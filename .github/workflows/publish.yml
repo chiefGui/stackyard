@@ -80,6 +80,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Update version pull request
+        id: version
         uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         env:
           GITHUB_TOKEN: ${{ steps.release-app.outputs.token }}
@@ -88,6 +89,21 @@ jobs:
           script: bun run version-packages
           commit-message: "chore: release Stackyard"
           pr-title: "chore: release Stackyard"
+
+      - name: Keep release pull request concise
+        env:
+          GH_TOKEN: ${{ steps.release-app.outputs.token }}
+          PR_BODY: |-
+            Review the version and changelog in this pull request. Merging publishes the release to npm.
+
+            Changesets updates this pull request as release notes land on `main`.
+          PR_NUMBER: ${{ steps.version.outputs.pr-number }}
+        run: >-
+          gh api
+          --method PATCH
+          "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"
+          --field body="${PR_BODY}"
+          --silent
 
   pack:
     name: Pack release
