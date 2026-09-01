@@ -23,6 +23,7 @@
   "scripts": {
     "bench": "bun run ./benchmarks/project-definition.ts",
     "build": "bun run --workspaces --if-present build",
+    "changeset": "changeset",
     "pack:local": "bun run --filter stackyard pack:local",
     "typecheck": "bun run typecheck:packages && tsc -p ./tsconfig.json",
     "typecheck:packages": "bun run --workspaces --if-present typecheck",
@@ -34,9 +35,12 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "stackyard": "bun ./apps/cli/src/main.ts",
+    "version-packages": "changeset version && bun update stackyard --lockfile-only",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test:coverage && bun run build"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "1.0.0",
+    "@changesets/cli": "3.0.1",
     "@types/bun": "catalog:",
     "mitata": "1.0.34",
     "oxfmt": "0.65.0",
