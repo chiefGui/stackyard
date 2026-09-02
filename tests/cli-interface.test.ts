@@ -7,7 +7,9 @@ import { createAddCommand } from "../apps/cli/src/add.ts";
 import { defineCliCommand, runCli, type CliDependencies } from "../apps/cli/src/cli.ts";
 import { createInspectCommand } from "../apps/cli/src/inspect.ts";
 import { createRemoveCommand } from "../apps/cli/src/remove.ts";
+import { createStartCommand } from "../apps/cli/src/start.ts";
 import { createStatusCommand } from "../apps/cli/src/status.ts";
+import { createStopCommand } from "../apps/cli/src/stop.ts";
 import {
   createDiagnostic,
   failure,
@@ -100,7 +102,7 @@ test("the CLI reports its version through either root flag", async () => {
 
 test("root help identifies the running CLI version", async () => {
   const output: string[] = [];
-  const exitCode = await runCli([], {
+  const exitCode = await runCli(["help"], {
     commands: [],
     diagnostics: { report() {} },
     version: cliVersion,
@@ -111,6 +113,28 @@ test("root help identifies the running CLI version", async () => {
 
   expect(exitCode).toBe(0);
   expect(output.join("\n")).toContain(`stackyard v${cliVersion}`);
+});
+
+test("the CLI runs its default command without arguments", async () => {
+  let executions = 0;
+  const command = defineCliCommand("default", "SYD9000", {
+    meta: { description: "Default command" },
+    run() {
+      executions += 1;
+      return 0;
+    },
+  });
+
+  expect(
+    await runCli([], {
+      commands: [command],
+      defaultCommand: command,
+      diagnostics: { report() {} },
+      version: cliVersion,
+      writeOutput() {},
+    }),
+  ).toBe(0);
+  expect(executions).toBe(1);
 });
 
 test("unknown CLI commands report actionable diagnostics", async () => {
@@ -336,6 +360,93 @@ test("status renders durable project state and supports protocol JSON", async ()
   expect(JSON.parse(output.join(""))).toEqual(createProjectList({ projects: [project] }));
 });
 
+test("start reports one stable dashboard URL in detached and foreground modes", async () => {
+  const output: string[] = [];
+  let detachedStarts = 0;
+  let foregroundStarts = 0;
+  const locator = daemonLocator();
+  const command = createStartCommand({
+    diagnostics: { report() {} },
+    async find() {
+      return success(undefined);
+    },
+    async runForeground(onStarted) {
+      foregroundStarts += 1;
+      onStarted(locator);
+      return 0;
+    },
+    async start() {
+      detachedStarts += 1;
+      return success(locator);
+    },
+    writeOutput(value) {
+      output.push(value);
+    },
+  });
+
+  expect(await command.execute([])).toBe(0);
+  expect(detachedStarts).toBe(1);
+  expect(output.join("")).toBe("Stackyard is running at http://127.0.0.1:4310/\n");
+
+  output.length = 0;
+  expect(await command.execute(["--foreground"])).toBe(0);
+  expect(foregroundStarts).toBe(1);
+  expect(output.join("")).toBe(
+    "Stackyard is running at http://127.0.0.1:4310/\nPress Ctrl+C to stop.\n",
+  );
+});
+
+test("foreground start refuses to pretend it attached to an existing daemon", async () => {
+  const diagnostics: Diagnostic[] = [];
+  let foregroundStarts = 0;
+  const command = createStartCommand({
+    diagnostics: { report: (diagnostic) => diagnostics.push(diagnostic) },
+    async find() {
+      return success(daemonLocator());
+    },
+    async runForeground() {
+      foregroundStarts += 1;
+      return 0;
+    },
+    async start() {
+      throw new Error("Unexpected detached start.");
+    },
+    writeOutput() {},
+  });
+
+  expect(await command.execute(["--foreground"])).toBe(1);
+  expect(foregroundStarts).toBe(0);
+  expect(diagnostics).toMatchObject([
+    {
+      code: "SYD2016",
+      help: "Run 'stackyard stop', then start Stackyard in the foreground.",
+      message: "Stackyard is already running.",
+    },
+  ]);
+});
+
+test("stop is idempotent and reports whether a daemon was running", async () => {
+  const output: string[] = [];
+  const statuses: ("not-running" | "stopped")[] = ["stopped", "not-running"];
+  const command = createStopCommand({
+    diagnostics: { report() {} },
+    async stop() {
+      const status = statuses.shift();
+      if (!status) {
+        throw new Error("Unexpected stop request.");
+      }
+      return success(status);
+    },
+    writeOutput(value) {
+      output.push(value);
+    },
+  });
+
+  expect(await command.execute([])).toBe(0);
+  expect(await command.execute([])).toBe(0);
+  expect(output).toEqual(["Stackyard stopped.\n", "Stackyard is not running.\n"]);
+});
+
 function durableProject(): Project {
   return {
     id: "project-one",
@@ -344,5 +455,16 @@ function durableProject(): Project {
     root: resolve("C:/projects/demo"),
     services: [{ endpoints: [], name: "api", state: "stopped" }],
     state: "stopped",
+  };
+}
+
+function daemonLocator() {
+  return {
+    instanceId: "daemon-one",
+    pid: 123,
+    port: 4310,
+    protocolVersion: 1 as const,
+    schemaVersion: 1 as const,
+    token: "test-token",
   };
 }

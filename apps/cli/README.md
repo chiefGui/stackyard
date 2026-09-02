@@ -25,11 +25,22 @@ npm install --global stackyard
 ```sh
 stackyard --version
 stackyard help
+stackyard
+stackyard start
+stackyard start --foreground
+stackyard stop
 stackyard add .
 stackyard status
 stackyard run .
 stackyard remove <project-name-or-id>
 ```
+
+Run `stackyard` from any directory to start the machine-global daemon and print the dashboard URL.
+`stackyard start` does the same thing explicitly and safely reuses an existing daemon. Use
+`stackyard start --foreground` when Stackyard itself should stay attached to the terminal for
+debugging; stop an existing daemon before switching it into foreground mode. `stackyard stop`
+gracefully stops the daemon and every process it manages, and running it again when Stackyard is
+already stopped is safe.
 
 `stackyard add` adds the current project by finding its `stackyard/main.ts`. Pass another directory
 to add it from anywhere. Adding a project evaluates its definition but does not start its services.

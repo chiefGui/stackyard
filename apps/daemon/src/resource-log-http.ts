@@ -16,7 +16,6 @@ const encoder = new TextEncoder();
 export interface ResourceLogHttpOptions {
   readonly manager: ProjectManager;
   readonly token: string;
-  acquireActivity(): () => void;
   disableRequestTimeout(): void;
   isShuttingDown(): boolean;
 }
@@ -69,20 +68,14 @@ export function handleResourceLogHttpRequest(
   }
 
   options.disableRequestTimeout();
-  const releaseActivity = options.acquireActivity();
-  try {
-    return createResourceLogResponse({
-      after: target.after,
-      onClose: releaseActivity,
-      projectId: target.projectId,
-      resourceName: target.resourceName,
-      signal: request.signal,
-      source,
-    });
-  } catch (error) {
-    releaseActivity();
-    throw error;
-  }
+  return createResourceLogResponse({
+    after: target.after,
+    onClose: noop,
+    projectId: target.projectId,
+    resourceName: target.resourceName,
+    signal: request.signal,
+    source,
+  });
 }
 
 function recentProject(project: RuntimeProject) {
@@ -263,3 +256,5 @@ function unauthorizedResponse(): Response {
     status: 401,
   });
 }
+
+function noop(): void {}

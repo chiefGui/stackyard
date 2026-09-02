@@ -45,8 +45,23 @@ export interface EnsureDaemonOptions {
   readonly runtimeDirectory?: string;
 }
 
+export interface FindDaemonOptions {
+  readonly runtimeDirectory?: string;
+}
+
+export type StopDaemonStatus = "not-running" | "stopped";
+
 export function daemonUrl(locator: Pick<DaemonLocator, "port">): string {
   return `http://${daemonHostname}:${locator.port}/`;
+}
+
+export async function findDaemon(
+  options: FindDaemonOptions = {},
+): Promise<Result<DaemonLocator | undefined>> {
+  const directories = resolveStackyardDirectories(
+    options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
+  );
+  return findDaemonInDirectory(directories.runtime);
 }
 
 export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result<DaemonLocator>> {
@@ -56,25 +71,12 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result
   const directory = directories.runtime;
   await mkdir(directory, { mode: 0o700, recursive: true });
 
-  const current = await readLocator(directory);
-  if (current && (await isReachable(current))) {
-    return success(current);
+  const active = await findDaemonInDirectory(directory);
+  if (!active.success) {
+    return active;
   }
-
-  const incompatible = current ? undefined : await readLocatorProcess(directory);
-  if (incompatible && isProcessAlive(incompatible.pid)) {
-    return daemonUnavailable(
-      `Daemon process ${incompatible.pid} uses protocol ${incompatible.protocolVersion ?? "unknown"}; this CLI requires protocol ${protocolVersion}.`,
-    );
-  }
-
-  if (current && isProcessAlive(current.pid)) {
-    return daemonUnavailable(
-      await daemonFailureNote(
-        directory,
-        `Daemon process ${current.pid} is running but did not answer a health check.`,
-      ),
-    );
+  if (active.output) {
+    return success(active.output);
   }
 
   const diagnosticsPath = join(directory, diagnosticsName);
@@ -114,6 +116,78 @@ export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result
   return daemonUnavailable(
     await daemonFailureNote(directory, "The daemon did not become ready within five seconds."),
   );
+}
+
+export async function stopDaemon(
+  options: FindDaemonOptions = {},
+): Promise<Result<StopDaemonStatus>> {
+  const directories = resolveStackyardDirectories(
+    options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
+  );
+  const active = await findDaemonInDirectory(directories.runtime);
+  if (!active.success) {
+    return active;
+  }
+  if (!active.output) {
+    return success("not-running");
+  }
+
+  const locator = active.output;
+  let response: Response;
+  try {
+    response = await fetch(new URL("api/v1/shutdown", daemonUrl(locator)), {
+      headers: { authorization: `Bearer ${locator.token}` },
+      method: "POST",
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    return daemonStopFailure(describeError(error));
+  }
+  if (response.status !== 202) {
+    return daemonStopFailure(`The daemon returned HTTP ${response.status}.`);
+  }
+
+  let stopped: boolean;
+  try {
+    stopped = await waitForDaemonStop(directories.runtime, locator, Date.now() + 15_000);
+  } catch (error) {
+    return daemonStopFailure(describeError(error));
+  }
+  return stopped
+    ? success("stopped")
+    : daemonStopFailure(`Daemon process ${locator.pid} did not stop within fifteen seconds.`);
+}
+
+async function findDaemonInDirectory(
+  directory: string,
+): Promise<Result<DaemonLocator | undefined>> {
+  try {
+    const current = await readLocator(directory);
+    if (current && (await isReachable(current))) {
+      return success(current);
+    }
+
+    const incompatible = current ? undefined : await readLocatorProcess(directory);
+    if (incompatible && isProcessAlive(incompatible.pid)) {
+      return daemonUnavailable(
+        `Daemon process ${incompatible.pid} uses protocol ${incompatible.protocolVersion ?? "unknown"}; this CLI requires protocol ${protocolVersion}.`,
+      );
+    }
+
+    if (current && isProcessAlive(current.pid)) {
+      return daemonUnavailable(
+        await daemonFailureNote(
+          directory,
+          `Daemon process ${current.pid} is running but did not answer a health check.`,
+        ),
+      );
+    }
+    return success(undefined);
+  } catch (error) {
+    return daemonUnavailable(
+      `The daemon runtime state could not be inspected: ${describeError(error)}`,
+    );
+  }
 }
 
 export async function acquireDaemonLock(
@@ -256,6 +330,26 @@ async function waitForDaemon(
   return waitForDaemon(directory, deadline);
 }
 
+async function waitForDaemonStop(
+  directory: string,
+  locator: DaemonLocator,
+  deadline: number,
+): Promise<boolean> {
+  const current = await readLocator(directory);
+  if (
+    (current !== undefined && current.instanceId !== locator.instanceId) ||
+    !isProcessAlive(locator.pid)
+  ) {
+    return true;
+  }
+  if (Date.now() >= deadline) {
+    return false;
+  }
+
+  await Bun.sleep(50);
+  return waitForDaemonStop(directory, locator, deadline);
+}
+
 export async function publishLocator(
   directory: string,
   input: Omit<DaemonLocator, "protocolVersion" | "schemaVersion">,
@@ -390,12 +484,23 @@ function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
 
-function daemonUnavailable(note: string): Result<DaemonLocator> {
+function daemonUnavailable<T = DaemonLocator>(note: string): Result<T> {
   return failure(
     createDiagnostic({
       code: "SYD3005",
       help: "Stop any stale Stackyard daemon process, then run the command again.",
       message: "The Stackyard daemon is unavailable.",
+      notes: [note],
+    }),
+  );
+}
+
+function daemonStopFailure(note: string): Result<StopDaemonStatus> {
+  return failure(
+    createDiagnostic({
+      code: "SYD3017",
+      help: "Run 'stackyard stop' again. If the problem persists, inspect the daemon diagnostics and stop its process.",
+      message: "Stackyard could not be stopped cleanly.",
       notes: [note],
     }),
   );

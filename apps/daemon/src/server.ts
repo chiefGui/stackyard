@@ -58,8 +58,7 @@ export interface ControlServerOptions {
   readonly projects?: Projects;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
-  acquireLongLivedActivity(): () => void;
-  onActivity(): void;
+  readonly requestShutdown?: () => void;
   onClose(socket: Bun.ServerWebSocket<ControlData>): void;
   onOpen(socket: Bun.ServerWebSocket<ControlData>): void;
 }
@@ -84,8 +83,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         if (url.hostname !== daemonHostname) {
           return secureResponse("Invalid host.", { status: 403 });
         }
-        options.onActivity();
-
         if (url.pathname === "/api/v1/control") {
           if (options.isShuttingDown()) {
             return secureResponse("Daemon is shutting down.", { status: 503 });
@@ -106,6 +103,22 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
             return undefined;
           }
           return secureResponse("WebSocket upgrade required.", { status: 426 });
+        }
+
+        if (url.pathname === "/api/v1/shutdown") {
+          if (!options.requestShutdown) {
+            return secureResponse("Not found.", { status: 404 });
+          }
+          if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
+            return secureResponse("Unauthorized.", { status: 401 });
+          }
+          if (request.method !== "POST") {
+            return secureResponse("Method not allowed.", { status: 405 });
+          }
+          if (!options.isShuttingDown()) {
+            options.requestShutdown();
+          }
+          return secureResponse(null, { status: 202 });
         }
 
         if (url.pathname === "/api/v1/projects") {
@@ -134,7 +147,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
           return secureJson({ instanceId: options.instanceId, protocolVersion, status: "ok" });
         }
         const resourceLogResponse = handleResourceLogHttpRequest(request, url, {
-          acquireActivity: () => options.acquireLongLivedActivity(),
           disableRequestTimeout: () => activeServer.timeout(request, 0),
           isShuttingDown: () => options.isShuttingDown(),
           manager: options.manager,
@@ -307,6 +319,9 @@ export async function closeControlServer(
   }
   await Promise.all([queueSettlement, Promise.all(cleanupTasks)]);
   await superviseCleanup(() => manager.stopAll(), diagnostics);
+  for (const socket of sockets) {
+    sendMessage(socket, createProjectStoppedMessage());
+  }
 }
 
 async function handleControlMessage(

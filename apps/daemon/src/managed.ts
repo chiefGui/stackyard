@@ -8,19 +8,18 @@ import {
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
 import { resolveStackyardDirectories } from "./directories.ts";
-import { acquireDaemonLock, publishLocator, removeLocator } from "./locator.ts";
+import { acquireDaemonLock, publishLocator, removeLocator, type DaemonLocator } from "./locator.ts";
 import { BunPortAllocator } from "./ports.ts";
 import { BunProcessHost } from "./processes.ts";
 import { openProjectCatalog } from "./projects.ts";
 import { closeControlServer, startControlServer, type ControlData } from "./server.ts";
-
-const idleMilliseconds = 15_000;
 
 export interface ManagedDaemonOptions {
   readonly dashboardWebDirectory: string;
   readonly diagnostics: DiagnosticSink;
   readonly evaluatorEntrypoint: string;
   readonly dataDirectory?: string;
+  readonly onStarted?: (locator: DaemonLocator) => void;
   readonly runtimeDirectory?: string;
 }
 
@@ -45,13 +44,21 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
   const manager = createProjectManager(options.diagnostics);
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   let shuttingDown = false;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let finish = noop;
   let locatorPublished = false;
-  let longLivedActivities = 0;
   let catalog: ProjectCatalog | undefined;
   let server: Bun.Server<ControlData> | undefined;
   let exitCode = 0;
+  const { promise: shutdown, resolve: finish } = Promise.withResolvers<void>();
+  const requestShutdown = (): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    // Let an HTTP shutdown request return its response before server teardown begins.
+    setTimeout(finish);
+  };
+  process.once("SIGINT", requestShutdown);
+  process.once("SIGTERM", requestShutdown);
 
   try {
     const openedCatalog = await openProjectCatalog({
@@ -67,19 +74,6 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
     const projects = new ProjectOrchestrator(catalog, manager);
 
     const started = startControlServer({
-      acquireLongLivedActivity() {
-        longLivedActivities += 1;
-        clearIdleTimer();
-        let active = true;
-        return () => {
-          if (!active) {
-            return;
-          }
-          active = false;
-          longLivedActivities -= 1;
-          scheduleIdleShutdown();
-        };
-      },
       diagnostics: options.diagnostics,
       handleUnhandledRequest: createDashboardWebHandler(options.dashboardWebDirectory),
       instanceId,
@@ -87,18 +81,13 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
       manager,
       onClose(socket) {
         sockets.delete(socket);
-        scheduleIdleShutdown();
-      },
-      onActivity() {
-        clearIdleTimer();
-        scheduleIdleShutdown();
       },
       onOpen(socket) {
         sockets.add(socket);
-        clearIdleTimer();
       },
       port: 0,
       projects,
+      requestShutdown,
       token,
     });
     if (!started.success) {
@@ -118,20 +107,14 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
       return 1;
     }
 
-    await publishLocator(directory, {
+    const locator = await publishLocator(directory, {
       instanceId,
       pid: process.pid,
       port: server.port,
       token,
     });
     locatorPublished = true;
-
-    const shutdown = new Promise<void>((finishShutdown) => {
-      finish = finishShutdown;
-    });
-    process.once("SIGINT", finish);
-    process.once("SIGTERM", finish);
-    scheduleIdleShutdown();
+    options.onStarted?.(locator);
     await shutdown;
   } catch (error) {
     options.diagnostics.report(
@@ -140,9 +123,8 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
     exitCode = 1;
   } finally {
     shuttingDown = true;
-    process.off("SIGINT", finish);
-    process.off("SIGTERM", finish);
-    clearIdleTimer();
+    process.off("SIGINT", requestShutdown);
+    process.off("SIGTERM", requestShutdown);
 
     await closeControlServer(manager, sockets, options.diagnostics);
     if (server) {
@@ -174,30 +156,6 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
     }
   }
   return exitCode;
-
-  function clearIdleTimer(): void {
-    if (!idleTimer) {
-      return;
-    }
-    clearTimeout(idleTimer);
-    idleTimer = undefined;
-  }
-
-  function scheduleIdleShutdown(): void {
-    if (
-      shuttingDown ||
-      sockets.size > 0 ||
-      longLivedActivities > 0 ||
-      manager.listActiveProjects().projects.length > 0 ||
-      idleTimer
-    ) {
-      return;
-    }
-    idleTimer = setTimeout(() => {
-      idleTimer = undefined;
-      finish();
-    }, idleMilliseconds);
-  }
 }
 
 export interface ForegroundDaemonOptions {
@@ -211,12 +169,10 @@ export async function runForegroundDaemon(options: ForegroundDaemonOptions): Pro
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   let shuttingDown = false;
   const started = startControlServer({
-    acquireLongLivedActivity: () => noop,
     diagnostics: options.diagnostics,
     instanceId: crypto.randomUUID(),
     isShuttingDown: () => shuttingDown,
     manager,
-    onActivity: noop,
     onClose(socket) {
       sockets.delete(socket);
     },
@@ -232,15 +188,12 @@ export async function runForegroundDaemon(options: ForegroundDaemonOptions): Pro
   }
 
   const server = started.output;
-  let finish = noop;
   let exitCode = 0;
+  const { promise: shutdown, resolve: finish } = Promise.withResolvers<void>();
   try {
     if (options.onStarted) {
       options.onStarted(server.url.href);
     }
-    const shutdown = new Promise<void>((resolveShutdown) => {
-      finish = resolveShutdown;
-    });
     process.once("SIGINT", finish);
     process.once("SIGTERM", finish);
     await shutdown;
@@ -279,5 +232,3 @@ function lifecycleDiagnostic(message: string, error: unknown) {
     notes: [describeError(error)],
   });
 }
-
-function noop(): void {}

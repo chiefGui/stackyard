@@ -131,6 +131,15 @@ test("the packed package works in an external Bun project", async () => {
     expect(added.exitCode).toBe(0);
     expect(added.stderr).toBe("");
 
+    const opened = await runCommand(
+      [process.execPath, join(installedPackage, "dist/cli.js")],
+      consumerDirectory,
+      runtimeEnvironment,
+    );
+    expect(opened.exitCode).toBe(0);
+    expect(opened.stderr).toBe("");
+    expect(opened.stdout).toMatch(/^Stackyard is running at http:\/\/127\.0\.0\.1:\d+\/\n$/);
+
     runProcess = Bun.spawn({
       cmd: [process.execPath, join(installedPackage, "dist/cli.js"), "run", "projects/run"],
       cwd: consumerDirectory,
@@ -198,6 +207,14 @@ test("the packed package works in an external Bun project", async () => {
         return true;
       }
     });
+
+    const stopped = await runCommand(
+      [process.execPath, join(installedPackage, "dist/cli.js"), "stop"],
+      consumerDirectory,
+      runtimeEnvironment,
+    );
+    expect(stopped).toEqual({ exitCode: 0, stderr: "", stdout: "Stackyard stopped.\n" });
+    daemonPid = undefined;
   } finally {
     if (runProcess?.exitCode === null) {
       runProcess.kill("SIGKILL");

@@ -139,6 +139,38 @@ describe("HTTP server", () => {
     }
   });
 
+  test("accepts authenticated shutdown intent without exposing it publicly", async () => {
+    let shutdownRequests = 0;
+    const result = startTestServer(0, undefined, undefined, undefined, () => {
+      shutdownRequests += 1;
+    });
+    if (!result.success) {
+      throw new Error("The test server could not start.");
+    }
+
+    const server = result.output;
+    try {
+      const unauthorized = await fetch(new URL("/api/v1/shutdown", server.url), {
+        method: "POST",
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const wrongMethod = await fetch(new URL("/api/v1/shutdown", server.url), {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(wrongMethod.status).toBe(405);
+
+      const accepted = await fetch(new URL("/api/v1/shutdown", server.url), {
+        headers: { authorization: "Bearer test-token" },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(202);
+      expect(shutdownRequests).toBe(1);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("lists and mutates durable projects through one endpoint", async () => {
     const project: Project = {
       id: "project-one",
@@ -560,15 +592,15 @@ function startTestServer(
   }),
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
   projects: Projects | null = testProjects(manager),
+  requestShutdown?: () => void,
 ) {
   return startControlServer({
     ...(projects ? { projects } : {}),
-    acquireLongLivedActivity: () => () => {},
+    ...(requestShutdown ? { requestShutdown } : {}),
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,
     manager,
-    onActivity() {},
     onClose() {},
     onOpen,
     port,

@@ -33,6 +33,7 @@ export type CliCommandDefinition<T extends ArgsDef> = Omit<
 
 export interface CliDependencies {
   readonly commands: readonly CliCommand[];
+  readonly defaultCommand?: CliCommand;
   readonly diagnostics: DiagnosticSink;
   readonly version: string;
   writeOutput(output: string): void;
@@ -89,7 +90,14 @@ export async function runCli(
     dependencies.writeOutput(`${dependencies.version}\n`);
     return 0;
   }
-  if (!commandName || commandName === "help" || isHelpFlag(commandName)) {
+  if (!commandName) {
+    if (dependencies.defaultCommand) {
+      return executeCommand(dependencies.defaultCommand, [], dependencies);
+    }
+    await writeRootHelp(dependencies);
+    return 0;
+  }
+  if (commandName === "help" || isHelpFlag(commandName)) {
     await writeRootHelp(dependencies);
     return 0;
   }
@@ -104,8 +112,16 @@ export async function runCli(
     return 0;
   }
 
+  return executeCommand(command, commandArguments, dependencies);
+}
+
+async function executeCommand(
+  command: CliCommand,
+  args: readonly string[],
+  dependencies: CliDependencies,
+): Promise<number> {
   try {
-    return await command.execute(commandArguments);
+    return await command.execute(args);
   } catch (error) {
     if (error instanceof InvalidArgumentsError) {
       reportInvalidArguments(error.message, command, dependencies);
