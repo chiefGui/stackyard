@@ -32,6 +32,7 @@
 - Keep each commit to one coherent change.
 - In commit bodies, state the problem in one or two sentences, then explain the fix.
 - Open every pull request description with a short, plain-language value pitch: in one or two sentences, explain what the change makes possible and why it matters. Keep implementation details out of the pitch.
+- Pull requests are squash-merged. Once a pull request is open, do not amend commits, rewrite branch history, or force-push; add follow-up changes as ordinary commits.
 
 ## Releases
 

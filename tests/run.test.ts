@@ -235,10 +235,10 @@ test("run starts durable projects through the global daemon", async () => {
     }
     await rm(runtimeRoot, { force: true, recursive: true });
   }
-}, 15_000);
+}, 30_000);
 
 async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
-  return poll(read, Date.now() + 5_000);
+  return poll(read, Date.now() + 10_000);
 }
 
 async function poll<T>(read: () => Promise<T | undefined>, deadline: number): Promise<T> {

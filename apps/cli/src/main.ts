@@ -4,7 +4,12 @@ import { writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { internalDaemonCommand } from "@stackyard/daemon/locator";
+import {
+  ensureDaemon,
+  findDaemon,
+  internalDaemonCommand,
+  stopDaemon,
+} from "@stackyard/daemon/locator";
 import { runManagedDaemon } from "@stackyard/daemon/managed";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
@@ -20,7 +25,9 @@ import { createInspectCommand } from "./inspect.ts";
 import { DaemonProjectClient } from "./project-client.ts";
 import { createRemoveCommand } from "./remove.ts";
 import { createRunCommand } from "./run.ts";
+import { createStartCommand } from "./start.ts";
 import { createStatusCommand } from "./status.ts";
+import { createStopCommand } from "./stop.ts";
 
 const cliEntrypoint = fileURLToPath(import.meta.url);
 const cliArguments = Bun.argv.slice(2);
@@ -56,19 +63,30 @@ function runDaemon(): Promise<number> {
 
 function runPublicCli(): Promise<number> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
-  const projectClient = new DaemonProjectClient({
-    daemonEntrypoint: cliEntrypoint,
-    dashboardWebDirectory,
+  const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
+  const projectClient = new DaemonProjectClient(daemonOptions);
+  const startCommand = createStartCommand({
+    diagnostics,
+    find: () => findDaemon(),
+    runForeground: (onStarted) =>
+      runManagedDaemon({
+        dashboardWebDirectory,
+        diagnostics,
+        evaluatorEntrypoint: cliEntrypoint,
+        onStarted,
+      }),
+    start: () => ensureDaemon(daemonOptions),
+    writeOutput,
   });
   return runCli(cliArguments, {
     commands: [
+      startCommand,
+      createStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
       createAddCommand({
         client: projectClient,
         currentDirectory: process.cwd(),
         diagnostics,
-        writeOutput(output) {
-          process.stdout.write(output);
-        },
+        writeOutput,
       }),
       createInspectCommand({
         diagnostics,
@@ -76,40 +94,31 @@ function runPublicCli(): Promise<number> {
         writeError(output) {
           process.stderr.write(output);
         },
-        writeOutput(output) {
-          process.stdout.write(output);
-        },
+        writeOutput,
       }),
       createRunCommand({
         currentDirectory: process.cwd(),
         daemonEntrypoint: cliEntrypoint,
         dashboardWebDirectory,
         diagnostics,
-        writeOutput(output) {
-          process.stdout.write(output);
-        },
+        writeOutput,
       }),
       createRemoveCommand({
         client: projectClient,
         currentDirectory: process.cwd(),
         diagnostics,
-        writeOutput(output) {
-          process.stdout.write(output);
-        },
+        writeOutput,
       }),
       createStatusCommand({
         client: projectClient,
         diagnostics,
-        writeOutput(output) {
-          process.stdout.write(output);
-        },
+        writeOutput,
       }),
     ],
+    defaultCommand: startCommand,
     diagnostics,
     version: packageManifest.version,
-    writeOutput(output) {
-      process.stdout.write(output);
-    },
+    writeOutput,
   });
 }
 
@@ -130,6 +139,10 @@ function resolveDashboardWebDirectory(entrypoint: string): string {
     return resolve(directory, "../../dashboard-web/dist");
   }
   return join(directory, "dashboard-web");
+}
+
+function writeOutput(output: string): void {
+  process.stdout.write(output);
 }
 
 function createDiagnosticSink(path: string | undefined): DiagnosticSink {

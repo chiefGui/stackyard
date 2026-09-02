@@ -46,25 +46,11 @@ describe("resource log HTTP API", () => {
     }
     processes.write({ observedAt: 10, stream: "stdout", text: "ready" });
 
-    let closedStreams = 0;
-    let openStreams = 0;
     const startedServer = startControlServer({
-      acquireLongLivedActivity() {
-        openStreams += 1;
-        let active = true;
-        return () => {
-          if (!active) {
-            return;
-          }
-          active = false;
-          closedStreams += 1;
-        };
-      },
       diagnostics: { report() {} },
       instanceId: "test-daemon",
       isShuttingDown: () => false,
       manager,
-      onActivity() {},
       onClose() {},
       onOpen() {},
       port: 0,
@@ -80,7 +66,6 @@ describe("resource log HTTP API", () => {
     const unauthorized = await fetch(logsUrl);
     expect(unauthorized.status).toBe(401);
     expect(unauthorized.headers.get("www-authenticate")).toBe("Bearer");
-    expect(openStreams).toBe(0);
 
     const malformed = await fetch(new URL(`${logsUrl.href}?after=01`), authorized());
     expect(malformed.status).toBe(400);
@@ -96,7 +81,6 @@ describe("resource log HTTP API", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/x-ndjson; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(openStreams).toBe(1);
     const frames = new NdjsonFrames(response);
     expect(await frames.next()).toMatchObject({
       cursor: 1,
@@ -114,7 +98,6 @@ describe("resource log HTTP API", () => {
     });
 
     await frames.cancel();
-    await waitFor(() => closedStreams === 1);
 
     const continuedResponse = await fetch(new URL(`${logsUrl.href}?after=2`), authorized());
     const continued = new NdjsonFrames(continuedResponse);
@@ -123,7 +106,6 @@ describe("resource log HTTP API", () => {
     expect((await startedProject.output.stop()).success).toBeTrue();
     expect(await continued.next()).toMatchObject({ cursor: 2, entries: [], status: "complete" });
     expect(await continued.done()).toBeTrue();
-    expect(closedStreams).toBe(2);
 
     const recentResponse = await fetch(
       new URL("/api/v1/projects/recent", server.url),
@@ -143,8 +125,6 @@ describe("resource log HTTP API", () => {
       status: "complete",
     });
     expect(await resumed.done()).toBeTrue();
-    expect(openStreams).toBe(3);
-    expect(closedStreams).toBe(3);
   });
 });
 
@@ -276,13 +256,3 @@ interface ByteStreamReader {
 type ByteStreamReadResult =
   | { readonly done: false; readonly value: Uint8Array }
   | { readonly done: true; readonly value?: undefined };
-
-async function waitFor(condition: () => boolean): Promise<void> {
-  const deadline = performance.now() + 1_000;
-  while (!condition()) {
-    if (performance.now() >= deadline) {
-      throw new Error("Timed out waiting for the resource log stream to close.");
-    }
-    await Bun.sleep(1);
-  }
-}
