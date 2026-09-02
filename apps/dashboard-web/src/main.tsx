@@ -5,6 +5,8 @@ import { RouterProvider } from "@tanstack/react-router";
 
 import { router } from "./app/router.tsx";
 
+// oxlint-disable-next-line import/no-unassigned-import -- Fontsource registers the local font face.
+import "@fontsource-variable/inter/wght.css";
 // oxlint-disable-next-line import/no-unassigned-import -- Vite injects stylesheet imports.
 import "./styling/app.css";
 

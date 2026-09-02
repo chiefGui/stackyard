@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { ProjectList } from "@stackyard/protocol/projects";
 
 import { colors, fonts, radii, spacing } from "../../styling/theme.stylex.ts";
-import { ProjectServicesTable } from "./project-services-table.tsx";
+import { typography } from "../../styling/typography.ts";
+import { ProjectCards } from "./project-cards.tsx";
 import { projectsQueryOptions } from "./projects-query.ts";
 
 export function ProjectsPage() {
@@ -13,12 +14,8 @@ export function ProjectsPage() {
 
   return (
     <main {...stylex.props(styles.main)}>
-      <header {...stylex.props(styles.header)}>
-        <div>
-          <p {...stylex.props(styles.eyebrow)}>Projects</p>
-          <h1 {...stylex.props(styles.heading)}>Stackyard</h1>
-        </div>
-        <p {...stylex.props(styles.connection)} aria-live="polite">
+      <header {...stylex.props(styles.header)} aria-label="Dashboard status">
+        <p {...stylex.props(styles.connection, typography.label)} aria-live="polite">
           <span
             {...stylex.props(
               styles.connectionIndicator,
@@ -57,8 +54,8 @@ function ProjectsContent({
   if (error && !projectList) {
     return (
       <section {...stylex.props(styles.emptyState)} aria-live="polite">
-        <h2 {...stylex.props(styles.emptyHeading)}>Dashboard unavailable</h2>
-        <p {...stylex.props(styles.emptyCopy)}>{error.message}</p>
+        <h2 {...stylex.props(styles.emptyHeading, typography.subtitle)}>Dashboard unavailable</h2>
+        <p {...stylex.props(typography.body)}>{error.message}</p>
       </section>
     );
   }
@@ -66,15 +63,15 @@ function ProjectsContent({
   if (!projectList?.projects.length) {
     return (
       <section {...stylex.props(styles.emptyState)} aria-live="polite">
-        <h2 {...stylex.props(styles.emptyHeading)}>No projects yet</h2>
-        <p {...stylex.props(styles.emptyCopy)}>
+        <h2 {...stylex.props(styles.emptyHeading, typography.subtitle)}>No projects yet</h2>
+        <p {...stylex.props(typography.body)}>
           Add one with <code {...stylex.props(styles.command)}>stackyard add .</code>.
         </p>
       </section>
     );
   }
 
-  return <ProjectServicesTable projects={projectList.projects} />;
+  return <ProjectCards projects={projectList.projects} />;
 }
 
 const styles = stylex.create({
@@ -82,9 +79,7 @@ const styles = stylex.create({
     alignItems: "center",
     color: colors.textStatus,
     display: "flex",
-    fontSize: 13,
     gap: spacing.small,
-    marginBottom: "5px",
   },
   connectionIndicator: {
     backgroundColor: colors.textDisabled,
@@ -100,16 +95,10 @@ const styles = stylex.create({
   },
   command: {
     fontFamily: fonts.mono,
-    fontSize: "0.95em",
-  },
-  emptyCopy: {
-    fontSize: 13,
   },
   emptyHeading: {
     color: colors.textHeading,
-    fontSize: 16,
-    fontWeight: 570,
-    marginBottom: "7px",
+    marginBottom: spacing.small,
   },
   emptyState: {
     backgroundColor: colors.surface,
@@ -123,31 +112,19 @@ const styles = stylex.create({
     placeContent: "center",
     textAlign: "center",
   },
-  eyebrow: {
-    color: colors.textMuted,
-    fontSize: 12,
-    fontWeight: 650,
-    letterSpacing: "0.09em",
-    marginBottom: spacing.small,
-    textTransform: "uppercase",
-  },
   header: {
-    alignItems: "flex-end",
+    alignItems: "center",
     display: "flex",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     marginBottom: spacing.large,
-  },
-  heading: {
-    fontSize: "clamp(30px, 5vw, 42px)",
-    fontWeight: 620,
-    letterSpacing: "-0.04em",
+    minHeight: spacing.xLarge,
   },
   main: {
     marginInline: "auto",
-    paddingBlockEnd: "80px",
+    paddingBlockEnd: spacing.xxxLarge,
     paddingBlockStart: {
       "@media (max-width: 760px)": spacing.large,
-      default: "56px",
+      default: spacing.xxLarge,
     },
     width: {
       "@media (max-width: 760px)": "min(100% - 28px, 1180px)",
