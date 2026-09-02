@@ -17,7 +17,7 @@ import packageManifest from "../package.json" with { type: "json" };
 import { runCli } from "./cli.ts";
 import { createAddCommand } from "./add.ts";
 import { createInspectCommand } from "./inspect.ts";
-import { DaemonRegistrationClient } from "./registration-client.ts";
+import { DaemonProjectClient } from "./project-client.ts";
 import { createRemoveCommand } from "./remove.ts";
 import { createRunCommand } from "./run.ts";
 import { createStatusCommand } from "./status.ts";
@@ -56,14 +56,14 @@ function runDaemon(): Promise<number> {
 
 function runPublicCli(): Promise<number> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
-  const registrationClient = new DaemonRegistrationClient({
+  const projectClient = new DaemonProjectClient({
     daemonEntrypoint: cliEntrypoint,
     dashboardWebDirectory,
   });
   return runCli(cliArguments, {
     commands: [
       createAddCommand({
-        client: registrationClient,
+        client: projectClient,
         currentDirectory: process.cwd(),
         diagnostics,
         writeOutput(output) {
@@ -81,19 +81,16 @@ function runPublicCli(): Promise<number> {
         },
       }),
       createRunCommand({
+        currentDirectory: process.cwd(),
         daemonEntrypoint: cliEntrypoint,
         dashboardWebDirectory,
         diagnostics,
-        loadProject,
-        writeError(output) {
-          process.stderr.write(output);
-        },
         writeOutput(output) {
           process.stdout.write(output);
         },
       }),
       createRemoveCommand({
-        client: registrationClient,
+        client: projectClient,
         currentDirectory: process.cwd(),
         diagnostics,
         writeOutput(output) {
@@ -101,7 +98,7 @@ function runPublicCli(): Promise<number> {
         },
       }),
       createStatusCommand({
-        client: registrationClient,
+        client: projectClient,
         diagnostics,
         writeOutput(output) {
           process.stdout.write(output);

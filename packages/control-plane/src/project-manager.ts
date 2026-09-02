@@ -14,10 +14,10 @@ import {
 } from "@stackyard/protocol";
 
 import {
-  type Project,
-  type ProjectList,
-  type ServiceEndpoint,
-  type ServiceState,
+  type RuntimeProject,
+  type RuntimeProjectList,
+  type RuntimeServiceEndpoint,
+  type RuntimeServiceState,
 } from "./project-list.ts";
 import {
   ResourceLogStore,
@@ -77,7 +77,6 @@ export interface ProcessHost {
 }
 
 export interface ProjectManagerOptions {
-  readonly createId: () => string;
   readonly logs?: ResourceLogStore;
   readonly ports: PortAllocator;
   readonly processes: ProcessHost;
@@ -91,6 +90,8 @@ export interface CancellationSignal {
 export interface StartProjectInput {
   readonly environment: Readonly<Record<string, string>>;
   readonly environmentNamesCaseInsensitive: boolean;
+  readonly id: string;
+  readonly revision: number;
   readonly root: string;
   readonly signal?: CancellationSignal;
   readonly spec: ProjectSpec;
@@ -103,6 +104,7 @@ export type ProjectCompletion =
 export interface ManagedProject {
   readonly completed: Promise<ProjectCompletion>;
   readonly id: string;
+  readonly name: string;
   stop(): Promise<Result<void>>;
 }
 
@@ -118,7 +120,7 @@ export interface StartProjectFailure extends Failure {
 export type StartProjectResult = StartProjectFailure | Success<ManagedProject>;
 
 interface AllocatedEndpoint {
-  readonly endpoint: ServiceEndpoint;
+  readonly endpoint: RuntimeServiceEndpoint;
   readonly lease: PortLease;
 }
 
@@ -129,14 +131,14 @@ interface ResourceRuntime {
   exit?: ProcessExit;
   exitCode?: number;
   handle?: ProcessHandle;
-  state: ServiceState;
+  state: RuntimeServiceState;
   stopRequested: boolean;
 }
 
 interface RecentProject {
   readonly id: string;
   readonly logs: ReadonlyMap<string, ResourceLogFeed>;
-  readonly project: Project;
+  readonly project: RuntimeProject;
   readonly root: string;
 }
 
@@ -145,6 +147,7 @@ interface ProjectRuntime {
   readonly completed: Promise<ProjectCompletion>;
   readonly id: string;
   readonly name: string;
+  readonly revision: number;
   readonly resources: ResourceRuntime[];
   readonly root: string;
   cleanup: Promise<Result<void>> | undefined;
@@ -155,18 +158,16 @@ interface ProjectRuntime {
 const compareNames = (left: string, right: string): number => left.localeCompare(right, "en");
 
 export class ProjectManager {
-  readonly #createId: () => string;
   readonly #logs: ResourceLogStore;
   readonly #ports: PortAllocator;
   readonly #processes: ProcessHost;
-  readonly #projects = new Map<string, ProjectRuntime>();
+  readonly #activeProjects = new Map<string, ProjectRuntime>();
   readonly #recentProjectLimit: number;
   readonly #recentProjects = new Map<string, RecentProject>();
   readonly #recentRoots = new Map<string, RecentProject>();
-  readonly #roots = new Map<string, ProjectRuntime>();
+  readonly #activeRoots = new Map<string, ProjectRuntime>();
 
   constructor(options: ProjectManagerOptions) {
-    this.#createId = options.createId;
     this.#logs = options.logs ?? new ResourceLogStore();
     this.#ports = options.ports;
     this.#processes = options.processes;
@@ -177,34 +178,41 @@ export class ProjectManager {
     );
   }
 
-  listProjects(): ProjectList {
-    return this.#projectList(this.#projects.values());
+  listActiveProjects(): RuntimeProjectList {
+    return this.#projectList(this.#activeProjects.values());
   }
 
-  isActive(root: string): boolean {
-    return this.#roots.has(root);
+  findActiveProject(projectId: string): RuntimeProject | undefined {
+    const project = this.#activeProjects.get(projectId);
+    return project ? this.#projectView(project) : undefined;
   }
 
-  listRecentProjects(): ProjectList {
+  isActive(projectId: string): boolean {
+    return this.#activeProjects.has(projectId);
+  }
+
+  listRecentProjects(): RuntimeProjectList {
     return { projects: [...this.#recentProjects.values()].map(({ project }) => project) };
   }
 
   getResourceLogs(projectId: string, resourceName: string): ResourceLogSource | undefined {
-    const active = this.#projects.get(projectId);
+    const active = this.#activeProjects.get(projectId);
     return (
       active?.resources.find(({ name }) => name === resourceName)?.logs ??
       this.#recentProjects.get(projectId)?.logs.get(resourceName)
     );
   }
 
-  #projectList(projects: Iterable<ProjectRuntime>): ProjectList {
+  #projectList(projects: Iterable<ProjectRuntime>): RuntimeProjectList {
     return { projects: [...projects].map((project) => this.#projectView(project)) };
   }
 
-  #projectView(project: ProjectRuntime): Project {
+  #projectView(project: ProjectRuntime): RuntimeProject {
     return Object.freeze({
       id: project.id,
       name: project.name,
+      revision: project.revision,
+      root: project.root,
       services: Object.freeze(
         project.resources.map((resource) =>
           Object.freeze({
@@ -221,7 +229,7 @@ export class ProjectManager {
   }
 
   async start(input: StartProjectInput): Promise<StartProjectResult> {
-    if (this.#roots.has(input.root)) {
+    if (this.#activeRoots.has(input.root)) {
       return failure(
         createDiagnostic({
           code: "SYD4000",
@@ -231,9 +239,19 @@ export class ProjectManager {
       );
     }
 
-    const project = createProject(input, this.#createId(), this.#logs);
-    this.#roots.set(input.root, project);
-    this.#projects.set(project.id, project);
+    if (this.#activeProjects.has(input.id)) {
+      return failure(
+        createDiagnostic({
+          code: "SYD4000",
+          help: "Stop the active project before starting it again.",
+          message: `Project '${input.spec.name}' is already running.`,
+        }),
+      );
+    }
+
+    const project = createProject(input, this.#logs);
+    this.#activeRoots.set(input.root, project);
+    this.#activeProjects.set(project.id, project);
 
     const canceled = cancellationFailure(input.signal);
     if (canceled) {
@@ -271,7 +289,7 @@ export class ProjectManager {
 
   async stopAll(): Promise<Result<void>> {
     const results = await Promise.all(
-      [...this.#projects.values()].map((project) => this.#stop(project)),
+      [...this.#activeProjects.values()].map((project) => this.#stop(project)),
     );
     const failed = results.find((result) => !result.success);
     return failed && !failed.success ? failed : success(undefined);
@@ -585,6 +603,7 @@ export class ProjectManager {
     return Object.freeze({
       completed: project.completed,
       id: project.id,
+      name: project.name,
       stop: () => this.#stop(project),
     });
   }
@@ -661,11 +680,11 @@ export class ProjectManager {
   }
 
   #removeActive(project: ProjectRuntime): void {
-    if (this.#projects.get(project.id) === project) {
-      this.#projects.delete(project.id);
+    if (this.#activeProjects.get(project.id) === project) {
+      this.#activeProjects.delete(project.id);
     }
-    if (this.#roots.get(project.root) === project) {
-      this.#roots.delete(project.root);
+    if (this.#activeRoots.get(project.root) === project) {
+      this.#activeRoots.delete(project.root);
     }
   }
 
@@ -682,11 +701,7 @@ export class ProjectManager {
   }
 }
 
-function createProject(
-  input: StartProjectInput,
-  id: string,
-  logs: ResourceLogStore,
-): ProjectRuntime {
+function createProject(input: StartProjectInput, logs: ResourceLogStore): ProjectRuntime {
   let complete!: (completion: ProjectCompletion) => void;
   const completed = new Promise<ProjectCompletion>((resolve) => {
     complete = resolve;
@@ -696,8 +711,9 @@ function createProject(
     cleanup: undefined,
     completed,
     completionPublished: false,
-    id,
+    id: input.id,
     name: input.spec.name,
+    revision: input.revision,
     resources: Object.keys(input.spec.resources)
       .toSorted(compareNames)
       .map((name) => ({

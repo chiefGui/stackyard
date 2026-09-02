@@ -8,7 +8,7 @@ import {
 } from "@stackyard/diagnostics";
 import type { ProjectSpec } from "@stackyard/protocol";
 
-export interface ProjectRegistrationRecord {
+export interface ProjectRecord {
   readonly id: string;
   readonly root: string;
 }
@@ -26,15 +26,16 @@ export type ProjectDefinitionState =
   | { readonly kind: "loading" }
   | { readonly kind: "valid"; readonly spec: ProjectSpec };
 
-export interface ProjectRegistration {
+export interface CatalogProject {
   readonly definition: ProjectDefinitionState;
   readonly id: string;
+  readonly revision: number;
   readonly root: string;
 }
 
-export interface ProjectRegistrationStore {
-  load(): Promise<Result<readonly ProjectRegistrationRecord[]>>;
-  save(registrations: readonly ProjectRegistrationRecord[]): Promise<Result<void>>;
+export interface ProjectStore {
+  load(): Promise<Result<readonly ProjectRecord[]>>;
+  save(projects: readonly ProjectRecord[]): Promise<Result<void>>;
 }
 
 export interface ProjectDefinitionObservation {
@@ -45,48 +46,46 @@ export interface ProjectDefinitionObserver {
   observe(root: string, onChange: () => void): Result<ProjectDefinitionObservation>;
 }
 
-export interface ProjectRegistryOptions {
+export interface ProjectCatalogOptions {
   readonly diagnostics: DiagnosticSink;
   readonly observer: ProjectDefinitionObserver;
-  readonly store: ProjectRegistrationStore;
+  readonly store: ProjectStore;
   readonly evaluationConcurrency?: number;
   readonly canonicalize: (path: string) => Promise<Result<string>>;
   readonly createId: () => string;
-  readonly isActive: (root: string) => boolean;
   readonly loadDefinition: (root: string) => Promise<ProjectDefinitionLoad>;
 }
 
-interface RegistryEntry extends ProjectRegistrationRecord {
+interface CatalogEntry extends ProjectRecord {
   definition: ProjectDefinitionState;
   observation?: ProjectDefinitionObservation;
   refreshAgain: boolean;
   refreshTask?: Promise<void>;
+  revision: number;
 }
 
 const defaultEvaluationConcurrency = 4;
 
-export class ProjectRegistry {
-  readonly #canonicalize: ProjectRegistryOptions["canonicalize"];
-  readonly #createId: ProjectRegistryOptions["createId"];
+export class ProjectCatalog {
+  readonly #canonicalize: ProjectCatalogOptions["canonicalize"];
+  readonly #createId: ProjectCatalogOptions["createId"];
   readonly #diagnostics: DiagnosticSink;
-  readonly #entries = new Map<string, RegistryEntry>();
+  readonly #entries = new Map<string, CatalogEntry>();
   readonly #evaluationConcurrency: number;
-  readonly #isActive: ProjectRegistryOptions["isActive"];
-  readonly #loadDefinition: ProjectRegistryOptions["loadDefinition"];
+  readonly #loadDefinition: ProjectCatalogOptions["loadDefinition"];
   readonly #observer: ProjectDefinitionObserver;
-  readonly #roots = new Map<string, RegistryEntry>();
-  readonly #store: ProjectRegistrationStore;
+  readonly #roots = new Map<string, CatalogEntry>();
+  readonly #store: ProjectStore;
   readonly #waitingForEvaluation: (() => void)[] = [];
   #activeEvaluations = 0;
   #closed = false;
   #mutationQueue: Promise<void> = Promise.resolve();
 
-  private constructor(options: ProjectRegistryOptions) {
+  private constructor(options: ProjectCatalogOptions) {
     this.#canonicalize = options.canonicalize;
     this.#createId = options.createId;
     this.#diagnostics = options.diagnostics;
     this.#evaluationConcurrency = options.evaluationConcurrency ?? defaultEvaluationConcurrency;
-    this.#isActive = options.isActive;
     this.#loadDefinition = options.loadDefinition;
     this.#observer = options.observer;
     this.#store = options.store;
@@ -96,36 +95,58 @@ export class ProjectRegistry {
     }
   }
 
-  static async open(options: ProjectRegistryOptions): Promise<Result<ProjectRegistry>> {
+  static async open(options: ProjectCatalogOptions): Promise<Result<ProjectCatalog>> {
     const stored = await options.store.load();
     if (!stored.success) {
       return stored;
     }
 
-    const registry = new ProjectRegistry(options);
-    for (const registration of stored.output) {
-      const entry: RegistryEntry = {
-        ...registration,
+    const catalog = new ProjectCatalog(options);
+    for (const project of stored.output) {
+      const entry: CatalogEntry = {
+        ...project,
         definition: { kind: "loading" },
         refreshAgain: false,
+        revision: 0,
       };
-      registry.#entries.set(entry.id, entry);
-      registry.#roots.set(entry.root, entry);
-      registry.#observe(entry);
-      void registry.#refresh(entry).catch((error: unknown) => registry.#reportRefreshError(error));
+      catalog.#entries.set(entry.id, entry);
+      catalog.#roots.set(entry.root, entry);
+      catalog.#observe(entry);
+      void catalog.#refresh(entry).catch((error: unknown) => catalog.#reportRefreshError(error));
     }
-    return success(registry);
+    return success(catalog);
   }
 
-  list(): readonly ProjectRegistration[] {
+  list(): readonly CatalogProject[] {
     return Object.freeze(
       [...this.#entries.values()]
         .map((entry) => snapshot(entry))
-        .toSorted((left, right) => compareRegistrations(left, right)),
+        .toSorted((left, right) => compareProjects(left, right)),
     );
   }
 
-  add(path: string): Promise<Result<ProjectRegistration>> {
+  async refreshByRoot(root: string): Promise<Result<CatalogProject>> {
+    const entry = this.#roots.get(root);
+    if (!entry) {
+      return failure(
+        createDiagnostic({
+          code: "SYD4100",
+          help: "Run 'stackyard add .' from this project, then retry.",
+          message: "This project has not been added to Stackyard.",
+          notes: [root],
+        }),
+      );
+    }
+    await this.#refresh(entry);
+    return success(snapshot(entry));
+  }
+
+  resolve(target: string): Result<CatalogProject> {
+    const resolved = this.#resolve(target);
+    return resolved.success ? success(snapshot(resolved.output)) : resolved;
+  }
+
+  add(path: string): Promise<Result<CatalogProject>> {
     return this.#mutate(async () => {
       const canonical = await this.#canonicalize(path);
       if (!canonical.success) {
@@ -144,7 +165,7 @@ export class ProjectRegistry {
           createDiagnostic({
             code: "SYD4103",
             help: "Retry the command to generate another project identifier.",
-            message: "The generated project identifier is already registered.",
+            message: "The generated project identifier already belongs to another project.",
           }),
         );
       }
@@ -155,10 +176,11 @@ export class ProjectRegistry {
         return saved;
       }
 
-      const entry: RegistryEntry = {
+      const entry: CatalogEntry = {
         ...record,
         definition: { kind: "loading" },
         refreshAgain: false,
+        revision: 0,
       };
       this.#entries.set(entry.id, entry);
       this.#roots.set(entry.root, entry);
@@ -168,23 +190,13 @@ export class ProjectRegistry {
     });
   }
 
-  remove(target: string): Promise<Result<ProjectRegistration>> {
+  remove(target: string): Promise<Result<CatalogProject>> {
     return this.#mutate(async () => {
       const resolved = this.#resolve(target);
       if (!resolved.success) {
         return resolved;
       }
       const entry = resolved.output;
-      if (this.#isActive(entry.root)) {
-        return failure(
-          createDiagnostic({
-            code: "SYD4102",
-            help: `Stop '${projectLabel(entry)}', then remove it again.`,
-            message: "A running project cannot be removed from Stackyard.",
-          }),
-        );
-      }
-
       const remaining = this.#records().filter(({ id }) => id !== entry.id);
       const saved = await this.#store.save(remaining);
       if (!saved.success) {
@@ -216,8 +228,8 @@ export class ProjectRegistry {
         failure(
           createDiagnostic({
             code: "SYD4105",
-            help: "Open the project registry again before changing registrations.",
-            message: "The project registry is closed.",
+            help: "Open the project catalog again before changing projects.",
+            message: "The project catalog is closed.",
           }),
         ),
       );
@@ -228,13 +240,13 @@ export class ProjectRegistry {
     return result;
   }
 
-  #records(): ProjectRegistrationRecord[] {
+  #records(): ProjectRecord[] {
     return [...this.#entries.values()]
       .map(({ id, root }) => Object.freeze({ id, root }))
       .toSorted((left, right) => left.root.localeCompare(right.root, "en"));
   }
 
-  #resolve(target: string): Result<RegistryEntry> {
+  #resolve(target: string): Result<CatalogEntry> {
     const byId = this.#entries.get(target);
     if (byId) {
       return success(byId);
@@ -255,8 +267,8 @@ export class ProjectRegistry {
       return failure(
         createDiagnostic({
           code: "SYD4101",
-          help: "Remove the project by its registered identifier instead.",
-          message: `More than one registered project is named '${target}'.`,
+          help: "Choose the project by its identifier instead.",
+          message: `More than one project is named '${target}'.`,
           notes: byName.map(({ id, root }) => `${id}: ${root}`),
         }),
       );
@@ -265,13 +277,13 @@ export class ProjectRegistry {
     return failure(
       createDiagnostic({
         code: "SYD4100",
-        help: "Run 'stackyard status' to list registered projects.",
-        message: `No registered project matches '${target}'.`,
+        help: "Run 'stackyard status' to list projects, or 'stackyard add .' to add this one.",
+        message: `No project matches '${target}'.`,
       }),
     );
   }
 
-  #observe(entry: RegistryEntry): void {
+  #observe(entry: CatalogEntry): void {
     const observed = this.#observer.observe(entry.root, () => {
       if (this.#entries.get(entry.id) === entry) {
         void this.#refresh(entry).catch((error: unknown) => this.#reportRefreshError(error));
@@ -286,7 +298,7 @@ export class ProjectRegistry {
     entry.observation = observed.output;
   }
 
-  async #refresh(entry: RegistryEntry): Promise<void> {
+  async #refresh(entry: CatalogEntry): Promise<void> {
     if (this.#closed || this.#entries.get(entry.id) !== entry) {
       return;
     }
@@ -302,7 +314,7 @@ export class ProjectRegistry {
     await entry.refreshTask;
   }
 
-  async #refreshLoop(entry: RegistryEntry): Promise<void> {
+  async #refreshLoop(entry: CatalogEntry): Promise<void> {
     do {
       entry.refreshAgain = false;
       /* oxlint-disable-next-line eslint/no-await-in-loop -- Refreshes for one project must publish in order. */
@@ -312,6 +324,10 @@ export class ProjectRegistry {
       }
 
       if (loaded.kind === "valid") {
+        const previous = lastValidDefinition(entry.definition);
+        if (!previous || !sameProjectSpec(previous, loaded.spec)) {
+          entry.revision += 1;
+        }
         entry.definition = Object.freeze({ kind: "valid", spec: loaded.spec });
         continue;
       }
@@ -348,7 +364,7 @@ export class ProjectRegistry {
     this.#waitingForEvaluation.shift()?.();
   }
 
-  #forget(entry: RegistryEntry): void {
+  #forget(entry: CatalogEntry): void {
     entry.observation?.close();
     this.#entries.delete(entry.id);
     if (this.#roots.get(entry.root) === entry) {
@@ -361,34 +377,33 @@ export class ProjectRegistry {
       createDiagnostic({
         code: "SYD4104",
         help: "Retry the project change. If the problem persists, restart Stackyard.",
-        message: "A registered project could not be refreshed.",
+        message: "A project could not be refreshed.",
         notes: [error instanceof Error ? error.message : String(error)],
       }),
     );
   }
 }
 
-function snapshot(entry: RegistryEntry): ProjectRegistration {
-  return Object.freeze({ definition: entry.definition, id: entry.id, root: entry.root });
+function snapshot(entry: CatalogEntry): CatalogProject {
+  return Object.freeze({
+    definition: entry.definition,
+    id: entry.id,
+    revision: entry.revision,
+    root: entry.root,
+  });
 }
 
-function compareRegistrations(left: ProjectRegistration, right: ProjectRegistration): number {
+function compareProjects(left: CatalogProject, right: CatalogProject): number {
   const leftName = definitionName(left.definition) ?? left.root;
   const rightName = definitionName(right.definition) ?? right.root;
   return leftName.localeCompare(rightName, "en") || left.root.localeCompare(right.root, "en");
 }
 
 function definitionName(definition: ProjectDefinitionState): string | undefined {
-  if (definition.kind === "valid") {
-    return definition.spec.name;
-  }
-  if (definition.kind === "invalid" || definition.kind === "missing") {
-    return definition.lastValidSpec?.name;
-  }
-  return undefined;
+  return definitionSpec(definition)?.name;
 }
 
-function lastValidDefinition(definition: ProjectDefinitionState): ProjectSpec | undefined {
+export function definitionSpec(definition: ProjectDefinitionState): ProjectSpec | undefined {
   if (definition.kind === "valid") {
     return definition.spec;
   }
@@ -398,8 +413,30 @@ function lastValidDefinition(definition: ProjectDefinitionState): ProjectSpec | 
   return undefined;
 }
 
-function projectLabel(entry: RegistryEntry): string {
-  return definitionName(entry.definition) ?? entry.id;
+function lastValidDefinition(definition: ProjectDefinitionState): ProjectSpec | undefined {
+  return definitionSpec(definition);
+}
+
+function sameProjectSpec(left: ProjectSpec, right: ProjectSpec): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .toSorted(([left], [right]) => left.localeCompare(right, "en"))
+      .map(([key, entry]) => [key, sortJson(entry)]),
+  );
 }
 
 function noop(): void {}

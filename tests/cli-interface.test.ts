@@ -14,11 +14,7 @@ import {
   success,
   type Diagnostic,
 } from "../packages/diagnostics/src/index.ts";
-import {
-  createProjectSpec,
-  createRegisteredProjectList,
-  type RegisteredProject,
-} from "../packages/protocol/src/index.ts";
+import { createProjectList, type Project } from "../packages/protocol/src/index.ts";
 
 const cliVersion = "1.2.3";
 
@@ -218,10 +214,10 @@ test("inspect reports when captured project output was truncated", async () => {
   expect(reportedDiagnostics[0]?.help).toContain("stdout");
 });
 
-test("add registers the current project through the daemon client", async () => {
+test("add sends the current project to the daemon", async () => {
   const paths: string[] = [];
   const output: string[] = [];
-  const project = registeredProject();
+  const project = durableProject();
   const command = createAddCommand({
     client: {
       async add(path) {
@@ -246,10 +242,10 @@ test("add registers the current project through the daemon client", async () => 
 
   expect(exitCode).toBe(0);
   expect(paths).toEqual([resolve("C:/projects/demo")]);
-  expect(output.join("")).toContain("Registered 'demo' with Stackyard.");
+  expect(output.join("")).toContain("Added 'demo' to Stackyard.");
 });
 
-test("remove forgets only the registration and says that files are unchanged", async () => {
+test("remove forgets only the project and says that files are unchanged", async () => {
   const targets: string[] = [];
   const output: string[] = [];
   const command = createRemoveCommand({
@@ -262,7 +258,7 @@ test("remove forgets only the registration and says that files are unchanged", a
       },
       async remove(target) {
         targets.push(target);
-        return success(registeredProject());
+        return success(durableProject());
       },
     },
     currentDirectory: resolve("C:/projects"),
@@ -296,7 +292,7 @@ test("remove resolves a project directory to its canonical root", async () => {
         },
         async remove(target) {
           targets.push(target);
-          return success(registeredProject());
+          return success(durableProject());
         },
       },
       currentDirectory: temporaryRoot,
@@ -311,16 +307,16 @@ test("remove resolves a project directory to its canonical root", async () => {
   }
 });
 
-test("status renders registered definitions and supports protocol JSON", async () => {
+test("status renders durable project state and supports protocol JSON", async () => {
   const output: string[] = [];
-  const project = registeredProject();
+  const project = durableProject();
   const command = createStatusCommand({
     client: {
       async add() {
         throw new Error("Unexpected add request.");
       },
       async list() {
-        return success(createRegisteredProjectList([project]));
+        return success(createProjectList({ projects: [project] }));
       },
       async remove() {
         throw new Error("Unexpected remove request.");
@@ -333,31 +329,20 @@ test("status renders registered definitions and supports protocol JSON", async (
   });
 
   expect(await command.execute([])).toBe(0);
-  expect(output.join("")).toContain("Definition: valid (1 service)");
+  expect(output.join("")).toContain("State: stopped");
+  expect(output.join("")).toContain("Services: 1 service");
   output.length = 0;
   expect(await command.execute(["--json"])).toBe(0);
-  expect(JSON.parse(output.join(""))).toEqual(createRegisteredProjectList([project]));
+  expect(JSON.parse(output.join(""))).toEqual(createProjectList({ projects: [project] }));
 });
 
-function registeredProject(): RegisteredProject {
-  const spec = createProjectSpec({
-    name: "demo",
-    resources: {
-      api: {
-        command: { args: [], executable: "bun" },
-        cwd: ".",
-        endpoints: {},
-        env: {},
-        kind: "process",
-      },
-    },
-  });
-  if (!spec.success) {
-    throw new Error("Expected a valid test project.");
-  }
+function durableProject(): Project {
   return {
-    definition: { kind: "valid", spec: spec.output },
-    id: "registration-one",
+    id: "project-one",
+    name: "demo",
+    restartRequired: false,
     root: resolve("C:/projects/demo"),
+    services: [{ endpoints: [], name: "api", state: "stopped" }],
+    state: "stopped",
   };
 }

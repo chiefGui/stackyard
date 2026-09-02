@@ -8,7 +8,6 @@ import {
 } from "@stackyard/diagnostics";
 
 import { deepFreeze } from "./freeze.ts";
-import { parseProjectSpec, type ProjectSpec } from "./project.ts";
 import { protocolVersion } from "./version.ts";
 
 export interface StartProjectMessage {
@@ -16,7 +15,6 @@ export interface StartProjectMessage {
   readonly kind: "start";
   readonly root: string;
   readonly schemaVersion: typeof protocolVersion;
-  readonly spec: ProjectSpec;
 }
 
 export interface StopProjectMessage {
@@ -29,6 +27,7 @@ export type DaemonClientMessage = StartProjectMessage | StopProjectMessage;
 export interface ProjectStartedMessage {
   readonly kind: "started";
   readonly projectId: string;
+  readonly projectName: string;
   readonly schemaVersion: typeof protocolVersion;
 }
 
@@ -57,20 +56,23 @@ export type DaemonServerMessage =
 
 export function createStartProjectMessage(
   root: string,
-  spec: ProjectSpec,
   environment: Readonly<Record<string, string>>,
 ): StartProjectMessage {
-  return deepFreeze({ environment, kind: "start", root, schemaVersion: protocolVersion, spec });
+  return deepFreeze({ environment, kind: "start", root, schemaVersion: protocolVersion });
 }
 
 export function createStopProjectMessage(): StopProjectMessage {
   return Object.freeze({ kind: "stop", schemaVersion: protocolVersion });
 }
 
-export function createProjectStartedMessage(projectId: string): ProjectStartedMessage {
+export function createProjectStartedMessage(
+  projectId: string,
+  projectName: string,
+): ProjectStartedMessage {
   return Object.freeze({
     kind: "started",
     projectId,
+    projectName,
     schemaVersion: protocolVersion,
   });
 }
@@ -105,7 +107,7 @@ export function parseDaemonClientMessage(input: unknown): Result<DaemonClientMes
   }
 
   if (
-    Object.keys(envelope.output).length !== 5 ||
+    Object.keys(envelope.output).length !== 4 ||
     typeof envelope.output.root !== "string" ||
     envelope.output.root.length === 0 ||
     !isStringRecord(envelope.output.environment)
@@ -113,14 +115,7 @@ export function parseDaemonClientMessage(input: unknown): Result<DaemonClientMes
     return invalidMessage("Daemon start message is invalid.");
   }
 
-  const spec = parseProjectSpec(envelope.output.spec);
-  if (!spec.success) {
-    return spec;
-  }
-
-  return success(
-    createStartProjectMessage(envelope.output.root, spec.output, envelope.output.environment),
-  );
+  return success(createStartProjectMessage(envelope.output.root, envelope.output.environment));
 }
 
 export function parseDaemonServerMessage(input: unknown): Result<DaemonServerMessage> {
@@ -132,11 +127,13 @@ export function parseDaemonServerMessage(input: unknown): Result<DaemonServerMes
   const value = envelope.output;
   if (value.kind === "started") {
     if (
-      Object.keys(value).length === 3 &&
+      Object.keys(value).length === 4 &&
       typeof value.projectId === "string" &&
-      value.projectId.length > 0
+      value.projectId.length > 0 &&
+      typeof value.projectName === "string" &&
+      value.projectName.length > 0
     ) {
-      return success(createProjectStartedMessage(value.projectId));
+      return success(createProjectStartedMessage(value.projectId, value.projectName));
     }
   } else if (value.kind === "completed") {
     if (

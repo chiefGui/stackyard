@@ -1,4 +1,4 @@
-import { ProjectManager, type ProjectRegistry } from "@stackyard/control-plane";
+import { ProjectManager, ProjectOrchestrator, type ProjectCatalog } from "@stackyard/control-plane";
 import {
   createDiagnostic,
   describeError,
@@ -11,7 +11,7 @@ import { resolveStackyardDirectories } from "./directories.ts";
 import { acquireDaemonLock, publishLocator, removeLocator } from "./locator.ts";
 import { BunPortAllocator } from "./ports.ts";
 import { BunProcessHost } from "./processes.ts";
-import { openProjectRegistry } from "./project-registrations.ts";
+import { openProjectCatalog } from "./projects.ts";
 import { closeControlServer, startControlServer, type ControlData } from "./server.ts";
 
 const idleMilliseconds = 15_000;
@@ -49,22 +49,22 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
   let finish = noop;
   let locatorPublished = false;
   let longLivedActivities = 0;
-  let registry: ProjectRegistry | undefined;
+  let catalog: ProjectCatalog | undefined;
   let server: Bun.Server<ControlData> | undefined;
   let exitCode = 0;
 
   try {
-    const openedRegistry = await openProjectRegistry({
+    const openedCatalog = await openProjectCatalog({
       dataDirectory: directories.data,
       diagnostics: options.diagnostics,
       evaluatorEntrypoint: options.evaluatorEntrypoint,
-      isActive: (root) => manager.isActive(root),
     });
-    if (!openedRegistry.success) {
-      reportDiagnostics(options.diagnostics, openedRegistry.diagnostics);
+    if (!openedCatalog.success) {
+      reportDiagnostics(options.diagnostics, openedCatalog.diagnostics);
       return 1;
     }
-    registry = openedRegistry.output;
+    catalog = openedCatalog.output;
+    const projects = new ProjectOrchestrator(catalog, manager);
 
     const started = startControlServer({
       acquireLongLivedActivity() {
@@ -98,7 +98,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
         clearIdleTimer();
       },
       port: 0,
-      registrations: registry,
+      projects,
       token,
     });
     if (!started.success) {
@@ -153,7 +153,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
         exitCode = 1;
       }
     }
-    await registry?.close();
+    await catalog?.close();
     if (locatorPublished) {
       try {
         await removeLocator(directory, instanceId);
@@ -188,7 +188,7 @@ export async function runManagedDaemon(options: ManagedDaemonOptions): Promise<n
       shuttingDown ||
       sockets.size > 0 ||
       longLivedActivities > 0 ||
-      manager.listProjects().projects.length > 0 ||
+      manager.listActiveProjects().projects.length > 0 ||
       idleTimer
     ) {
       return;
@@ -266,7 +266,6 @@ export async function runForegroundDaemon(options: ForegroundDaemonOptions): Pro
 
 function createProjectManager(diagnostics: DiagnosticSink): ProjectManager {
   return new ProjectManager({
-    createId: () => crypto.randomUUID(),
     ports: new BunPortAllocator(),
     processes: new BunProcessHost(diagnostics),
   });

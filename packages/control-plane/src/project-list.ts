@@ -1,12 +1,17 @@
-export type ServiceState = "starting" | "running" | "stopping" | "exited" | "failed";
+import type { DiagnosticReport } from "@stackyard/diagnostics";
 
-export interface ServiceEndpoint {
-  readonly name: string;
-  readonly url: string;
-}
+export type ProjectState =
+  | "loading"
+  | "stopped"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "needs-attention";
+
+export type ServiceState = RuntimeServiceState | "stopped";
 
 export interface Service {
-  readonly endpoints: readonly ServiceEndpoint[];
+  readonly endpoints: readonly RuntimeServiceEndpoint[];
   readonly exitCode?: number | undefined;
   readonly name: string;
   readonly state: ServiceState;
@@ -14,10 +19,36 @@ export interface Service {
 
 export interface Project {
   readonly id: string;
+  readonly issue?: DiagnosticReport | undefined;
   readonly name: string;
+  readonly restartRequired: boolean;
+  readonly root: string;
   readonly services: readonly Service[];
+  readonly state: ProjectState;
 }
 
-export interface ProjectList {
-  readonly projects: readonly Project[];
+export type RuntimeServiceState = "starting" | "running" | "stopping" | "exited" | "failed";
+
+export interface RuntimeServiceEndpoint {
+  readonly name: string;
+  readonly url: string;
+}
+
+export interface RuntimeService {
+  readonly endpoints: readonly RuntimeServiceEndpoint[];
+  readonly exitCode?: number | undefined;
+  readonly name: string;
+  readonly state: RuntimeServiceState;
+}
+
+export interface RuntimeProject {
+  readonly id: string;
+  readonly name: string;
+  readonly revision: number;
+  readonly root: string;
+  readonly services: readonly RuntimeService[];
+}
+
+export interface RuntimeProjectList {
+  readonly projects: readonly RuntimeProject[];
 }

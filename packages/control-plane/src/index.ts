@@ -18,16 +18,18 @@ export type {
 } from "./project-manager.ts";
 export { ProjectManager } from "./project-manager.ts";
 export type {
+  CatalogProject,
   ProjectDefinitionLoad,
   ProjectDefinitionObservation,
   ProjectDefinitionObserver,
   ProjectDefinitionState,
-  ProjectRegistration,
-  ProjectRegistrationRecord,
-  ProjectRegistrationStore,
-  ProjectRegistryOptions,
-} from "./project-registry.ts";
-export { ProjectRegistry } from "./project-registry.ts";
+  ProjectCatalogOptions,
+  ProjectRecord,
+  ProjectStore,
+} from "./project-catalog.ts";
+export { definitionSpec, ProjectCatalog } from "./project-catalog.ts";
+export type { StartCatalogProjectInput } from "./project-orchestrator.ts";
+export { ProjectOrchestrator } from "./project-orchestrator.ts";
 export {
   ResourceLogStore,
   type ResourceLogEntry,
@@ -43,8 +45,12 @@ export {
 } from "./resource-logs.ts";
 export type {
   Project,
-  ProjectList,
+  ProjectState,
+  RuntimeProject,
+  RuntimeProjectList,
+  RuntimeService,
+  RuntimeServiceEndpoint,
+  RuntimeServiceState,
   Service,
-  ServiceEndpoint,
   ServiceState,
 } from "./project-list.ts";

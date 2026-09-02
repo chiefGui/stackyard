@@ -1,5 +1,6 @@
 import {
   type ProjectManager,
+  type RuntimeProject,
   type ResourceLogSnapshot,
   type ResourceLogSource,
 } from "@stackyard/control-plane";
@@ -35,9 +36,14 @@ export function handleResourceLogHttpRequest(
     if (url.search.length > 0) {
       return new Response("Query parameters are not supported.", { status: 400 });
     }
-    return Response.json(createProjectList(options.manager.listRecentProjects()), {
-      headers: { "cache-control": "no-store" },
-    });
+    return Response.json(
+      createProjectList({
+        projects: options.manager.listRecentProjects().projects.map(recentProject),
+      }),
+      {
+        headers: { "cache-control": "no-store" },
+      },
+    );
   }
 
   const target = parseResourceLogRequest(url);
@@ -77,6 +83,19 @@ export function handleResourceLogHttpRequest(
     releaseActivity();
     throw error;
   }
+}
+
+function recentProject(project: RuntimeProject) {
+  return {
+    id: project.id,
+    name: project.name,
+    restartRequired: false,
+    root: project.root,
+    services: project.services,
+    state: project.services.some(({ state }) => state === "failed")
+      ? ("needs-attention" as const)
+      : ("stopped" as const),
+  };
 }
 
 export interface ResourceLogResponseOptions {

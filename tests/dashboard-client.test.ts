@@ -10,7 +10,7 @@ test("projects query preserves local daemon polling semantics", () => {
   expect(projectsQueryOptions.retry).toBeFalse();
 });
 
-test("daemon client requests and validates the active project list", async () => {
+test("daemon client requests and validates the durable project list", async () => {
   const cancellation = new AbortController();
   const requests: Array<{ input: unknown; init: RequestInit | undefined }> = [];
   const client = createDaemonClient((input, init) => {
@@ -21,6 +21,8 @@ test("daemon client requests and validates the active project list", async () =>
           {
             id: "project-1",
             name: "demo",
+            restartRequired: false,
+            root: "C:/project",
             services: [
               {
                 endpoints: [{ name: "http", url: "http://127.0.0.1:4000" }],
@@ -28,6 +30,7 @@ test("daemon client requests and validates the active project list", async () =>
                 state: "running",
               },
             ],
+            state: "running",
           },
         ],
         schemaVersion: 1,

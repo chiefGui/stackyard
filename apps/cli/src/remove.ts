@@ -4,11 +4,10 @@ import { isAbsolute, resolve, sep } from "node:path";
 import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
-import type { RegistrationClient } from "./registration-client.ts";
-import { registeredProjectLabel } from "./registration-output.ts";
+import type { ProjectClient } from "./project-client.ts";
 
 export interface RemoveCommandDependencies {
-  readonly client: RegistrationClient;
+  readonly client: ProjectClient;
   readonly currentDirectory: string;
   readonly diagnostics: DiagnosticSink;
   writeOutput(output: string): void;
@@ -23,7 +22,7 @@ export function createRemoveCommand(dependencies: RemoveCommandDependencies): Cl
         type: "positional",
       },
     },
-    meta: { description: "Forget a registered project" },
+    meta: { description: "Remove a project from Stackyard" },
     run({ args }) {
       return removeProject(args.project, dependencies);
     },
@@ -41,7 +40,7 @@ async function removeProject(
   }
 
   dependencies.writeOutput(
-    `Removed '${registeredProjectLabel(removed.output)}' from Stackyard.\nProject files were not changed.\n`,
+    `Removed '${removed.output.name}' from Stackyard.\nProject files were not changed.\n`,
   );
   return 0;
 }

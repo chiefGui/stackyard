@@ -1,10 +1,25 @@
-import { createDiagnostic, failure, success, type Result } from "@stackyard/diagnostics";
+import {
+  createDiagnostic,
+  failure,
+  isDiagnosticReport,
+  success,
+  type DiagnosticReport,
+  type Result,
+} from "@stackyard/diagnostics";
 
 import { deepFreeze } from "./freeze.ts";
 import { isLoopbackHttpUrl } from "./loopback-url.ts";
 import { protocolVersion } from "./version.ts";
 
-export type ServiceState = "starting" | "running" | "stopping" | "exited" | "failed";
+export type ProjectState =
+  | "loading"
+  | "stopped"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "needs-attention";
+
+export type ServiceState = "stopped" | "starting" | "running" | "stopping" | "exited" | "failed";
 
 export interface ServiceEndpoint {
   readonly name: string;
@@ -20,8 +35,12 @@ export interface Service {
 
 export interface Project {
   readonly id: string;
+  readonly issue?: DiagnosticReport | undefined;
   readonly name: string;
+  readonly restartRequired: boolean;
+  readonly root: string;
   readonly services: readonly Service[];
+  readonly state: ProjectState;
 }
 
 export interface ProjectList {
@@ -29,54 +48,88 @@ export interface ProjectList {
   readonly schemaVersion: typeof protocolVersion;
 }
 
+export function createProject(input: Project): Project {
+  return deepFreeze(input);
+}
+
 export function createProjectList(input: Omit<ProjectList, "schemaVersion">): ProjectList {
   return deepFreeze({ ...input, schemaVersion: protocolVersion });
 }
 
+export function parseProject(input: unknown): Result<Project> {
+  const project = readProject(input);
+  return project ? success(deepFreeze(project)) : invalidProjects("Project");
+}
+
 export function parseProjectList(input: unknown): Result<ProjectList> {
-  if (!isPlainObject(input) || !hasExactKeys(input, ["projects", "schemaVersion"])) {
-    return invalidProjectList();
-  }
-  if (input.schemaVersion !== protocolVersion || !Array.isArray(input.projects)) {
-    return invalidProjectList();
+  if (
+    !isPlainObject(input) ||
+    !hasExactKeys(input, ["projects", "schemaVersion"]) ||
+    input.schemaVersion !== protocolVersion ||
+    !Array.isArray(input.projects)
+  ) {
+    return invalidProjects("Project list");
   }
 
   const projects: Project[] = [];
-  for (const project of input.projects) {
-    const parsed = parseProject(project);
-    if (!parsed) {
-      return invalidProjectList();
+  const ids = new Set<string>();
+  const roots = new Set<string>();
+  for (const inputProject of input.projects) {
+    const project = readProject(inputProject);
+    if (!project || ids.has(project.id) || roots.has(project.root)) {
+      return invalidProjects("Project list");
     }
-    projects.push(parsed);
+    ids.add(project.id);
+    roots.add(project.root);
+    projects.push(project);
   }
 
   return success(deepFreeze({ projects, schemaVersion: protocolVersion }));
 }
 
-function parseProject(input: unknown): Project | undefined {
+function readProject(input: unknown): Project | undefined {
   if (
     !isPlainObject(input) ||
-    !hasExactKeys(input, ["id", "name", "services"]) ||
+    !hasExactKeys(
+      input,
+      ["id", "name", "restartRequired", "root", "services", "state"],
+      ["issue"],
+    ) ||
     !isNonEmptyString(input.id) ||
     !isNonEmptyString(input.name) ||
-    !Array.isArray(input.services)
+    typeof input.restartRequired !== "boolean" ||
+    !isNonEmptyString(input.root) ||
+    !isAbsolutePath(input.root) ||
+    !Array.isArray(input.services) ||
+    !isProjectState(input.state) ||
+    (input.issue !== undefined && !isDiagnosticReport(input.issue))
   ) {
     return undefined;
   }
 
   const services: Service[] = [];
-  for (const service of input.services) {
-    const parsed = parseService(service);
-    if (!parsed) {
+  const serviceNames = new Set<string>();
+  for (const inputService of input.services) {
+    const service = readService(inputService);
+    if (!service || serviceNames.has(service.name)) {
       return undefined;
     }
-    services.push(parsed);
+    serviceNames.add(service.name);
+    services.push(service);
   }
 
-  return { id: input.id, name: input.name, services };
+  return {
+    id: input.id,
+    ...(input.issue ? { issue: input.issue } : {}),
+    name: input.name,
+    restartRequired: input.restartRequired,
+    root: input.root,
+    services,
+    state: input.state,
+  };
 }
 
-function parseService(input: unknown): Service | undefined {
+function readService(input: unknown): Service | undefined {
   if (
     !isPlainObject(input) ||
     !hasExactKeys(input, ["endpoints", "name", "state"], ["exitCode"]) ||
@@ -90,16 +143,19 @@ function parseService(input: unknown): Service | undefined {
   }
 
   const endpoints: ServiceEndpoint[] = [];
-  for (const endpoint of input.endpoints) {
+  const endpointNames = new Set<string>();
+  for (const inputEndpoint of input.endpoints) {
     if (
-      !isPlainObject(endpoint) ||
-      !hasExactKeys(endpoint, ["name", "url"]) ||
-      !isNonEmptyString(endpoint.name) ||
-      !isLoopbackHttpUrl(endpoint.url)
+      !isPlainObject(inputEndpoint) ||
+      !hasExactKeys(inputEndpoint, ["name", "url"]) ||
+      !isNonEmptyString(inputEndpoint.name) ||
+      endpointNames.has(inputEndpoint.name) ||
+      !isLoopbackHttpUrl(inputEndpoint.url)
     ) {
       return undefined;
     }
-    endpoints.push({ name: endpoint.name, url: endpoint.url });
+    endpointNames.add(inputEndpoint.name);
+    endpoints.push({ name: inputEndpoint.name, url: inputEndpoint.url });
   }
 
   return {
@@ -130,8 +186,24 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isAbsolutePath(value: string): boolean {
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
+}
+
+function isProjectState(value: unknown): value is ProjectState {
+  return (
+    value === "loading" ||
+    value === "stopped" ||
+    value === "starting" ||
+    value === "running" ||
+    value === "stopping" ||
+    value === "needs-attention"
+  );
+}
+
 function isServiceState(value: unknown): value is ServiceState {
   return (
+    value === "stopped" ||
     value === "starting" ||
     value === "running" ||
     value === "stopping" ||
@@ -140,12 +212,12 @@ function isServiceState(value: unknown): value is ServiceState {
   );
 }
 
-function invalidProjectList(): Result<ProjectList> {
+function invalidProjects(subject: string): Result<never> {
   return failure(
     createDiagnostic({
       code: "SYD1200",
-      help: "Update Stackyard so the dashboard and daemon use the same protocol, then retry.",
-      message: "Project list is invalid.",
+      help: "Update Stackyard so the client and daemon use the same protocol, then retry.",
+      message: `${subject} is invalid.`,
     }),
   );
 }

@@ -1,20 +1,13 @@
 import * as stylex from "@stylexjs/stylex";
+import { Fragment } from "react";
 
 import type { Project, Service } from "@stackyard/protocol/projects";
 
 import { colors, fonts, radii, spacing } from "../../styling/theme.stylex.ts";
 
 export function ProjectServicesTable({ projects }: { readonly projects: readonly Project[] }) {
-  const rows = projects.flatMap((project) =>
-    project.services.map((service) => ({
-      projectId: project.id,
-      projectName: project.name,
-      service,
-    })),
-  );
-
   return (
-    <section {...stylex.props(styles.panel)} aria-label="Running services">
+    <section {...stylex.props(styles.panel)} aria-label="Projects and services">
       <table {...stylex.props(styles.table)}>
         <thead>
           <tr>
@@ -25,14 +18,24 @@ export function ProjectServicesTable({ projects }: { readonly projects: readonly
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ projectId, projectName, service }, index) => (
-            <ServiceRow
-              isLast={index === rows.length - 1}
-              key={`${projectId}:${service.name}`}
-              projectName={projectName}
-              service={service}
-            />
-          ))}
+          {projects.map((project, projectIndex) => {
+            const services = project.services.length > 0 ? project.services : [undefined];
+            const isFinalProject = projectIndex === projects.length - 1;
+            return (
+              <Fragment key={project.id}>
+                {services.map((service, serviceIndex) => (
+                  <ServiceRow
+                    isLast={isFinalProject && serviceIndex === services.length - 1}
+                    isLastProject={isFinalProject}
+                    key={service?.name ?? `${project.id}:empty`}
+                    project={project}
+                    rowSpan={serviceIndex === 0 ? services.length : undefined}
+                    service={service}
+                  />
+                ))}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </section>
@@ -41,37 +44,72 @@ export function ProjectServicesTable({ projects }: { readonly projects: readonly
 
 function ServiceRow({
   isLast,
-  projectName,
+  isLastProject,
+  project,
+  rowSpan,
   service,
 }: {
   readonly isLast: boolean;
-  readonly projectName: string;
-  readonly service: Service;
+  readonly isLastProject: boolean;
+  readonly project: Project;
+  readonly rowSpan: number | undefined;
+  readonly service: Service | undefined;
 }) {
   return (
     <tr>
-      <td {...stylex.props(styles.cell, isLast && styles.lastCell, styles.projectName)}>
-        {projectName}
-      </td>
+      {rowSpan ? (
+        <td
+          {...stylex.props(styles.cell, isLastProject && styles.lastCell, styles.projectName)}
+          rowSpan={rowSpan}
+        >
+          <span {...stylex.props(styles.projectTitle)}>{project.name}</span>
+          <span
+            {...stylex.props(
+              styles.projectState,
+              project.state === "needs-attention" && styles.projectStateAttention,
+            )}
+          >
+            {formatState(project.state)}
+          </span>
+          {project.restartRequired ? (
+            <span {...stylex.props(styles.projectNote)}>Restart required</span>
+          ) : null}
+          {project.issue?.diagnostics[0] ? (
+            <span {...stylex.props(styles.projectIssue)}>
+              {project.issue.diagnostics[0].message}
+            </span>
+          ) : null}
+        </td>
+      ) : null}
       <td {...stylex.props(styles.cell, isLast && styles.lastCell, styles.serviceName)}>
-        {service.name}
+        {service?.name ?? "No services"}
       </td>
       <td {...stylex.props(styles.cell, isLast && styles.lastCell)}>
         <span
           {...stylex.props(
             styles.state,
-            service.state === "running" && styles.stateRunning,
-            service.state === "failed" && styles.stateFailed,
+            (service?.state ?? project.state) === "running" && styles.stateRunning,
+            ((service?.state ?? project.state) === "failed" ||
+              (service?.state ?? project.state) === "needs-attention") &&
+              styles.stateFailed,
           )}
         >
-          {service.state}
+          {formatState(service?.state ?? project.state)}
         </span>
       </td>
       <td {...stylex.props(styles.cell, isLast && styles.lastCell)}>
-        <ServiceEndpoints service={service} />
+        {service ? (
+          <ServiceEndpoints service={service} />
+        ) : (
+          <span {...stylex.props(styles.muted)}>—</span>
+        )}
       </td>
     </tr>
   );
+}
+
+function formatState(state: Project["state"] | Service["state"]): string {
+  return state.replaceAll("-", " ");
 }
 
 function ServiceEndpoints({ service }: { readonly service: Service }) {
@@ -160,6 +198,34 @@ const styles = stylex.create({
     overflowY: "hidden",
   },
   projectName: {
+    color: colors.textSecondary,
+    verticalAlign: "top",
+  },
+  projectIssue: {
+    color: colors.textMuted,
+    display: "block",
+    fontSize: 11,
+    lineHeight: 1.4,
+    marginTop: spacing.small,
+    maxWidth: 260,
+  },
+  projectNote: {
+    color: colors.textMuted,
+    display: "block",
+    fontSize: 11,
+    marginTop: spacing.xSmall,
+  },
+  projectState: {
+    color: colors.textMuted,
+    display: "block",
+    fontSize: 11,
+    marginTop: spacing.xSmall,
+    textTransform: "capitalize",
+  },
+  projectStateAttention: {
+    color: colors.dangerText,
+  },
+  projectTitle: {
     color: colors.textSecondary,
   },
   serviceName: {

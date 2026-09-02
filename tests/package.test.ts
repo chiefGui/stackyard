@@ -118,14 +118,23 @@ test("the packed package works in an external Bun project", async () => {
     expect(invalid.stderr).toContain("error[SYD1005] at resources.api.cwd");
     expect(invalid.stderr).toContain("help: Use a forward-slash path inside the project root");
 
+    const runtimeEnvironment = {
+      ...stringEnvironment(process.env),
+      STACKYARD_DATA_DIR: dataDirectory,
+      STACKYARD_RUNTIME_DIR: runtimeDirectory,
+    };
+    const added = await runCommand(
+      [process.execPath, join(installedPackage, "dist/cli.js"), "add", "projects/run"],
+      consumerDirectory,
+      runtimeEnvironment,
+    );
+    expect(added.exitCode).toBe(0);
+    expect(added.stderr).toBe("");
+
     runProcess = Bun.spawn({
       cmd: [process.execPath, join(installedPackage, "dist/cli.js"), "run", "projects/run"],
       cwd: consumerDirectory,
-      env: {
-        ...stringEnvironment(process.env),
-        STACKYARD_DATA_DIR: dataDirectory,
-        STACKYARD_RUNTIME_DIR: runtimeDirectory,
-      },
+      env: runtimeEnvironment,
       stderr: "pipe",
       stdout: "pipe",
       windowsHide: true,
@@ -138,7 +147,12 @@ test("the packed package works in an external Bun project", async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
         const parsed = parseProjectList(await response.json());
-        return parsed.success && parsed.output.projects.length === 1 ? parsed.output : undefined;
+        return parsed.success &&
+          parsed.output.projects.length === 1 &&
+          parsed.output.projects[0]?.services[0]?.state === "running" &&
+          parsed.output.projects[0].services[0].endpoints.length > 0
+          ? parsed.output
+          : undefined;
       } catch {
         return undefined;
       }
@@ -167,7 +181,11 @@ test("the packed package works in an external Bun project", async () => {
       try {
         const response = await fetch(`http://127.0.0.1:${locator.port}/api/v1/projects`);
         const parsed = parseProjectList(await response.json());
-        return parsed.success && parsed.output.projects.length === 0 ? true : undefined;
+        return parsed.success &&
+          parsed.output.projects.length === 1 &&
+          parsed.output.projects[0]?.state === "stopped"
+          ? true
+          : undefined;
       } catch {
         return undefined;
       }
@@ -193,7 +211,7 @@ test("the packed package works in an external Bun project", async () => {
         // The daemon may already have completed its idle shutdown.
       }
     }
-    await rm(temporaryRoot, { force: true, recursive: true });
+    await removeTemporaryTree(temporaryRoot);
   }
 }, 30_000);
 
@@ -254,10 +272,40 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function runCommand(command: readonly string[], cwd: string): Promise<CommandResult> {
+async function removeTemporaryTree(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try {
+      /* oxlint-disable-next-line eslint/no-await-in-loop -- Windows can release process directory handles asynchronously. */
+      await rm(path, { force: true, recursive: true });
+      return;
+    } catch (error) {
+      if (!isTransientRemovalFailure(error) || Date.now() >= deadline) {
+        throw error;
+      }
+      /* oxlint-disable-next-line eslint/no-await-in-loop -- Retrying immediately would spin while the handle is held. */
+      await Bun.sleep(100);
+    }
+  }
+}
+
+function isTransientRemovalFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "EBUSY" || error.code === "ENOTEMPTY" || error.code === "EPERM")
+  );
+}
+
+async function runCommand(
+  command: readonly string[],
+  cwd: string,
+  env?: Readonly<Record<string, string>>,
+): Promise<CommandResult> {
   const subprocess = Bun.spawn({
     cmd: [...command],
     cwd,
+    ...(env ? { env } : {}),
     stderr: "pipe",
     stdout: "pipe",
     windowsHide: true,
