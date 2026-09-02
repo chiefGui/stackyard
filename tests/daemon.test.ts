@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { readPort } from "../apps/daemon/src/config.ts";
+import { startDaemon, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
 import { startControlServer, type Projects } from "../apps/daemon/src/server.ts";
@@ -44,6 +47,42 @@ describe("daemon configuration", () => {
       }
     },
   );
+});
+
+describe("daemon lifecycle", () => {
+  test("starts the catalog-backed server and releases its port", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-daemon-"));
+    let daemon: RunningDaemon | undefined;
+    try {
+      const started = await startDaemon({
+        dataDirectory,
+        diagnostics: { report() {} },
+        evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+        instanceId: "catalog-daemon",
+        port: 0,
+      });
+      expect(started.success).toBeTrue();
+      if (!started.success) {
+        throw new Error("The catalog-backed daemon could not start.");
+      }
+      daemon = started.output;
+
+      const projects = await fetch(new URL("/api/v1/projects", daemon.url));
+      expect(projects.status).toBe(200);
+      expect(await projects.json()).toEqual({ projects: [], schemaVersion: 1 });
+
+      expect((await daemon.close()).success).toBeTrue();
+      expect((await daemon.close()).success).toBeTrue();
+      const rebound = startTestServer(daemon.port);
+      expect(rebound.success).toBeTrue();
+      if (rebound.success) {
+        await rebound.output.stop(true);
+      }
+    } finally {
+      await daemon?.close();
+      await rm(dataDirectory, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("HTTP server", () => {
@@ -193,6 +232,10 @@ describe("HTTP server", () => {
       async start() {
         throw new Error("Unexpected project start request.");
       },
+      async stop(target) {
+        expect(target).toBe("project-one");
+        return success(project);
+      },
     };
     const result = startTestServer(0, undefined, undefined, projects);
     if (!result.success) {
@@ -234,6 +277,17 @@ describe("HTTP server", () => {
       expect(removed.status).toBe(200);
       expect(await removed.json()).toEqual(project);
 
+      const stopped = await fetch(new URL("/api/v1/projects/stop", server.url), {
+        body: JSON.stringify({ target: "project-one" }),
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(stopped.status).toBe(200);
+      expect(await stopped.json()).toEqual(project);
+
       const malformed = await fetch(new URL("/api/v1/projects", server.url), {
         body: "{}",
         headers: {
@@ -246,25 +300,6 @@ describe("HTTP server", () => {
       expect(await malformed.json()).toMatchObject({ diagnostics: [{ code: "SYD3016" }] });
     } finally {
       await server.stop(true);
-    }
-  });
-
-  test("does not advertise projects when the daemon mode lacks a catalog", async () => {
-    const result = startTestServer(0, undefined, undefined, null);
-    if (!result.success) {
-      throw new Error("The test server could not start.");
-    }
-
-    try {
-      const listed = await fetch(new URL("/api/v1/projects", result.output.url));
-      expect(listed.status).toBe(404);
-
-      const added = await fetch(new URL("/api/v1/projects", result.output.url), {
-        method: "POST",
-      });
-      expect(added.status).toBe(404);
-    } finally {
-      await result.output.stop(true);
     }
   });
 
@@ -332,6 +367,43 @@ describe("HTTP server", () => {
       expect(manager.listActiveProjects().projects).toEqual([]);
     } finally {
       processes.continue();
+      socket.terminate();
+      await server.stop(true);
+    }
+  });
+
+  test("notifies an attached run when another client stops its project", async () => {
+    const manager = new ProjectManager({
+      ports: new UnusedPorts(),
+      processes: new ImmediateProcesses(),
+    });
+    const result = startTestServer(0, manager);
+    if (!result.success) {
+      throw new Error("The test server could not start.");
+    }
+
+    const server = result.output;
+    const socket = await connectControl(server.url, "test-token");
+    try {
+      const startedMessage = nextMessage(socket);
+      socket.send(JSON.stringify(createStartProjectMessage(resolve(import.meta.dir, ".."), {})));
+      const started = parseDaemonServerMessage(JSON.parse(await startedMessage));
+      expect(started).toMatchObject({ output: { kind: "started" }, success: true });
+
+      const stoppedMessage = nextMessage(socket);
+      const response = await fetch(new URL("/api/v1/projects/stop", server.url), {
+        body: JSON.stringify({ target: "project-one" }),
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      const stopped = parseDaemonServerMessage(JSON.parse(await stoppedMessage));
+      expect(stopped).toMatchObject({ output: { kind: "stopped" }, success: true });
+      expect(manager.listActiveProjects().projects).toEqual([]);
+    } finally {
       socket.terminate();
       await server.stop(true);
     }
@@ -591,12 +663,10 @@ function startTestServer(
     processes: new BunProcessHost({ report() {} }),
   }),
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
-  projects: Projects | null = testProjects(manager),
+  projects: Projects = testProjects(manager),
   requestShutdown?: () => void,
 ) {
   return startControlServer({
-    ...(projects ? { projects } : {}),
-    ...(requestShutdown ? { requestShutdown } : {}),
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,
@@ -604,6 +674,8 @@ function startTestServer(
     onClose() {},
     onOpen,
     port,
+    projects,
+    requestShutdown: requestShutdown ?? (() => {}),
     token: "test-token",
   });
 }
@@ -625,6 +697,24 @@ function testProjects(manager: ProjectManager, spec = projectSpec()): Projects {
         id: "project-one",
         revision: 1,
         spec,
+      });
+    },
+    async stop() {
+      const stopped = await manager.stop("project-one");
+      if (!stopped.success) {
+        return stopped;
+      }
+      return success<Project>({
+        id: "project-one",
+        name: spec.name,
+        restartRequired: false,
+        root: resolve(import.meta.dir, ".."),
+        services: Object.keys(spec.resources).map((name) => ({
+          endpoints: [],
+          name,
+          state: "stopped",
+        })),
+        state: "stopped",
       });
     },
   };
@@ -698,6 +788,14 @@ function twoResourceProjectSpec() {
 class UnusedPorts implements PortAllocator {
   async reserve(): Promise<never> {
     throw new Error("The fixture does not define endpoints.");
+  }
+}
+
+class ImmediateProcesses implements ProcessHost {
+  readonly handle = new ControlledHandle();
+
+  async start() {
+    return success<ProcessHandle>(this.handle);
   }
 }
 

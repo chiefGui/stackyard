@@ -132,7 +132,7 @@ test("the packed package works in an external Bun project", async () => {
     expect(added.stderr).toBe("");
 
     const opened = await runCommand(
-      [process.execPath, join(installedPackage, "dist/cli.js")],
+      [process.execPath, join(installedPackage, "dist/cli.js"), "daemon", "start"],
       consumerDirectory,
       runtimeEnvironment,
     );
@@ -209,7 +209,7 @@ test("the packed package works in an external Bun project", async () => {
     });
 
     const stopped = await runCommand(
-      [process.execPath, join(installedPackage, "dist/cli.js"), "stop"],
+      [process.execPath, join(installedPackage, "dist/cli.js"), "daemon", "stop"],
       consumerDirectory,
       runtimeEnvironment,
     );

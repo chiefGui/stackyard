@@ -190,6 +190,37 @@ describe("project manager", () => {
     expect(manager.listActiveProjects().projects).toEqual([]);
   });
 
+  test("stops a project safely while its services are still starting", async () => {
+    const gate = deferred();
+    const entered = deferred();
+    const handles: FakeHandle[] = [];
+    const processes: ProcessHost = {
+      async start(input) {
+        entered.resolve();
+        await gate.promise;
+        const handle = new FakeHandle(handles.length + 1, input);
+        handles.push(handle);
+        return success<ProcessHandle>(handle);
+      },
+    };
+    const manager = createManager(new FakePorts(), processes);
+    const starting = startProject(manager, "/project", projectSpec());
+    await entered.promise;
+
+    const stopping = manager.stop("/project");
+    gate.resolve();
+    const [started, stopped] = await Promise.all([starting, stopping]);
+
+    expect(started.success).toBeTrue();
+    expect(stopped).toEqual({ output: undefined, success: true });
+    if (started.success) {
+      expect(await started.output.completed).toEqual({ kind: "stopped" });
+    }
+    expect(handles.map(({ stopCount }) => stopCount)).toEqual([1]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
+    expect(await manager.stop("/project")).toEqual({ output: undefined, success: true });
+  });
+
   test("retains failed cleanup for inspection and permits a later retry", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses();
@@ -568,7 +599,13 @@ describe("project catalog", () => {
       expect(refused.diagnostics[0].code).toBe("SYD4102");
     }
 
-    expect((await started.output.stop()).success).toBeTrue();
+    const stopped = await projects.stop("project-one");
+    expect(stopped).toMatchObject({
+      output: { id: "project-one", state: "stopped" },
+      success: true,
+    });
+    expect((await projects.stop("project-one")).success).toBeTrue();
+    expect(await started.output.completed).toEqual({ kind: "stopped" });
     expect((await projects.remove("project-one")).success).toBeTrue();
     await opened.output.close();
   });

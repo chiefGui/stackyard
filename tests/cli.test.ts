@@ -26,7 +26,7 @@ test("inspect discovers and evaluates a project in an isolated process", async (
   expect(Object.keys(spec.resources)).toEqual(["api", "web"]);
 });
 
-test("Stackyard describes its own daemon through the public project API", async () => {
+test("Stackyard describes its development workflow through the public project API", async () => {
   const result = await runCli(["inspect", "--json"], repositoryRoot);
 
   expect(result.stderr).toBe("");
@@ -39,20 +39,21 @@ test("Stackyard describes its own daemon through the public project API", async 
   }
 
   expect(parsedSpec.output.name).toBe("stackyard");
-  expect(Object.keys(parsedSpec.output.resources)).toEqual(["daemon", "dashboard-web"]);
+  expect(Object.keys(parsedSpec.output.resources)).toEqual(["development"]);
 
-  const daemon = parsedSpec.output.resources.daemon;
-  expect(daemon?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
-  expect(daemon?.cwd).toBe("apps/daemon");
-  expect(daemon?.endpoints.http?.port).toEqual({
-    env: "PORT",
+  const development = parsedSpec.output.resources.development;
+  expect(development?.command).toEqual({ args: ["dev"], executable: "bun" });
+  expect(development?.cwd).toBe(".");
+  expect(development?.endpoints.api?.port).toEqual({
+    env: "STACKYARD_API_PORT",
     kind: "allocated",
     preferred: 3000,
   });
-
-  const dashboardWeb = parsedSpec.output.resources["dashboard-web"];
-  expect(dashboardWeb?.command).toEqual({ args: ["run", "dev"], executable: "bun" });
-  expect(dashboardWeb?.cwd).toBe("apps/dashboard-web");
+  expect(development?.endpoints.dashboard?.port).toEqual({
+    env: "STACKYARD_DASHBOARD_PORT",
+    kind: "allocated",
+    preferred: 5173,
+  });
 });
 
 test("inspect preserves structured definition errors across the evaluator boundary", async () => {

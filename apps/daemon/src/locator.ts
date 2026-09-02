@@ -499,7 +499,7 @@ function daemonStopFailure(note: string): Result<StopDaemonStatus> {
   return failure(
     createDiagnostic({
       code: "SYD3017",
-      help: "Run 'stackyard stop' again. If the problem persists, inspect the daemon diagnostics and stop its process.",
+      help: "Run 'stackyard daemon stop' again. If the problem persists, inspect the daemon diagnostics and stop its process.",
       message: "Stackyard could not be stopped cleanly.",
       notes: [note],
     }),

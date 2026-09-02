@@ -47,6 +47,7 @@ export interface Projects {
   add(path: string): Promise<Result<Project>>;
   remove(target: string): Promise<Result<Project>>;
   start(input: StartCatalogProjectInput): Promise<StartProjectResult>;
+  stop(target: string): Promise<Result<Project>>;
 }
 
 export interface ControlServerOptions {
@@ -55,10 +56,10 @@ export interface ControlServerOptions {
   readonly isShuttingDown: () => boolean;
   readonly manager: ProjectManager;
   readonly port: number;
-  readonly projects?: Projects;
+  readonly projects: Projects;
+  readonly requestShutdown: () => void;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
-  readonly requestShutdown?: () => void;
   onClose(socket: Bun.ServerWebSocket<ControlData>): void;
   onOpen(socket: Bun.ServerWebSocket<ControlData>): void;
 }
@@ -106,9 +107,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         }
 
         if (url.pathname === "/api/v1/shutdown") {
-          if (!options.requestShutdown) {
-            return secureResponse("Not found.", { status: 404 });
-          }
           if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
             return secureResponse("Unauthorized.", { status: 401 });
           }
@@ -121,10 +119,20 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
           return secureResponse(null, { status: 202 });
         }
 
-        if (url.pathname === "/api/v1/projects") {
-          if (!options.projects) {
-            return secureResponse("Not found.", { status: 404 });
+        if (url.pathname === "/api/v1/projects/stop") {
+          if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
+            return secureResponse("Unauthorized.", { status: 401 });
           }
+          if (request.method !== "POST") {
+            return secureResponse("Method not allowed.", { status: 405 });
+          }
+          if (options.isShuttingDown()) {
+            return secureResponse("Daemon is shutting down.", { status: 503 });
+          }
+          return handleProjectStopRequest(request, options.projects);
+        }
+
+        if (url.pathname === "/api/v1/projects") {
           if (request.method === "GET") {
             return secureJson(createProjectList({ projects: options.projects.list() }));
           }
@@ -254,6 +262,28 @@ async function handleProjectRequest(request: Request, projects: Projects): Promi
   return secureJson(createProject(result.output));
 }
 
+async function handleProjectStopRequest(request: Request, projects: Projects): Promise<Response> {
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return projectFailureResponse(invalidProjectRequest(), 400);
+  }
+
+  const target = singleStringProperty(input, "target");
+  if (!target) {
+    return projectFailureResponse(invalidProjectRequest(), 400);
+  }
+  const stopped = await projects.stop(target);
+  if (!stopped.success) {
+    return projectFailureResponse(
+      stopped.diagnostics,
+      projectFailureStatus(stopped.diagnostics[0]?.code),
+    );
+  }
+  return secureJson(createProject(stopped.output));
+}
+
 function projectFailureResponse(
   diagnostics: Parameters<typeof createDiagnosticReport>[0],
   status: number,
@@ -328,7 +358,7 @@ async function handleControlMessage(
   socket: Bun.ServerWebSocket<ControlData>,
   parsed: Result<DaemonClientMessage>,
   acceptedStart: boolean,
-  projects: Projects | undefined,
+  projects: Projects,
   diagnostics: DiagnosticSink,
 ): Promise<void> {
   if (!parsed.success) {
@@ -376,18 +406,6 @@ async function handleControlMessage(
     return;
   }
 
-  if (!projects) {
-    sendFailure(
-      socket,
-      createDiagnostic({
-        code: "SYD3009",
-        help: "Start the managed Stackyard daemon, then retry.",
-        message: "The daemon does not have a project catalog.",
-      }),
-    );
-    return;
-  }
-
   const started = await projects.start({
     environment: parsed.output.environment,
     environmentNamesCaseInsensitive: process.platform === "win32",
@@ -419,7 +437,13 @@ async function handleControlMessage(
     return;
   }
   void started.output.completed.then(async (completion) => {
-    if (completion.kind === "stopped" || socket.data.stopRequested) {
+    if (completion.kind === "stopped") {
+      if (!socket.data.stopRequested) {
+        sendMessage(socket, createProjectStoppedMessage());
+      }
+      return;
+    }
+    if (socket.data.stopRequested) {
       return;
     }
     let message;

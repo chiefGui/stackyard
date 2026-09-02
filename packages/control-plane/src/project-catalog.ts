@@ -277,7 +277,7 @@ export class ProjectCatalog {
     return failure(
       createDiagnostic({
         code: "SYD4100",
-        help: "Run 'stackyard status' to list projects, or 'stackyard add .' to add this one.",
+        help: "Run 'stackyard list' to list projects, or 'stackyard add .' to add this one.",
         message: `No project matches '${target}'.`,
       }),
     );

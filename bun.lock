@@ -15,6 +15,7 @@
         "oxlint-tsgolint": "7.0.2001",
         "stackyard": "workspace:*",
         "typescript": "catalog:",
+        "vite": "catalog:",
       },
     },
     "apps/cli": {

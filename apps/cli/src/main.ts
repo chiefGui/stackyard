@@ -21,12 +21,15 @@ import {
 import packageManifest from "../package.json" with { type: "json" };
 import { runCli } from "./cli.ts";
 import { createAddCommand } from "./add.ts";
+import { createDaemonStatusCommand } from "./daemon-status.ts";
+import { createDaemonStopCommand } from "./daemon-stop.ts";
+import { createDaemonCommand } from "./daemon.ts";
 import { createInspectCommand } from "./inspect.ts";
+import { createListCommand } from "./list.ts";
 import { DaemonProjectClient } from "./project-client.ts";
 import { createRemoveCommand } from "./remove.ts";
 import { createRunCommand } from "./run.ts";
 import { createStartCommand } from "./start.ts";
-import { createStatusCommand } from "./status.ts";
 import { createStopCommand } from "./stop.ts";
 
 const cliEntrypoint = fileURLToPath(import.meta.url);
@@ -78,16 +81,20 @@ function runPublicCli(): Promise<number> {
     start: () => ensureDaemon(daemonOptions),
     writeOutput,
   });
+  const daemonCommand = createDaemonCommand([
+    startCommand,
+    createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
+    createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
+  ]);
   return runCli(cliArguments, {
     commands: [
-      startCommand,
-      createStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
       createAddCommand({
         client: projectClient,
         currentDirectory: process.cwd(),
         diagnostics,
         writeOutput,
       }),
+      daemonCommand,
       createInspectCommand({
         diagnostics,
         loadProject,
@@ -96,10 +103,8 @@ function runPublicCli(): Promise<number> {
         },
         writeOutput,
       }),
-      createRunCommand({
-        currentDirectory: process.cwd(),
-        daemonEntrypoint: cliEntrypoint,
-        dashboardWebDirectory,
+      createListCommand({
+        client: projectClient,
         diagnostics,
         writeOutput,
       }),
@@ -109,13 +114,20 @@ function runPublicCli(): Promise<number> {
         diagnostics,
         writeOutput,
       }),
-      createStatusCommand({
+      createRunCommand({
+        currentDirectory: process.cwd(),
+        daemonEntrypoint: cliEntrypoint,
+        dashboardWebDirectory,
+        diagnostics,
+        writeOutput,
+      }),
+      createStopCommand({
         client: projectClient,
+        currentDirectory: process.cwd(),
         diagnostics,
         writeOutput,
       }),
     ],
-    defaultCommand: startCommand,
     diagnostics,
     version: packageManifest.version,
     writeOutput,

@@ -8,9 +8,7 @@
     "./managed": "./src/managed.ts"
   },
   "scripts": {
-    "build": "bun build ./src/main.ts --outdir ./dist --target bun",
-    "dev": "bun --watch ./src/main.ts",
-    "start": "bun ./src/main.ts",
+    "build": "bun build ./src/managed.ts --outdir ./dist --target bun",
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "dependencies": {
