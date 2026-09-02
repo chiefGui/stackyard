@@ -17,6 +17,7 @@ const validSpec = {
       },
       env: {},
       kind: "process",
+      startup: "automatic",
     },
   },
   schemaVersion: 1,
@@ -123,6 +124,50 @@ describe("ProjectSpec", () => {
       "Working directory is not a portable project-relative path.",
     );
     expect(diagnostics[0]?.help).toContain("apps/api");
+  });
+
+  test("rejects unsupported startup policies", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: { ...validSpec.resources.api, startup: "sometimes" },
+      },
+    });
+
+    expect(diagnostics).toMatchObject([
+      {
+        code: "SYD1013",
+        message: "Service startup must be 'automatic' or 'manual'.",
+        path: ["resources", "api", "startup"],
+      },
+    ]);
+  });
+
+  test("rejects automatic services that depend on manual services", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: { ...validSpec.resources.api, startup: "manual" },
+        web: {
+          command: { args: [], executable: "bun" },
+          cwd: "apps/web",
+          endpoints: {},
+          env: {
+            API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
+          },
+          kind: "process",
+          startup: "automatic",
+        },
+      },
+    });
+
+    expect(diagnostics).toMatchObject([
+      {
+        code: "SYD1014",
+        message: "Automatically started service 'web' depends on manual service 'api'.",
+        path: ["resources", "web", "env", "API_URL"],
+      },
+    ]);
   });
 
   test("preserves resource key validation details", () => {

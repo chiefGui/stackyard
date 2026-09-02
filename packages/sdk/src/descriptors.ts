@@ -1,3 +1,5 @@
+import type { ServiceStartup } from "@stackyard/protocol";
+
 const endpointStates = new WeakMap<object, HttpEndpointState>();
 const serviceStates = new WeakMap<object, ServiceState>();
 const valueStates = new WeakMap<object, RuntimeValueState>();
@@ -39,6 +41,7 @@ export interface ServiceOptions<Endpoints extends EndpointInputRecord> {
   readonly cwd?: string;
   readonly endpoints?: Endpoints;
   readonly env?: Readonly<Record<string, EnvironmentInputValue>>;
+  readonly startup?: ServiceStartup;
 }
 
 export type EndpointInputRecord = Readonly<Record<string, HttpEndpointDescriptor>>;
@@ -61,6 +64,7 @@ export function service<const Endpoints extends EndpointInputRecord = Record<nev
     cwd: options.cwd ?? ".",
     endpoints: { ...options.endpoints },
     env: { ...options.env },
+    startup: options.startup ?? "automatic",
   };
 
   const outputs = Object.fromEntries(
@@ -84,6 +88,7 @@ export interface ServiceState {
   readonly cwd: string;
   readonly endpoints: Readonly<Record<string, unknown>>;
   readonly env: Readonly<Record<string, unknown>>;
+  readonly startup: ServiceStartup;
 }
 
 export interface RuntimeValueState {

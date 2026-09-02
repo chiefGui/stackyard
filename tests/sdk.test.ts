@@ -39,9 +39,28 @@ describe("project definitions", () => {
         kind: "endpoint-url",
         resource: "api",
       });
+      expect(result.output.resources.api?.startup).toBe("automatic");
       expect(Object.isFrozen(result.output)).toBeTrue();
       expect(Object.isFrozen(result.output.resources.web?.env)).toBeTrue();
     }
+  });
+
+  test("compiles manual startup explicitly", () => {
+    const definition = defineProject({
+      name: "example",
+      resources: {
+        worker: service({
+          command: ["bun", "worker.ts"],
+          startup: "manual",
+        }),
+      },
+    });
+
+    const result = readProjectDefinition(definition);
+    expect(result).toMatchObject({
+      output: { resources: { worker: { startup: "manual" } } },
+      success: true,
+    });
   });
 
   test("rejects references to services outside the project", () => {
@@ -62,6 +81,29 @@ describe("project definitions", () => {
           },
         }),
       "SYD1107",
+    );
+  });
+
+  test("rejects automatic services that depend on manual services", () => {
+    const api = service({
+      command: ["bun", "api.ts"],
+      endpoints: { http: endpoint.http({ env: "PORT" }) },
+      startup: "manual",
+    });
+
+    expectProjectError(
+      () =>
+        defineProject({
+          name: "example",
+          resources: {
+            api,
+            web: service({
+              command: ["bun", "web.ts"],
+              env: { API_URL: api.endpoints.http.url },
+            }),
+          },
+        }),
+      "SYD1014",
     );
   });
 

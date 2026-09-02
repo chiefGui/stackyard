@@ -229,6 +229,7 @@ export class ProjectManager {
             ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
             name: resource.name,
             state: resource.state,
+            startup: "automatic" as const,
           }),
         ),
       ),
@@ -256,7 +257,18 @@ export class ProjectManager {
       );
     }
 
-    const project = createProject(input, this.#logs);
+    const serviceNames = automaticServiceNames(input.spec);
+    if (serviceNames.length === 0) {
+      return failure(
+        createDiagnostic({
+          code: "SYD4009",
+          help: "Set startup to 'automatic' on at least one service, then run the project again.",
+          message: `Project '${input.spec.name}' has no services configured to start automatically.`,
+        }),
+      );
+    }
+
+    const project = createProject(input, serviceNames, this.#logs);
     this.#activeRoots.set(input.root, project);
     this.#activeProjects.set(project.id, project);
     const signal = combineCancellationSignals(input.signal, project.stopSignal);
@@ -741,7 +753,11 @@ export class ProjectManager {
   }
 }
 
-function createProject(input: StartProjectInput, logs: ResourceLogStore): ProjectRuntime {
+function createProject(
+  input: StartProjectInput,
+  serviceNames: readonly string[],
+  logs: ResourceLogStore,
+): ProjectRuntime {
   let complete!: (completion: ProjectCompletion) => void;
   const completed = new Promise<ProjectCompletion>((resolve) => {
     complete = resolve;
@@ -758,21 +774,26 @@ function createProject(input: StartProjectInput, logs: ResourceLogStore): Projec
     id: input.id,
     name: input.spec.name,
     revision: input.revision,
-    resources: Object.keys(input.spec.resources)
-      .toSorted(compareNames)
-      .map((name) => ({
-        endpoints: new Map(),
-        logs: logs.createFeed(),
-        name,
-        state: "starting",
-        stopRequested: false,
-      })),
+    resources: serviceNames.map((name) => ({
+      endpoints: new Map(),
+      logs: logs.createFeed(),
+      name,
+      state: "starting",
+      stopRequested: false,
+    })),
     naturalCleanup: undefined,
     root: input.root,
     settleStart,
     startSettled,
     stopSignal: { aborted: false },
   };
+}
+
+function automaticServiceNames(spec: ProjectSpec): readonly string[] {
+  return Object.entries(spec.resources)
+    .filter(([, resource]) => resource.startup === "automatic")
+    .map(([name]) => name)
+    .toSorted(compareNames);
 }
 
 function combineCancellationSignals(

@@ -5,6 +5,7 @@ import {
   success,
   type Result,
 } from "@stackyard/diagnostics";
+import type { ProjectSpec } from "@stackyard/protocol";
 
 import { definitionSpec, type CatalogProject, type ProjectCatalog } from "./project-catalog.ts";
 import type { Project, ProjectState, RuntimeProject, Service } from "./project-list.ts";
@@ -120,7 +121,7 @@ export class ProjectOrchestrator {
     const restartRequired = Boolean(
       runtime && project.definition.kind === "valid" && runtime.revision !== project.revision,
     );
-    const services = mergeServices(spec ? Object.keys(spec.resources) : [], runtime);
+    const services = mergeServices(spec?.resources, runtime);
     const issue =
       project.definition.kind === "invalid" || project.definition.kind === "missing"
         ? createDiagnosticReport(project.definition.diagnostics)
@@ -139,19 +140,25 @@ export class ProjectOrchestrator {
 }
 
 function mergeServices(
-  definedNames: readonly string[],
+  definedServices: ProjectSpec["resources"] | undefined,
   runtime: RuntimeProject | undefined,
 ): readonly Service[] {
   const runtimeServices = new Map(runtime?.services.map((service) => [service.name, service]));
-  const names = new Set([...definedNames, ...runtimeServices.keys()]);
+  const names = new Set([...Object.keys(definedServices ?? {}), ...runtimeServices.keys()]);
   return Object.freeze(
     [...names]
       .toSorted((left, right) => left.localeCompare(right, "en"))
       .map((name) => {
         const active = runtimeServices.get(name);
-        return active
-          ? Object.freeze(active)
-          : Object.freeze({ endpoints: Object.freeze([]), name, state: "stopped" as const });
+        const startup = definedServices?.[name]?.startup ?? active?.startup;
+        if (!startup) {
+          throw new Error("A service is missing its startup policy.");
+        }
+        return Object.freeze(
+          active
+            ? { ...active, startup }
+            : { endpoints: Object.freeze([]), name, startup, state: "stopped" as const },
+        );
       }),
   );
 }

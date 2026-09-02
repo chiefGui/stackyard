@@ -37,6 +37,8 @@ export interface EndpointValueExpression {
 
 export type EnvironmentValueSpec = string | EndpointValueExpression;
 
+export type ServiceStartup = "automatic" | "manual";
+
 export interface ProcessResourceSpec {
   readonly command: {
     readonly args: readonly string[];
@@ -46,6 +48,7 @@ export interface ProcessResourceSpec {
   readonly endpoints: Readonly<Record<string, EndpointSpec>>;
   readonly env: Readonly<Record<string, EnvironmentValueSpec>>;
   readonly kind: "process";
+  readonly startup: ServiceStartup;
 }
 
 export interface ProjectSpec {
@@ -129,6 +132,9 @@ const ProcessResourceSchema = z.strictObject({
   endpoints: z.record(ResourceNameSchema, HttpEndpointSchema),
   env: z.record(EnvironmentNameSchema, EnvironmentValueSchema),
   kind: z.literal("process"),
+  startup: z.enum(["automatic", "manual"], {
+    error: "Service startup must be 'automatic' or 'manual'.",
+  }),
 });
 
 const ResourcesSchema = z
@@ -154,7 +160,7 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   const result = ProjectSpecSchema.safeParse(input);
 
   if (result.success) {
-    const semanticFailure = validateEnvironmentOwnership(result.data);
+    const semanticFailure = validateProject(result.data);
     return semanticFailure ?? success(deepFreeze(result.data));
   }
 
@@ -173,9 +179,18 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   return parseFailure;
 }
 
-function validateEnvironmentOwnership(project: ProjectSpec): Failure | undefined {
+function validateProject(project: ProjectSpec): Failure | undefined {
   const diagnostics = new DiagnosticCollector();
 
+  validateEnvironmentOwnership(project, diagnostics);
+  validateStartupDependencies(project, diagnostics);
+  return diagnostics.toFailure();
+}
+
+function validateEnvironmentOwnership(
+  project: ProjectSpec,
+  diagnostics: DiagnosticCollector,
+): void {
   for (const [resourceName, resource] of Object.entries(project.resources).toSorted(
     ([left], [right]) => left.localeCompare(right, "en"),
   )) {
@@ -238,8 +253,35 @@ function validateEnvironmentOwnership(project: ProjectSpec): Failure | undefined
       explicitNames.set(key, name);
     }
   }
+}
 
-  return diagnostics.toFailure();
+function validateStartupDependencies(project: ProjectSpec, diagnostics: DiagnosticCollector): void {
+  for (const [resourceName, resource] of Object.entries(project.resources).toSorted(
+    ([left], [right]) => left.localeCompare(right, "en"),
+  )) {
+    if (resource.startup !== "automatic") {
+      continue;
+    }
+    for (const [name, value] of Object.entries(resource.env).toSorted(([left], [right]) =>
+      left.localeCompare(right, "en"),
+    )) {
+      if (typeof value === "string") {
+        continue;
+      }
+      const dependency = project.resources[value.resource];
+      if (dependency?.startup !== "manual") {
+        continue;
+      }
+      diagnostics.report(
+        createDiagnostic({
+          code: "SYD1014",
+          help: `Set '${value.resource}' to automatic startup, or remove this endpoint reference.`,
+          message: `Automatically started service '${resourceName}' depends on manual service '${value.resource}'.`,
+          path: ["resources", resourceName, "env", name],
+        }),
+      );
+    }
+  }
 }
 
 function validateVersion(input: unknown): Failure | undefined {
@@ -384,6 +426,13 @@ function classifyProjectIssue(
     return {
       code: "SYD1006",
       help: "Use an integer from 1 through 65535.",
+    };
+  }
+
+  if (field === "startup") {
+    return {
+      code: "SYD1013",
+      help: "Use 'automatic' to include the service in stackyard run, or 'manual' to leave it stopped.",
     };
   }
 

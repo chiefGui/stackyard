@@ -216,7 +216,7 @@ describe("HTTP server", () => {
       name: "demo",
       restartRequired: false,
       root: resolve(import.meta.dir, "../project"),
-      services: [{ endpoints: [], name: "api", state: "stopped" }],
+      services: [{ endpoints: [], name: "api", startup: "automatic", state: "stopped" }],
       state: "stopped",
     };
     const projects: Projects = {
@@ -709,10 +709,11 @@ function testProjects(manager: ProjectManager, spec = projectSpec()): Projects {
         name: spec.name,
         restartRequired: false,
         root: resolve(import.meta.dir, ".."),
-        services: Object.keys(spec.resources).map((name) => ({
+        services: Object.entries(spec.resources).map(([name, resource]) => ({
           endpoints: [],
           name,
           state: "stopped",
+          startup: resource.startup,
         })),
         state: "stopped",
       });
@@ -750,6 +751,7 @@ function projectSpec() {
         endpoints: {},
         env: {},
         kind: "process",
+        startup: "automatic",
       },
     },
   });
@@ -769,6 +771,7 @@ function twoResourceProjectSpec() {
         endpoints: {},
         env: {},
         kind: "process",
+        startup: "automatic",
       },
       web: {
         command: { args: [], executable: "fixture" },
@@ -776,6 +779,7 @@ function twoResourceProjectSpec() {
         endpoints: {},
         env: {},
         kind: "process",
+        startup: "automatic",
       },
     },
   });

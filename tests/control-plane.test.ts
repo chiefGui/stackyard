@@ -88,6 +88,40 @@ describe("project manager", () => {
     });
   });
 
+  test("starts only services configured for automatic startup", async () => {
+    const ports = new FakePorts();
+    const processes = new FakeProcesses();
+    const manager = createManager(ports, processes);
+
+    const started = await startProject(manager, "/project", projectSpecWithManualWeb());
+
+    expect(started.success).toBeTrue();
+    expect(processes.starts.map(({ executable }) => executable)).toEqual(["api-command"]);
+    expect(ports.preferredPorts).toEqual([4100]);
+    expect(manager.listActiveProjects().projects[0]?.services).toMatchObject([
+      { name: "api", startup: "automatic", state: "running" },
+    ]);
+    if (started.success) {
+      expect((await started.output.stop()).success).toBeTrue();
+    }
+  });
+
+  test("explains when a project has no automatically started services", async () => {
+    const ports = new FakePorts();
+    const processes = new FakeProcesses();
+    const manager = createManager(ports, processes);
+
+    const started = await startProject(manager, "/project", projectSpecWithOnlyManualServices());
+
+    expect(started).toMatchObject({
+      diagnostics: [{ code: "SYD4009" }],
+      success: false,
+    });
+    expect(ports.leases).toEqual([]);
+    expect(processes.starts).toEqual([]);
+    expect(manager.listActiveProjects().projects).toEqual([]);
+  });
+
   test("rolls back started siblings when an initial process cannot start", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses(1);
@@ -530,7 +564,10 @@ describe("project catalog", () => {
   test("keeps one durable project while definition and runtime state change", async () => {
     const store = new FakeProjectStore();
     const observer = new FakeDefinitionObserver();
-    let definition: ProjectDefinitionLoad = { kind: "valid", spec: projectSpec() };
+    let definition: ProjectDefinitionLoad = {
+      kind: "valid",
+      spec: projectSpecWithManualWeb(),
+    };
     const opened = await ProjectCatalog.open({
       canonicalize: async () => success("/canonical/project"),
       createId: () => "project-one",
@@ -560,8 +597,8 @@ describe("project catalog", () => {
       output: {
         id: "project-one",
         services: [
-          { name: "api", state: "stopped" },
-          { name: "web", state: "stopped" },
+          { name: "api", startup: "automatic", state: "stopped" },
+          { name: "web", startup: "manual", state: "stopped" },
         ],
         state: "stopped",
       },
@@ -577,7 +614,14 @@ describe("project catalog", () => {
       throw new Error("Expected the durable project to start.");
     }
     expect(started.output.id).toBe("project-one");
-    expect(projects.list()[0]).toMatchObject({ id: "project-one", state: "running" });
+    expect(projects.list()[0]).toMatchObject({
+      id: "project-one",
+      services: [
+        { name: "api", startup: "automatic", state: "running" },
+        { name: "web", startup: "manual", state: "stopped" },
+      ],
+      state: "running",
+    });
 
     definition = { kind: "valid", spec: projectSpecWithWorker() };
     observer.change("/canonical/project");
@@ -588,9 +632,9 @@ describe("project catalog", () => {
       id: "project-one",
       restartRequired: true,
       services: [
-        { name: "api", state: "running" },
-        { name: "web", state: "running" },
-        { name: "worker", state: "stopped" },
+        { name: "api", startup: "automatic", state: "running" },
+        { name: "web", startup: "automatic", state: "stopped" },
+        { name: "worker", startup: "automatic", state: "stopped" },
       ],
     });
     const refused = await projects.remove("project-one");
@@ -681,6 +725,7 @@ function projectSpec(): ProjectSpec {
         },
         env: { PATH: "new" },
         kind: "process",
+        startup: "automatic",
       },
       web: {
         command: { args: [], executable: "web-command" },
@@ -694,6 +739,7 @@ function projectSpec(): ProjectSpec {
           API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
         },
         kind: "process",
+        startup: "automatic",
       },
     },
   });
@@ -715,8 +761,45 @@ function projectSpecWithWorker(): ProjectSpec {
         endpoints: {},
         env: {},
         kind: "process",
+        startup: "automatic",
       },
     },
+  });
+  if (!result.success) {
+    throw new Error("Test project specification is invalid.");
+  }
+  return result.output;
+}
+
+function projectSpecWithManualWeb(): ProjectSpec {
+  const current = projectSpec();
+  const web = current.resources.web;
+  if (!web) {
+    throw new Error("Expected the web service specification.");
+  }
+  const result = createProjectSpec({
+    name: current.name,
+    resources: {
+      ...current.resources,
+      web: { ...web, startup: "manual" },
+    },
+  });
+  if (!result.success) {
+    throw new Error("Test project specification is invalid.");
+  }
+  return result.output;
+}
+
+function projectSpecWithOnlyManualServices(): ProjectSpec {
+  const current = projectSpec();
+  const result = createProjectSpec({
+    name: current.name,
+    resources: Object.fromEntries(
+      Object.entries(current.resources).map(([name, resource]) => [
+        name,
+        { ...resource, startup: "manual" },
+      ]),
+    ),
   });
   if (!result.success) {
     throw new Error("Test project specification is invalid.");

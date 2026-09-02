@@ -1,4 +1,5 @@
 import type { DiagnosticReport } from "@stackyard/diagnostics";
+import type { ServiceStartup } from "@stackyard/protocol";
 
 export type ProjectState =
   | "loading"
@@ -15,6 +16,7 @@ export interface Service {
   readonly exitCode?: number | undefined;
   readonly name: string;
   readonly state: ServiceState;
+  readonly startup: ServiceStartup;
 }
 
 export interface Project {
@@ -39,6 +41,7 @@ export interface RuntimeService {
   readonly exitCode?: number | undefined;
   readonly name: string;
   readonly state: RuntimeServiceState;
+  readonly startup: ServiceStartup;
 }
 
 export interface RuntimeProject {

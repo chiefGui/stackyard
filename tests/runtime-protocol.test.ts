@@ -25,6 +25,7 @@ test("project lists round-trip as immutable public state", () => {
             endpoints: [{ name: "http", url: "http://127.0.0.1:4000" }],
             name: "api",
             state: "running",
+            startup: "automatic",
           },
         ],
         state: "running",

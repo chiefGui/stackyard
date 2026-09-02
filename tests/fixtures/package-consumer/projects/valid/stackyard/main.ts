@@ -5,6 +5,7 @@ const api = service({
   endpoints: {
     http: endpoint.http({ env: "PORT" }),
   },
+  startup: "manual",
 });
 
 export default defineProject({

@@ -33,7 +33,7 @@ export function createRunCommand(dependencies: RunCommandDependencies): CliComma
       },
     },
     meta: {
-      description: "Start a project and its dashboard",
+      description: "Start a project's automatic services",
     },
     run({ args }) {
       return runProject(args.path, dependencies);
