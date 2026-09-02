@@ -10,8 +10,13 @@ Stackyard requires [Bun](https://bun.sh/) 1.4 or newer.
 
 ```sh
 bun ci
+bun dev
 bun run check
 ```
+
+`bun dev` starts the real daemon with isolated repository state and serves the dashboard through
+Vite. Frontend changes use hot module replacement; backend changes restart the development process.
+Press Ctrl+C to stop both servers. Use `bun stackyard run .` only to exercise self-hosting.
 
 Changes to published behavior should include a Changesets entry:
 

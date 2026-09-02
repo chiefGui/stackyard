@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { readPort } from "../apps/daemon/src/config.ts";
+import { startDaemon, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
 import { startControlServer, type Projects } from "../apps/daemon/src/server.ts";
@@ -44,6 +47,42 @@ describe("daemon configuration", () => {
       }
     },
   );
+});
+
+describe("daemon lifecycle", () => {
+  test("starts the catalog-backed server and releases its port", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-daemon-"));
+    let daemon: RunningDaemon | undefined;
+    try {
+      const started = await startDaemon({
+        dataDirectory,
+        diagnostics: { report() {} },
+        evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+        instanceId: "catalog-daemon",
+        port: 0,
+      });
+      expect(started.success).toBeTrue();
+      if (!started.success) {
+        throw new Error("The catalog-backed daemon could not start.");
+      }
+      daemon = started.output;
+
+      const projects = await fetch(new URL("/api/v1/projects", daemon.url));
+      expect(projects.status).toBe(200);
+      expect(await projects.json()).toEqual({ projects: [], schemaVersion: 1 });
+
+      expect((await daemon.close()).success).toBeTrue();
+      expect((await daemon.close()).success).toBeTrue();
+      const rebound = startTestServer(daemon.port);
+      expect(rebound.success).toBeTrue();
+      if (rebound.success) {
+        await rebound.output.stop(true);
+      }
+    } finally {
+      await daemon?.close();
+      await rm(dataDirectory, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("HTTP server", () => {
