@@ -17,18 +17,23 @@ export interface StartCommandDependencies {
 }
 
 export function createStartCommand(dependencies: StartCommandDependencies): CliCommand {
-  return defineCliCommand("start", "SYD2016", {
-    args: {
-      foreground: {
-        description: "Keep Stackyard attached to this terminal",
-        type: "boolean",
+  return defineCliCommand(
+    "start",
+    "SYD2016",
+    {
+      args: {
+        foreground: {
+          description: "Keep Stackyard attached to this terminal",
+          type: "boolean",
+        },
+      },
+      meta: { description: "Start the Stackyard daemon" },
+      run({ args }) {
+        return args.foreground ? startForeground(dependencies) : startDetached(dependencies);
       },
     },
-    meta: { description: "Start Stackyard and print its dashboard URL" },
-    run({ args }) {
-      return args.foreground ? startForeground(dependencies) : startDetached(dependencies);
-    },
-  });
+    "daemon start",
+  );
 }
 
 async function startForeground(dependencies: StartCommandDependencies): Promise<number> {
@@ -41,7 +46,7 @@ async function startForeground(dependencies: StartCommandDependencies): Promise<
     dependencies.diagnostics.report(
       createDiagnostic({
         code: "SYD2016",
-        help: "Run 'stackyard stop', then start Stackyard in the foreground.",
+        help: "Run 'stackyard daemon stop', then start Stackyard in the foreground.",
         message: "Stackyard is already running.",
         notes: [`Dashboard: ${daemonUrl(active.output)}`],
       }),

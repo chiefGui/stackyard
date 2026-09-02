@@ -1,10 +1,8 @@
-import { realpath } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
-
 import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
 import type { ProjectClient } from "./project-client.ts";
+import { normalizeProjectTarget } from "./project-target.ts";
 
 export interface RemoveCommandDependencies {
   readonly client: ProjectClient;
@@ -33,7 +31,9 @@ async function removeProject(
   target: string,
   dependencies: RemoveCommandDependencies,
 ): Promise<number> {
-  const removed = await dependencies.client.remove(await normalizeTarget(target, dependencies));
+  const removed = await dependencies.client.remove(
+    await normalizeProjectTarget(target, dependencies.currentDirectory),
+  );
   if (!removed.success) {
     reportDiagnostics(dependencies.diagnostics, removed.diagnostics);
     return 1;
@@ -43,33 +43,4 @@ async function removeProject(
     `Removed '${removed.output.name}' from Stackyard.\nProject files were not changed.\n`,
   );
   return 0;
-}
-
-async function normalizeTarget(
-  target: string,
-  dependencies: RemoveCommandDependencies,
-): Promise<string> {
-  if (!isPathTarget(target)) {
-    return target;
-  }
-
-  const absolute = resolve(dependencies.currentDirectory, target);
-  try {
-    return await realpath(absolute);
-  } catch {
-    // A missing project can still be forgotten by its stored absolute path.
-    return absolute;
-  }
-}
-
-function isPathTarget(target: string): boolean {
-  return (
-    isAbsolute(target) ||
-    target === "." ||
-    target === ".." ||
-    target.startsWith(`.${sep}`) ||
-    target.startsWith(`..${sep}`) ||
-    target.includes("/") ||
-    target.includes("\\")
-  );
 }

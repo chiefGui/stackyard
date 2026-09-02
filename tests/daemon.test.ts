@@ -193,6 +193,10 @@ describe("HTTP server", () => {
       async start() {
         throw new Error("Unexpected project start request.");
       },
+      async stop(target) {
+        expect(target).toBe("project-one");
+        return success(project);
+      },
     };
     const result = startTestServer(0, undefined, undefined, projects);
     if (!result.success) {
@@ -233,6 +237,17 @@ describe("HTTP server", () => {
       });
       expect(removed.status).toBe(200);
       expect(await removed.json()).toEqual(project);
+
+      const stopped = await fetch(new URL("/api/v1/projects/stop", server.url), {
+        body: JSON.stringify({ target: "project-one" }),
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(stopped.status).toBe(200);
+      expect(await stopped.json()).toEqual(project);
 
       const malformed = await fetch(new URL("/api/v1/projects", server.url), {
         body: "{}",
@@ -332,6 +347,43 @@ describe("HTTP server", () => {
       expect(manager.listActiveProjects().projects).toEqual([]);
     } finally {
       processes.continue();
+      socket.terminate();
+      await server.stop(true);
+    }
+  });
+
+  test("notifies an attached run when another client stops its project", async () => {
+    const manager = new ProjectManager({
+      ports: new UnusedPorts(),
+      processes: new ImmediateProcesses(),
+    });
+    const result = startTestServer(0, manager);
+    if (!result.success) {
+      throw new Error("The test server could not start.");
+    }
+
+    const server = result.output;
+    const socket = await connectControl(server.url, "test-token");
+    try {
+      const startedMessage = nextMessage(socket);
+      socket.send(JSON.stringify(createStartProjectMessage(resolve(import.meta.dir, ".."), {})));
+      const started = parseDaemonServerMessage(JSON.parse(await startedMessage));
+      expect(started).toMatchObject({ output: { kind: "started" }, success: true });
+
+      const stoppedMessage = nextMessage(socket);
+      const response = await fetch(new URL("/api/v1/projects/stop", server.url), {
+        body: JSON.stringify({ target: "project-one" }),
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      const stopped = parseDaemonServerMessage(JSON.parse(await stoppedMessage));
+      expect(stopped).toMatchObject({ output: { kind: "stopped" }, success: true });
+      expect(manager.listActiveProjects().projects).toEqual([]);
+    } finally {
       socket.terminate();
       await server.stop(true);
     }
@@ -627,6 +679,24 @@ function testProjects(manager: ProjectManager, spec = projectSpec()): Projects {
         spec,
       });
     },
+    async stop() {
+      const stopped = await manager.stop("project-one");
+      if (!stopped.success) {
+        return stopped;
+      }
+      return success<Project>({
+        id: "project-one",
+        name: spec.name,
+        restartRequired: false,
+        root: resolve(import.meta.dir, ".."),
+        services: Object.keys(spec.resources).map((name) => ({
+          endpoints: [],
+          name,
+          state: "stopped",
+        })),
+        state: "stopped",
+      });
+    },
   };
 }
 
@@ -698,6 +768,14 @@ function twoResourceProjectSpec() {
 class UnusedPorts implements PortAllocator {
   async reserve(): Promise<never> {
     throw new Error("The fixture does not define endpoints.");
+  }
+}
+
+class ImmediateProcesses implements ProcessHost {
+  readonly handle = new ControlledHandle();
+
+  async start() {
+    return success<ProcessHandle>(this.handle);
   }
 }
 

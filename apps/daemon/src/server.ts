@@ -47,6 +47,7 @@ export interface Projects {
   add(path: string): Promise<Result<Project>>;
   remove(target: string): Promise<Result<Project>>;
   start(input: StartCatalogProjectInput): Promise<StartProjectResult>;
+  stop(target: string): Promise<Result<Project>>;
 }
 
 export interface ControlServerOptions {
@@ -119,6 +120,22 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
             options.requestShutdown();
           }
           return secureResponse(null, { status: 202 });
+        }
+
+        if (url.pathname === "/api/v1/projects/stop") {
+          if (!options.projects) {
+            return secureResponse("Not found.", { status: 404 });
+          }
+          if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
+            return secureResponse("Unauthorized.", { status: 401 });
+          }
+          if (request.method !== "POST") {
+            return secureResponse("Method not allowed.", { status: 405 });
+          }
+          if (options.isShuttingDown()) {
+            return secureResponse("Daemon is shutting down.", { status: 503 });
+          }
+          return handleProjectStopRequest(request, options.projects);
         }
 
         if (url.pathname === "/api/v1/projects") {
@@ -252,6 +269,28 @@ async function handleProjectRequest(request: Request, projects: Projects): Promi
     return projectFailureResponse(result.diagnostics, status);
   }
   return secureJson(createProject(result.output));
+}
+
+async function handleProjectStopRequest(request: Request, projects: Projects): Promise<Response> {
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return projectFailureResponse(invalidProjectRequest(), 400);
+  }
+
+  const target = singleStringProperty(input, "target");
+  if (!target) {
+    return projectFailureResponse(invalidProjectRequest(), 400);
+  }
+  const stopped = await projects.stop(target);
+  if (!stopped.success) {
+    return projectFailureResponse(
+      stopped.diagnostics,
+      projectFailureStatus(stopped.diagnostics[0]?.code),
+    );
+  }
+  return secureJson(createProject(stopped.output));
 }
 
 function projectFailureResponse(
@@ -419,7 +458,13 @@ async function handleControlMessage(
     return;
   }
   void started.output.completed.then(async (completion) => {
-    if (completion.kind === "stopped" || socket.data.stopRequested) {
+    if (completion.kind === "stopped") {
+      if (!socket.data.stopRequested) {
+        sendMessage(socket, createProjectStoppedMessage());
+      }
+      return;
+    }
+    if (socket.data.stopRequested) {
       return;
     }
     let message;

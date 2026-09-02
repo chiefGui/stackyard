@@ -150,9 +150,16 @@ interface ProjectRuntime {
   readonly revision: number;
   readonly resources: ResourceRuntime[];
   readonly root: string;
+  readonly settleStart: () => void;
+  readonly startSettled: Promise<void>;
+  readonly stopSignal: MutableCancellationSignal;
   cleanup: Promise<Result<void>> | undefined;
   completionPublished: boolean;
   naturalCleanup: Promise<Result<void>> | undefined;
+}
+
+interface MutableCancellationSignal extends CancellationSignal {
+  aborted: boolean;
 }
 
 const compareNames = (left: string, right: string): number => left.localeCompare(right, "en");
@@ -252,44 +259,65 @@ export class ProjectManager {
     const project = createProject(input, this.#logs);
     this.#activeRoots.set(input.root, project);
     this.#activeProjects.set(project.id, project);
+    const signal = combineCancellationSignals(input.signal, project.stopSignal);
+    return this.#startProject(project, input, signal).finally(project.settleStart);
+  }
 
-    const canceled = cancellationFailure(input.signal);
+  async #startProject(
+    project: ProjectRuntime,
+    input: StartProjectInput,
+    signal: CancellationSignal,
+  ): Promise<StartProjectResult> {
+    const canceled = cancellationFailure(signal);
     if (canceled) {
-      return this.#rollbackStart(project, canceled);
+      return this.#resolveStartFailure(project, canceled);
     }
 
-    const allocated = await this.#allocate(project, input.spec, input.signal);
+    const allocated = await this.#allocate(project, input.spec, signal);
     if (!allocated.success) {
-      return this.#rollbackStart(project, allocated);
+      return this.#resolveStartFailure(project, allocated);
     }
 
     const prepared = this.#prepareStarts(project, input);
     if (!prepared.success) {
-      return this.#rollbackStart(project, prepared);
+      return this.#resolveStartFailure(project, prepared);
     }
 
     const released = await this.#releaseReservations(project);
     if (!released.success) {
-      return this.#rollbackStart(project, released);
+      return this.#resolveStartFailure(project, released);
     }
 
-    const started = await this.#startResources(project, prepared.output, input.signal);
+    const started = await this.#startResources(project, prepared.output, signal);
     if (!started.success) {
-      return this.#rollbackStart(project, started);
+      return this.#resolveStartFailure(project, started);
     }
 
-    const canceledAfterStart = cancellationFailure(input.signal);
+    const canceledAfterStart = cancellationFailure(signal);
     if (canceledAfterStart) {
-      return this.#rollbackStart(project, canceledAfterStart);
+      return this.#resolveStartFailure(project, canceledAfterStart);
     }
 
     this.#watch(project);
     return success(this.#managedProject(project));
   }
 
+  async stop(projectId: string): Promise<Result<void>> {
+    const project = this.#activeProjects.get(projectId);
+    if (!project) {
+      return success(undefined);
+    }
+    project.stopSignal.aborted = true;
+    await project.startSettled;
+    if (this.#activeProjects.get(projectId) !== project) {
+      return success(undefined);
+    }
+    return this.#stop(project);
+  }
+
   async stopAll(): Promise<Result<void>> {
     const results = await Promise.all(
-      [...this.#activeProjects.values()].map((project) => this.#stop(project)),
+      [...this.#activeProjects.keys()].map((projectId) => this.stop(projectId)),
     );
     const failed = results.find((result) => !result.success);
     return failed && !failed.success ? failed : success(undefined);
@@ -599,12 +627,24 @@ export class ProjectManager {
     return cause;
   }
 
+  async #resolveStartFailure(project: ProjectRuntime, cause: Failure): Promise<StartProjectResult> {
+    const failed = await this.#rollbackStart(project, cause);
+    if (!project.stopSignal.aborted || failed.cleanup) {
+      return failed;
+    }
+    if (!project.completionPublished) {
+      project.completionPublished = true;
+      project.complete({ kind: "stopped" });
+    }
+    return success(this.#managedProject(project));
+  }
+
   #managedProject(project: ProjectRuntime): ManagedProject {
     return Object.freeze({
       completed: project.completed,
       id: project.id,
       name: project.name,
-      stop: () => this.#stop(project),
+      stop: () => this.stop(project.id),
     });
   }
 
@@ -706,6 +746,10 @@ function createProject(input: StartProjectInput, logs: ResourceLogStore): Projec
   const completed = new Promise<ProjectCompletion>((resolve) => {
     complete = resolve;
   });
+  let settleStart!: () => void;
+  const startSettled = new Promise<void>((resolve) => {
+    settleStart = resolve;
+  });
   return {
     complete,
     cleanup: undefined,
@@ -725,7 +769,21 @@ function createProject(input: StartProjectInput, logs: ResourceLogStore): Projec
       })),
     naturalCleanup: undefined,
     root: input.root,
+    settleStart,
+    startSettled,
+    stopSignal: { aborted: false },
   };
+}
+
+function combineCancellationSignals(
+  first: CancellationSignal | undefined,
+  second: CancellationSignal,
+): CancellationSignal {
+  return Object.freeze({
+    get aborted() {
+      return first?.aborted === true || second.aborted;
+    },
+  });
 }
 
 function cancellationFailure(signal: CancellationSignal | undefined): Failure | undefined {
