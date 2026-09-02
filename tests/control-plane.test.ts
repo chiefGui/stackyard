@@ -212,13 +212,13 @@ describe("project manager", () => {
     const [started, stopped] = await Promise.all([starting, stopping]);
 
     expect(started.success).toBeTrue();
-    expect(stopped).toEqual({ output: true, success: true });
+    expect(stopped).toEqual({ output: undefined, success: true });
     if (started.success) {
       expect(await started.output.completed).toEqual({ kind: "stopped" });
     }
     expect(handles.map(({ stopCount }) => stopCount)).toEqual([1]);
     expect(manager.listActiveProjects().projects).toEqual([]);
-    expect(await manager.stop("/project")).toEqual({ output: false, success: true });
+    expect(await manager.stop("/project")).toEqual({ output: undefined, success: true });
   });
 
   test("retains failed cleanup for inspection and permits a later retry", async () => {

@@ -39,7 +39,11 @@ export function createStopCommand(dependencies: StopCommandDependencies): CliCom
         reportDiagnostics(dependencies.diagnostics, stopped.diagnostics);
         return 1;
       }
-      dependencies.writeOutput(`Project '${stopped.output.name}' is stopped.\n`);
+      dependencies.writeOutput(
+        stopped.output.kind === "daemon-not-running"
+          ? "No project is running because Stackyard is not running.\n"
+          : `Project '${stopped.output.project.name}' is stopped.\n`,
+      );
       return 0;
     },
   });

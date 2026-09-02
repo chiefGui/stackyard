@@ -545,7 +545,7 @@ test("stop resolves the project containing the current directory", async () => {
         },
         async stop(target) {
           targets.push(target);
-          return success(durableProject());
+          return success({ kind: "stopped", project: durableProject() } as const);
         },
       },
       currentDirectory: nestedDirectory,
@@ -558,6 +558,32 @@ test("stop resolves the project containing the current directory", async () => {
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });
   }
+});
+
+test("stop does not start Stackyard when the daemon is not running", async () => {
+  const output: string[] = [];
+  const command = createStopCommand({
+    client: {
+      async add() {
+        throw new Error("Unexpected add request.");
+      },
+      async list() {
+        throw new Error("Unexpected list request.");
+      },
+      async remove() {
+        throw new Error("Unexpected remove request.");
+      },
+      async stop() {
+        return success({ kind: "daemon-not-running" } as const);
+      },
+    },
+    currentDirectory: resolve("C:/projects"),
+    diagnostics: { report() {} },
+    writeOutput: (value) => output.push(value),
+  });
+
+  expect(await command.execute(["demo"])).toBe(0);
+  expect(output).toEqual(["No project is running because Stackyard is not running.\n"]);
 });
 
 function durableProject(): Project {

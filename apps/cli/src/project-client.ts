@@ -1,4 +1,4 @@
-import { daemonUrl, ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
+import { daemonUrl, ensureDaemon, findDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
   failure,
@@ -17,8 +17,12 @@ export interface ProjectClient {
   add(path: string): Promise<Result<Project>>;
   list(): Promise<Result<ProjectList>>;
   remove(target: string): Promise<Result<Project>>;
-  stop(target: string): Promise<Result<Project>>;
+  stop(target: string): Promise<Result<StopProjectOutput>>;
 }
+
+export type StopProjectOutput =
+  | { readonly kind: "daemon-not-running" }
+  | { readonly kind: "stopped"; readonly project: Project };
 
 export interface DaemonProjectClientOptions {
   readonly daemonEntrypoint: string;
@@ -49,8 +53,20 @@ export class DaemonProjectClient implements ProjectClient {
     return this.#requestProject("api/v1/projects", "DELETE", { target });
   }
 
-  stop(target: string): Promise<Result<Project>> {
-    return this.#requestProject("api/v1/projects/stop", "POST", { target });
+  async stop(target: string): Promise<Result<StopProjectOutput>> {
+    const daemon = await findDaemon();
+    if (!daemon.success) {
+      return daemon;
+    }
+    if (!daemon.output) {
+      return success(Object.freeze({ kind: "daemon-not-running" }));
+    }
+    const stopped = await this.#parseProjectResponse(
+      this.#send(daemon.output, "api/v1/projects/stop", "POST", { target }),
+    );
+    return stopped.success
+      ? success(Object.freeze({ kind: "stopped", project: stopped.output }))
+      : stopped;
   }
 
   async #requestProject(
@@ -58,11 +74,12 @@ export class DaemonProjectClient implements ProjectClient {
     method: "DELETE" | "POST",
     body: Readonly<Record<string, string>>,
   ): Promise<Result<Project>> {
-    const response = await this.#request(path, method, body);
-    if (!response.success) {
-      return response;
-    }
-    return parseProject(response.output);
+    return this.#parseProjectResponse(this.#request(path, method, body));
+  }
+
+  async #parseProjectResponse(responsePromise: Promise<Result<unknown>>): Promise<Result<Project>> {
+    const response = await responsePromise;
+    return response.success ? parseProject(response.output) : response;
   }
 
   async #request(
@@ -76,12 +93,21 @@ export class DaemonProjectClient implements ProjectClient {
       return daemon;
     }
 
+    return this.#send(daemon.output, path, method, body);
+  }
+
+  async #send(
+    daemon: DaemonLocator,
+    path: string,
+    method: "DELETE" | "GET" | "POST",
+    body?: Readonly<Record<string, string>>,
+  ): Promise<Result<unknown>> {
     try {
-      const response = await fetch(new URL(path, daemonUrl(daemon.output)), {
+      const response = await fetch(new URL(path, daemonUrl(daemon)), {
         ...(body ? { body: JSON.stringify(body) } : {}),
         headers: {
           accept: "application/json",
-          authorization: `Bearer ${daemon.output.token}`,
+          authorization: `Bearer ${daemon.token}`,
           ...(body ? { "content-type": "application/json" } : {}),
         },
         method,

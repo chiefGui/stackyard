@@ -124,6 +124,14 @@ test("daemon and project lifecycles stay explicit and idempotent", async () => {
       stdout: "Stackyard is not running.\n",
     });
 
+    const stoppedWithoutDaemon = await runCli(["stop"], projectRoot, environment);
+    expect(stoppedWithoutDaemon).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: "No project is running because Stackyard is not running.\n",
+    });
+    expect(await readLocator(runtimeDirectory)).toBeUndefined();
+
     foreground = Bun.spawn({
       cmd: [process.execPath, cliEntrypoint, "daemon", "start", "--foreground"],
       cwd: temporaryRoot,

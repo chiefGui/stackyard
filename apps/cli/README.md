@@ -54,9 +54,9 @@ attention.
 `stackyard run` starts the services from Stackyard's current project definition, starts the daemon
 when needed, and stays attached until the project stops. Pass a project directory to run another
 project, and add it to Stackyard before running it. `stackyard stop` stops the project containing
-the current directory. It also accepts a project name, identifier, or directory, and never stops
-the daemon. `stackyard remove` forgets the project without changing or deleting project files, and
-it refuses to remove a running project.
+the current directory. It also accepts a project name, identifier, or directory. It neither starts
+nor stops the daemon. `stackyard remove` forgets the project without changing or deleting project
+files, and it refuses to remove a running project.
 
 See the [repository](https://github.com/chiefGui/stackyard) for documentation, examples, and issue tracking.
 
