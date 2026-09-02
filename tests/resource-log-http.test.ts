@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { startControlServer, type ControlData } from "../apps/daemon/src/server.ts";
+import { startControlServer, type ControlData, type Projects } from "../apps/daemon/src/server.ts";
 import {
   ProjectManager,
   type PortAllocator,
@@ -21,6 +21,13 @@ import {
 /* oxlint-disable eslint/no-await-in-loop -- Stream frames and condition checks are sequential. */
 
 const servers: Bun.Server<ControlData>[] = [];
+const unusedProjects: Projects = {
+  add: unavailable,
+  list: () => [],
+  remove: unavailable,
+  start: unavailable,
+  stop: unavailable,
+};
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.stop(true)));
@@ -54,6 +61,8 @@ describe("resource log HTTP API", () => {
       onClose() {},
       onOpen() {},
       port: 0,
+      projects: unusedProjects,
+      requestShutdown() {},
       token: "test-token",
     });
     if (!startedServer.success) {
@@ -127,6 +136,10 @@ describe("resource log HTTP API", () => {
     expect(await resumed.done()).toBeTrue();
   });
 });
+
+function unavailable(): never {
+  throw new Error("Project operations are outside this test's scope.");
+}
 
 function authorized(): RequestInit {
   return { headers: { authorization: "Bearer test-token" } };

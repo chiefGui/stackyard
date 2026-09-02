@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { readPort } from "../apps/daemon/src/config.ts";
+import { startDaemon, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
 import { startControlServer, type Projects } from "../apps/daemon/src/server.ts";
@@ -44,6 +47,42 @@ describe("daemon configuration", () => {
       }
     },
   );
+});
+
+describe("daemon lifecycle", () => {
+  test("starts the catalog-backed server and releases its port", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-daemon-"));
+    let daemon: RunningDaemon | undefined;
+    try {
+      const started = await startDaemon({
+        dataDirectory,
+        diagnostics: { report() {} },
+        evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+        instanceId: "catalog-daemon",
+        port: 0,
+      });
+      expect(started.success).toBeTrue();
+      if (!started.success) {
+        throw new Error("The catalog-backed daemon could not start.");
+      }
+      daemon = started.output;
+
+      const projects = await fetch(new URL("/api/v1/projects", daemon.url));
+      expect(projects.status).toBe(200);
+      expect(await projects.json()).toEqual({ projects: [], schemaVersion: 1 });
+
+      expect((await daemon.close()).success).toBeTrue();
+      expect((await daemon.close()).success).toBeTrue();
+      const rebound = startTestServer(daemon.port);
+      expect(rebound.success).toBeTrue();
+      if (rebound.success) {
+        await rebound.output.stop(true);
+      }
+    } finally {
+      await daemon?.close();
+      await rm(dataDirectory, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("HTTP server", () => {
@@ -261,25 +300,6 @@ describe("HTTP server", () => {
       expect(await malformed.json()).toMatchObject({ diagnostics: [{ code: "SYD3016" }] });
     } finally {
       await server.stop(true);
-    }
-  });
-
-  test("does not advertise projects when the daemon mode lacks a catalog", async () => {
-    const result = startTestServer(0, undefined, undefined, null);
-    if (!result.success) {
-      throw new Error("The test server could not start.");
-    }
-
-    try {
-      const listed = await fetch(new URL("/api/v1/projects", result.output.url));
-      expect(listed.status).toBe(404);
-
-      const added = await fetch(new URL("/api/v1/projects", result.output.url), {
-        method: "POST",
-      });
-      expect(added.status).toBe(404);
-    } finally {
-      await result.output.stop(true);
     }
   });
 
@@ -643,12 +663,10 @@ function startTestServer(
     processes: new BunProcessHost({ report() {} }),
   }),
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
-  projects: Projects | null = testProjects(manager),
+  projects: Projects = testProjects(manager),
   requestShutdown?: () => void,
 ) {
   return startControlServer({
-    ...(projects ? { projects } : {}),
-    ...(requestShutdown ? { requestShutdown } : {}),
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,
@@ -656,6 +674,8 @@ function startTestServer(
     onClose() {},
     onOpen,
     port,
+    projects,
+    requestShutdown: requestShutdown ?? (() => {}),
     token: "test-token",
   });
 }
