@@ -17,10 +17,24 @@ const cliName = "stackyard";
 export interface CliCommand {
   readonly diagnosticCode: string;
   readonly definition: SubCommandsDef[string];
+  readonly kind: "command";
   readonly name: string;
+  readonly path: string;
   execute(args: readonly string[]): Promise<number>;
   renderHelp(): Promise<string>;
 }
+
+export interface CliCommandGroup {
+  readonly commands: readonly CliEntry[];
+  readonly definition: SubCommandsDef[string];
+  readonly diagnosticCode: string;
+  readonly kind: "group";
+  readonly name: string;
+  readonly path: string;
+  renderHelp(): Promise<string>;
+}
+
+export type CliEntry = CliCommand | CliCommandGroup;
 
 export type CliCommandDefinition<T extends ArgsDef> = Omit<
   CommandDef<T>,
@@ -32,8 +46,7 @@ export type CliCommandDefinition<T extends ArgsDef> = Omit<
 };
 
 export interface CliDependencies {
-  readonly commands: readonly CliCommand[];
-  readonly defaultCommand?: CliCommand;
+  readonly commands: readonly CliEntry[];
   readonly diagnostics: DiagnosticSink;
   readonly version: string;
   writeOutput(output: string): void;
@@ -43,10 +56,11 @@ export function defineCliCommand<const T extends ArgsDef>(
   name: string,
   diagnosticCode: string,
   definition: CliCommandDefinition<T>,
+  path = name,
 ): CliCommand {
   const command = defineCommand({
     ...definition,
-    meta: { ...definition.meta, name: `${cliName} ${name}` },
+    meta: { ...definition.meta, name: `${cliName} ${path}` },
   });
   const validatedCommand = defineCommand({
     ...command,
@@ -55,7 +69,7 @@ export function defineCliCommand<const T extends ArgsDef>(
         context.args,
         context.rawArgs,
         definition.args ?? {},
-        name,
+        path,
       );
       if (invalidArgument) {
         throw new InvalidArgumentsError(invalidArgument);
@@ -67,7 +81,9 @@ export function defineCliCommand<const T extends ArgsDef>(
   return {
     diagnosticCode,
     definition: command,
+    kind: "command",
     name,
+    path,
     async execute(args) {
       const execution = await runCommand(validatedCommand, { rawArgs: [...args] });
       if (typeof execution.result !== "number") {
@@ -81,6 +97,28 @@ export function defineCliCommand<const T extends ArgsDef>(
   };
 }
 
+export function defineCliCommandGroup(
+  name: string,
+  diagnosticCode: string,
+  meta: Omit<CommandMeta, "name">,
+  commands: readonly CliEntry[],
+  path = name,
+): CliCommandGroup {
+  const command = defineCommand({
+    meta: { ...meta, name: `${cliName} ${path}` },
+    subCommands: createSubCommands(commands),
+  });
+  return {
+    commands,
+    definition: command,
+    diagnosticCode,
+    kind: "group",
+    name,
+    path,
+    renderHelp: () => renderUsage(command),
+  };
+}
+
 export async function runCli(
   args: readonly string[],
   dependencies: CliDependencies,
@@ -91,9 +129,6 @@ export async function runCli(
     return 0;
   }
   if (!commandName) {
-    if (dependencies.defaultCommand) {
-      return executeCommand(dependencies.defaultCommand, [], dependencies);
-    }
     await writeRootHelp(dependencies);
     return 0;
   }
@@ -102,17 +137,36 @@ export async function runCli(
     return 0;
   }
 
-  const command = findCommand(commandName, dependencies.commands);
-  if (!command) {
-    return reportUnknownCommand(commandName, dependencies);
+  const entry = findEntry(commandName, dependencies.commands);
+  if (!entry) {
+    return reportUnknownCommand(commandName, undefined, dependencies);
+  }
+  return dispatch(entry, commandArguments, dependencies);
+}
+
+async function dispatch(
+  entry: CliEntry,
+  args: readonly string[],
+  dependencies: CliDependencies,
+): Promise<number> {
+  if (entry.kind === "command") {
+    if (args.some(isHelpFlag)) {
+      await writeEntryHelp(entry, dependencies);
+      return 0;
+    }
+    return executeCommand(entry, args, dependencies);
   }
 
-  if (commandArguments.some(isHelpFlag)) {
-    await writeCommandHelp(command, dependencies);
+  const [childName, ...childArguments] = args;
+  if (!childName || childName === "help" || isHelpFlag(childName)) {
+    await writeEntryHelp(entry, dependencies);
     return 0;
   }
-
-  return executeCommand(command, commandArguments, dependencies);
+  const child = findEntry(childName, entry.commands);
+  if (!child) {
+    return reportUnknownCommand(childName, entry, dependencies);
+  }
+  return dispatch(child, childArguments, dependencies);
 }
 
 async function executeCommand(
@@ -141,30 +195,33 @@ async function writeRootHelp(dependencies: CliDependencies): Promise<void> {
   );
 }
 
-async function writeCommandHelp(command: CliCommand, dependencies: CliDependencies): Promise<void> {
-  dependencies.writeOutput(`${await command.renderHelp()}\n`);
+async function writeEntryHelp(entry: CliEntry, dependencies: CliDependencies): Promise<void> {
+  dependencies.writeOutput(`${await entry.renderHelp()}\n`);
 }
 
 function createRootCommand(commands: CliDependencies["commands"], version: string): CommandDef {
-  const subCommands: SubCommandsDef = {};
-  for (const command of commands) {
-    subCommands[command.name] = command.definition;
-  }
-
   return defineCommand({
     meta: {
       description: "Manage local development projects",
       name: cliName,
       version,
     },
-    subCommands,
+    subCommands: createSubCommands(commands),
   });
 }
 
-function findCommand(name: string, commands: readonly CliCommand[]): CliCommand | undefined {
-  for (const command of commands) {
-    if (command.name === name) {
-      return command;
+function createSubCommands(commands: readonly CliEntry[]): SubCommandsDef {
+  const subCommands: SubCommandsDef = {};
+  for (const entry of commands) {
+    subCommands[entry.name] = entry.definition;
+  }
+  return subCommands;
+}
+
+function findEntry(name: string, entries: readonly CliEntry[]): CliEntry | undefined {
+  for (const entry of entries) {
+    if (entry.name === name) {
+      return entry;
     }
   }
   return undefined;
@@ -266,11 +323,17 @@ function isCittyArgumentError(error: unknown): error is Error & { readonly code:
   );
 }
 
-function reportUnknownCommand(commandName: string, dependencies: CliDependencies): number {
+function reportUnknownCommand(
+  commandName: string,
+  parent: CliCommandGroup | undefined,
+  dependencies: CliDependencies,
+): number {
   dependencies.diagnostics.report(
     createDiagnostic({
-      code: "SYD2004",
-      help: "Run 'stackyard help' to list the available commands.",
+      code: parent?.diagnosticCode ?? "SYD2004",
+      help: parent
+        ? `Run '${cliName} ${parent.path} --help' to list the available commands.`
+        : "Run 'stackyard help' to list the available commands.",
       message: `Unknown command '${commandName}'.`,
     }),
   );
@@ -285,7 +348,7 @@ function reportInvalidArguments(
   dependencies.diagnostics.report(
     createDiagnostic({
       code: command.diagnosticCode,
-      help: `Run '${cliName} ${command.name} --help' to see the accepted arguments.`,
+      help: `Run '${cliName} ${command.path} --help' to see the accepted arguments.`,
       message,
     }),
   );

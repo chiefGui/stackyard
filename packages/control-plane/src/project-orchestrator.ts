@@ -65,7 +65,16 @@ export class ProjectOrchestrator {
     return admitted.success ? admitted.output : admitted;
   }
 
-  #mutate<T>(operation: () => Promise<Result<T>>): Promise<Result<T>> {
+  async stop(target: string): Promise<Result<Project>> {
+    const resolved = await this.#mutate(() => this.#catalog.resolve(target));
+    if (!resolved.success) {
+      return resolved;
+    }
+    const stopped = await this.#manager.stop(resolved.output.id);
+    return stopped.success ? success(this.#view(resolved.output)) : stopped;
+  }
+
+  #mutate<T>(operation: () => Promise<Result<T>> | Result<T>): Promise<Result<T>> {
     const result = this.#mutationQueue.then(operation, operation);
     this.#mutationQueue = result.then(noop, noop);
     return result;

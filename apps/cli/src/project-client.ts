@@ -17,6 +17,7 @@ export interface ProjectClient {
   add(path: string): Promise<Result<Project>>;
   list(): Promise<Result<ProjectList>>;
   remove(target: string): Promise<Result<Project>>;
+  stop(target: string): Promise<Result<Project>>;
 }
 
 export interface DaemonProjectClientOptions {
@@ -33,11 +34,11 @@ export class DaemonProjectClient implements ProjectClient {
   }
 
   add(path: string): Promise<Result<Project>> {
-    return this.#requestProject("POST", { path });
+    return this.#requestProject("api/v1/projects", "POST", { path });
   }
 
   async list(): Promise<Result<ProjectList>> {
-    const response = await this.#request("GET");
+    const response = await this.#request("api/v1/projects", "GET");
     if (!response.success) {
       return response;
     }
@@ -45,14 +46,19 @@ export class DaemonProjectClient implements ProjectClient {
   }
 
   remove(target: string): Promise<Result<Project>> {
-    return this.#requestProject("DELETE", { target });
+    return this.#requestProject("api/v1/projects", "DELETE", { target });
+  }
+
+  stop(target: string): Promise<Result<Project>> {
+    return this.#requestProject("api/v1/projects/stop", "POST", { target });
   }
 
   async #requestProject(
+    path: string,
     method: "DELETE" | "POST",
     body: Readonly<Record<string, string>>,
   ): Promise<Result<Project>> {
-    const response = await this.#request(method, body);
+    const response = await this.#request(path, method, body);
     if (!response.success) {
       return response;
     }
@@ -60,6 +66,7 @@ export class DaemonProjectClient implements ProjectClient {
   }
 
   async #request(
+    path: string,
     method: "DELETE" | "GET" | "POST",
     body?: Readonly<Record<string, string>>,
   ): Promise<Result<unknown>> {
@@ -70,7 +77,7 @@ export class DaemonProjectClient implements ProjectClient {
     }
 
     try {
-      const response = await fetch(new URL("api/v1/projects", daemonUrl(daemon.output)), {
+      const response = await fetch(new URL(path, daemonUrl(daemon.output)), {
         ...(body ? { body: JSON.stringify(body) } : {}),
         headers: {
           accept: "application/json",

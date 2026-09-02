@@ -10,7 +10,7 @@ const repositoryRoot = resolve(import.meta.dir, "..");
 const cliEntrypoint = join(repositoryRoot, "apps/cli/src/main.ts");
 const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
 
-test("Stackyard starts globally, reuses one daemon, and stops idempotently", async () => {
+test("daemon and project lifecycles stay explicit and idempotent", async () => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-lifecycle-"));
   const runtimeDirectory = join(temporaryRoot, "runtime");
   const environment = {
@@ -23,14 +23,27 @@ test("Stackyard starts globally, reuses one daemon, and stops idempotently", asy
   let foreground: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
 
   try {
-    const started = await runCli(["start"], temporaryRoot, environment);
+    const bare = await runCli([], temporaryRoot, environment);
+    expect(bare.exitCode).toBe(0);
+    expect(bare.stderr).toBe("");
+    expect(bare.stdout).toContain("USAGE stackyard");
+    expect(await readLocator(runtimeDirectory)).toBeUndefined();
+
+    const initiallyStopped = await runCli(["daemon", "status"], temporaryRoot, environment);
+    expect(initiallyStopped).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: "Stackyard is not running.\n",
+    });
+
+    const started = await runCli(["daemon", "start"], temporaryRoot, environment);
     expect(started.exitCode).toBe(0);
     expect(started.stderr).toBe("");
     const first = await waitFor(() => readLocator(runtimeDirectory));
     daemonPid = first.pid;
     expect(started.stdout).toBe(`Stackyard is running at http://127.0.0.1:${first.port}/\n`);
 
-    const repeated = await runCli(["start"], repositoryRoot, environment);
+    const repeated = await runCli(["daemon", "start"], repositoryRoot, environment);
     expect(repeated).toEqual({
       exitCode: 0,
       stderr: "",
@@ -38,15 +51,26 @@ test("Stackyard starts globally, reuses one daemon, and stops idempotently", asy
     });
     expect((await readLocator(runtimeDirectory))?.instanceId).toBe(first.instanceId);
 
-    const bare = await runCli([], temporaryRoot, environment);
-    expect(bare).toEqual(repeated);
+    const running = await runCli(["daemon", "status"], temporaryRoot, environment);
+    expect(running.stdout).toBe(
+      `Stackyard is running at http://127.0.0.1:${first.port}/\nPID: ${first.pid}\n`,
+    );
     expect((await readLocator(runtimeDirectory))?.instanceId).toBe(first.instanceId);
 
-    const foregroundConflict = await runCli(["start", "--foreground"], temporaryRoot, environment);
+    const unrelatedStop = await runCli(["stop"], temporaryRoot, environment);
+    expect(unrelatedStop.exitCode).toBe(1);
+    expect(unrelatedStop.stderr).toContain("No stackyard/main.ts was found");
+    expect((await readLocator(runtimeDirectory))?.instanceId).toBe(first.instanceId);
+
+    const foregroundConflict = await runCli(
+      ["daemon", "start", "--foreground"],
+      temporaryRoot,
+      environment,
+    );
     expect(foregroundConflict.exitCode).toBe(1);
     expect(foregroundConflict.stdout).toBe("");
     expect(foregroundConflict.stderr).toContain("Stackyard is already running.");
-    expect(foregroundConflict.stderr).toContain("Run 'stackyard stop'");
+    expect(foregroundConflict.stderr).toContain("Run 'stackyard daemon stop'");
 
     const added = await runCli(["add", projectRoot], temporaryRoot, environment);
     expect(added.exitCode).toBe(0);
@@ -70,11 +94,22 @@ test("Stackyard starts globally, reuses one daemon, and stops idempotently", asy
       }
     });
 
-    const stopped = await runCli(["stop"], repositoryRoot, environment);
-    expect(stopped).toEqual({ exitCode: 0, stderr: "", stdout: "Stackyard stopped.\n" });
+    const stopped = await runCli(["stop", projectRoot], temporaryRoot, environment);
+    expect(stopped).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: "Project 'run-fixture' is stopped.\n",
+    });
     expect(await activeRun.exited).toBe(0);
     expect(await runError).toBe("");
     expect(await runOutput).toContain("run-fixture is running. Dashboard:");
+    expect((await readLocator(runtimeDirectory))?.instanceId).toBe(first.instanceId);
+
+    const repeatedProjectStop = await runCli(["stop"], projectRoot, environment);
+    expect(repeatedProjectStop).toEqual(stopped);
+
+    const daemonStopped = await runCli(["daemon", "stop"], temporaryRoot, environment);
+    expect(daemonStopped).toEqual({ exitCode: 0, stderr: "", stdout: "Stackyard stopped.\n" });
     await waitFor(async () =>
       (await readLocator(runtimeDirectory)) === undefined && !isProcessAlive(first.pid)
         ? true
@@ -82,7 +117,7 @@ test("Stackyard starts globally, reuses one daemon, and stops idempotently", asy
     );
     daemonPid = undefined;
 
-    const repeatedStop = await runCli(["stop"], temporaryRoot, environment);
+    const repeatedStop = await runCli(["daemon", "stop"], temporaryRoot, environment);
     expect(repeatedStop).toEqual({
       exitCode: 0,
       stderr: "",
@@ -90,7 +125,7 @@ test("Stackyard starts globally, reuses one daemon, and stops idempotently", asy
     });
 
     foreground = Bun.spawn({
-      cmd: [process.execPath, cliEntrypoint, "start", "--foreground"],
+      cmd: [process.execPath, cliEntrypoint, "daemon", "start", "--foreground"],
       cwd: temporaryRoot,
       env: environment,
       stderr: "pipe",
@@ -103,13 +138,13 @@ test("Stackyard starts globally, reuses one daemon, and stops idempotently", asy
     daemonPid = attached.pid;
     expect(attached.pid).toBe(foreground.pid);
 
-    const reusedForeground = await runCli(["start"], repositoryRoot, environment);
+    const reusedForeground = await runCli(["daemon", "start"], repositoryRoot, environment);
     expect(reusedForeground.stdout).toBe(
       `Stackyard is running at http://127.0.0.1:${attached.port}/\n`,
     );
     expect((await readLocator(runtimeDirectory))?.instanceId).toBe(attached.instanceId);
 
-    const stoppedForeground = await runCli(["stop"], repositoryRoot, environment);
+    const stoppedForeground = await runCli(["daemon", "stop"], repositoryRoot, environment);
     expect(stoppedForeground.exitCode).toBe(0);
     expect(await foreground.exited).toBe(0);
     expect(await foregroundError).toBe("");

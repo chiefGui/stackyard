@@ -1,14 +1,17 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { createAddCommand } from "../apps/cli/src/add.ts";
 import { defineCliCommand, runCli, type CliDependencies } from "../apps/cli/src/cli.ts";
+import { createDaemonStatusCommand } from "../apps/cli/src/daemon-status.ts";
+import { createDaemonStopCommand } from "../apps/cli/src/daemon-stop.ts";
+import { createDaemonCommand } from "../apps/cli/src/daemon.ts";
 import { createInspectCommand } from "../apps/cli/src/inspect.ts";
+import { createListCommand } from "../apps/cli/src/list.ts";
 import { createRemoveCommand } from "../apps/cli/src/remove.ts";
 import { createStartCommand } from "../apps/cli/src/start.ts";
-import { createStatusCommand } from "../apps/cli/src/status.ts";
 import { createStopCommand } from "../apps/cli/src/stop.ts";
 import {
   createDiagnostic,
@@ -115,8 +118,9 @@ test("root help identifies the running CLI version", async () => {
   expect(output.join("\n")).toContain(`stackyard v${cliVersion}`);
 });
 
-test("the CLI runs its default command without arguments", async () => {
+test("the CLI prints help without running a command when invoked without arguments", async () => {
   let executions = 0;
+  const output: string[] = [];
   const command = defineCliCommand("default", "SYD9000", {
     meta: { description: "Default command" },
     run() {
@@ -128,13 +132,53 @@ test("the CLI runs its default command without arguments", async () => {
   expect(
     await runCli([], {
       commands: [command],
-      defaultCommand: command,
       diagnostics: { report() {} },
       version: cliVersion,
-      writeOutput() {},
+      writeOutput(value) {
+        output.push(value);
+      },
     }),
   ).toBe(0);
+  expect(executions).toBe(0);
+  expect(output.join("")).toContain("USAGE stackyard");
+  expect(output.join("")).toContain("default");
+});
+
+test("the CLI dispatches nested daemon commands and renders contextual help", async () => {
+  let executions = 0;
+  const output: string[] = [];
+  const diagnostics: Diagnostic[] = [];
+  const start = defineCliCommand(
+    "start",
+    "SYD9000",
+    {
+      meta: { description: "Start test daemon" },
+      run() {
+        executions += 1;
+        return 0;
+      },
+    },
+    "daemon start",
+  );
+  const daemon = createDaemonCommand([start]);
+  const dependencies: CliDependencies = {
+    commands: [daemon],
+    diagnostics: { report: (diagnostic) => diagnostics.push(diagnostic) },
+    version: cliVersion,
+    writeOutput: (value) => output.push(value),
+  };
+
+  expect(await runCli(["daemon", "start"], dependencies)).toBe(0);
   expect(executions).toBe(1);
+  expect(await runCli(["daemon"], dependencies)).toBe(0);
+  expect(output.join("")).toContain("USAGE stackyard daemon");
+  expect(await runCli(["daemon", "unknown"], dependencies)).toBe(1);
+  expect(diagnostics).toMatchObject([
+    {
+      code: "SYD2019",
+      help: "Run 'stackyard daemon --help' to list the available commands.",
+    },
+  ]);
 });
 
 test("unknown CLI commands report actionable diagnostics", async () => {
@@ -254,6 +298,9 @@ test("add sends the current project to the daemon", async () => {
       async remove() {
         throw new Error("Unexpected remove request.");
       },
+      async stop() {
+        throw new Error("Unexpected stop request.");
+      },
     },
     currentDirectory: resolve("C:/projects/demo"),
     diagnostics: { report() {} },
@@ -283,6 +330,9 @@ test("remove forgets only the project and says that files are unchanged", async 
       async remove(target) {
         targets.push(target);
         return success(durableProject());
+      },
+      async stop() {
+        throw new Error("Unexpected stop request.");
       },
     },
     currentDirectory: resolve("C:/projects"),
@@ -318,6 +368,9 @@ test("remove resolves a project directory to its canonical root", async () => {
           targets.push(target);
           return success(durableProject());
         },
+        async stop() {
+          throw new Error("Unexpected stop request.");
+        },
       },
       currentDirectory: temporaryRoot,
       diagnostics: { report() {} },
@@ -331,10 +384,10 @@ test("remove resolves a project directory to its canonical root", async () => {
   }
 });
 
-test("status renders durable project state and supports protocol JSON", async () => {
+test("list renders durable project state and supports protocol JSON", async () => {
   const output: string[] = [];
   const project = durableProject();
-  const command = createStatusCommand({
+  const command = createListCommand({
     client: {
       async add() {
         throw new Error("Unexpected add request.");
@@ -344,6 +397,9 @@ test("status renders durable project state and supports protocol JSON", async ()
       },
       async remove() {
         throw new Error("Unexpected remove request.");
+      },
+      async stop() {
+        throw new Error("Unexpected stop request.");
       },
     },
     diagnostics: { report() {} },
@@ -419,16 +475,16 @@ test("foreground start refuses to pretend it attached to an existing daemon", as
   expect(diagnostics).toMatchObject([
     {
       code: "SYD2016",
-      help: "Run 'stackyard stop', then start Stackyard in the foreground.",
+      help: "Run 'stackyard daemon stop', then start Stackyard in the foreground.",
       message: "Stackyard is already running.",
     },
   ]);
 });
 
-test("stop is idempotent and reports whether a daemon was running", async () => {
+test("daemon stop is idempotent and reports whether a daemon was running", async () => {
   const output: string[] = [];
   const statuses: ("not-running" | "stopped")[] = ["stopped", "not-running"];
-  const command = createStopCommand({
+  const command = createDaemonStopCommand({
     diagnostics: { report() {} },
     async stop() {
       const status = statuses.shift();
@@ -445,6 +501,63 @@ test("stop is idempotent and reports whether a daemon was running", async () => 
   expect(await command.execute([])).toBe(0);
   expect(await command.execute([])).toBe(0);
   expect(output).toEqual(["Stackyard stopped.\n", "Stackyard is not running.\n"]);
+});
+
+test("daemon status reports both lifecycle states", async () => {
+  const output: string[] = [];
+  const locators = [daemonLocator(), undefined];
+  const command = createDaemonStatusCommand({
+    diagnostics: { report() {} },
+    async find() {
+      return success(locators.shift());
+    },
+    writeOutput: (value) => output.push(value),
+  });
+
+  expect(await command.execute([])).toBe(0);
+  expect(await command.execute([])).toBe(0);
+  expect(output).toEqual([
+    "Stackyard is running at http://127.0.0.1:4310/\nPID: 123\n",
+    "Stackyard is not running.\n",
+  ]);
+});
+
+test("stop resolves the project containing the current directory", async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-stop-"));
+  const projectRoot = join(temporaryRoot, "project");
+  const nestedDirectory = join(projectRoot, "src");
+  const targets: string[] = [];
+
+  try {
+    await mkdir(join(projectRoot, "stackyard"), { recursive: true });
+    await mkdir(nestedDirectory);
+    await writeFile(join(projectRoot, "stackyard", "main.ts"), "export {};\n");
+    const command = createStopCommand({
+      client: {
+        async add() {
+          throw new Error("Unexpected add request.");
+        },
+        async list() {
+          throw new Error("Unexpected list request.");
+        },
+        async remove() {
+          throw new Error("Unexpected remove request.");
+        },
+        async stop(target) {
+          targets.push(target);
+          return success(durableProject());
+        },
+      },
+      currentDirectory: nestedDirectory,
+      diagnostics: { report() {} },
+      writeOutput() {},
+    });
+
+    expect(await command.execute([])).toBe(0);
+    expect(targets).toEqual([await realpath(projectRoot)]);
+  } finally {
+    await rm(temporaryRoot, { force: true, recursive: true });
+  }
 });
 
 function durableProject(): Project {

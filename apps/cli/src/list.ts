@@ -4,25 +4,25 @@ import type { Project } from "@stackyard/protocol";
 import { defineCliCommand, type CliCommand } from "./cli.ts";
 import type { ProjectClient } from "./project-client.ts";
 
-export interface StatusCommandDependencies {
+export interface ListCommandDependencies {
   readonly client: ProjectClient;
   readonly diagnostics: DiagnosticSink;
   writeOutput(output: string): void;
 }
 
-export function createStatusCommand(dependencies: StatusCommandDependencies): CliCommand {
-  return defineCliCommand("status", "SYD2015", {
+export function createListCommand(dependencies: ListCommandDependencies): CliCommand {
+  return defineCliCommand("list", "SYD2015", {
     args: {
       json: { description: "Print compact JSON", type: "boolean" },
     },
     meta: { description: "List projects" },
     run({ args }) {
-      return showStatus(args.json ?? false, dependencies);
+      return listProjects(args.json ?? false, dependencies);
     },
   });
 }
 
-async function showStatus(json: boolean, dependencies: StatusCommandDependencies): Promise<number> {
+async function listProjects(json: boolean, dependencies: ListCommandDependencies): Promise<number> {
   const listed = await dependencies.client.list();
   if (!listed.success) {
     reportDiagnostics(dependencies.diagnostics, listed.diagnostics);
