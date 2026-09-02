@@ -56,10 +56,10 @@ export interface ControlServerOptions {
   readonly isShuttingDown: () => boolean;
   readonly manager: ProjectManager;
   readonly port: number;
-  readonly projects?: Projects;
+  readonly projects: Projects;
+  readonly requestShutdown: () => void;
   readonly token: string;
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
-  readonly requestShutdown?: () => void;
   onClose(socket: Bun.ServerWebSocket<ControlData>): void;
   onOpen(socket: Bun.ServerWebSocket<ControlData>): void;
 }
@@ -107,9 +107,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         }
 
         if (url.pathname === "/api/v1/shutdown") {
-          if (!options.requestShutdown) {
-            return secureResponse("Not found.", { status: 404 });
-          }
           if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
             return secureResponse("Unauthorized.", { status: 401 });
           }
@@ -123,9 +120,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         }
 
         if (url.pathname === "/api/v1/projects/stop") {
-          if (!options.projects) {
-            return secureResponse("Not found.", { status: 404 });
-          }
           if (request.headers.get("authorization") !== `Bearer ${options.token}`) {
             return secureResponse("Unauthorized.", { status: 401 });
           }
@@ -139,9 +133,6 @@ export function startControlServer(options: ControlServerOptions): Result<Bun.Se
         }
 
         if (url.pathname === "/api/v1/projects") {
-          if (!options.projects) {
-            return secureResponse("Not found.", { status: 404 });
-          }
           if (request.method === "GET") {
             return secureJson(createProjectList({ projects: options.projects.list() }));
           }
@@ -367,7 +358,7 @@ async function handleControlMessage(
   socket: Bun.ServerWebSocket<ControlData>,
   parsed: Result<DaemonClientMessage>,
   acceptedStart: boolean,
-  projects: Projects | undefined,
+  projects: Projects,
   diagnostics: DiagnosticSink,
 ): Promise<void> {
   if (!parsed.success) {
@@ -412,18 +403,6 @@ async function handleControlMessage(
     return;
   }
   if (socket.data.stopRequested) {
-    return;
-  }
-
-  if (!projects) {
-    sendFailure(
-      socket,
-      createDiagnostic({
-        code: "SYD3009",
-        help: "Start the managed Stackyard daemon, then retry.",
-        message: "The daemon does not have a project catalog.",
-      }),
-    );
     return;
   }
 

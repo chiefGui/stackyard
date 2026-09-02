@@ -303,25 +303,6 @@ describe("HTTP server", () => {
     }
   });
 
-  test("does not advertise projects when the daemon mode lacks a catalog", async () => {
-    const result = startTestServer(0, undefined, undefined, null);
-    if (!result.success) {
-      throw new Error("The test server could not start.");
-    }
-
-    try {
-      const listed = await fetch(new URL("/api/v1/projects", result.output.url));
-      expect(listed.status).toBe(404);
-
-      const added = await fetch(new URL("/api/v1/projects", result.output.url), {
-        method: "POST",
-      });
-      expect(added.status).toBe(404);
-    } finally {
-      await result.output.stop(true);
-    }
-  });
-
   test("cleans up a project when its control lease disconnects during startup", async () => {
     const processes = new BlockingProcesses();
     const manager = new ProjectManager({
@@ -682,12 +663,10 @@ function startTestServer(
     processes: new BunProcessHost({ report() {} }),
   }),
   onOpen: Parameters<typeof startControlServer>[0]["onOpen"] = () => {},
-  projects: Projects | null = testProjects(manager),
+  projects: Projects = testProjects(manager),
   requestShutdown?: () => void,
 ) {
   return startControlServer({
-    ...(projects ? { projects } : {}),
-    ...(requestShutdown ? { requestShutdown } : {}),
     diagnostics: { report() {} },
     instanceId: "test-daemon",
     isShuttingDown: () => false,
@@ -695,6 +674,8 @@ function startTestServer(
     onClose() {},
     onOpen,
     port,
+    projects,
+    requestShutdown: requestShutdown ?? (() => {}),
     token: "test-token",
   });
 }

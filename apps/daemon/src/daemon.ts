@@ -33,7 +33,7 @@ export interface RunningDaemon {
   readonly port: number;
   readonly shutdownRequested: Promise<void>;
   readonly token: string;
-  readonly url: URL;
+  readonly url: string;
   close(): Promise<Result<void>>;
 }
 
@@ -55,7 +55,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Result<Runnin
   const projects = new ProjectOrchestrator(catalog, manager);
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
   const token = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
-  const { promise: shutdownRequested, resolve: finishShutdownRequest } =
+  const { promise: shutdownRequested, resolve: resolveShutdownRequest } =
     Promise.withResolvers<void>();
   let shuttingDown = false;
   const requestShutdown = (): void => {
@@ -64,7 +64,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Result<Runnin
     }
     shuttingDown = true;
     // Defer teardown long enough for the shutdown response to reach its caller.
-    setTimeout(finishShutdownRequest);
+    setTimeout(resolveShutdownRequest);
   };
   const started = startControlServer({
     diagnostics: options.diagnostics,
@@ -112,19 +112,19 @@ export async function startDaemon(options: DaemonOptions): Promise<Result<Runnin
   }
 
   let closing: Promise<Result<void>> | undefined;
+  const close = (): Promise<Result<void>> => {
+    shuttingDown = true;
+    closing ??= closeDaemon(server, manager, catalog, sockets, options.diagnostics);
+    return closing;
+  };
   return success(
     Object.freeze({
-      close(): Promise<Result<void>> {
-        closing ??= closeDaemon(server, manager, catalog, sockets, options.diagnostics, () => {
-          shuttingDown = true;
-        });
-        return closing;
-      },
+      close,
       instanceId: options.instanceId,
       port: server.port,
       shutdownRequested,
       token,
-      url: new URL(server.url),
+      url: server.url.href,
     }),
   );
 }
@@ -135,9 +135,7 @@ async function closeDaemon(
   catalog: ProjectCatalog,
   sockets: ReadonlySet<Bun.ServerWebSocket<ControlData>>,
   diagnostics: DiagnosticSink,
-  markShuttingDown: () => void,
 ): Promise<Result<void>> {
-  markShuttingDown();
   const failures: Diagnostic[] = [];
   try {
     await closeControlServer(manager, sockets, diagnostics);

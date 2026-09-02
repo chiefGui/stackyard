@@ -7,21 +7,19 @@ import {
   describeError,
   formatDiagnostic,
   reportDiagnostics,
+  type DiagnosticSink,
 } from "../packages/diagnostics/src/index.ts";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
-const diagnostics = {
-  report(diagnostic: Parameters<typeof formatDiagnostic>[0]) {
+const diagnostics: DiagnosticSink = {
+  report(diagnostic) {
     process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
   },
 };
 
-const developmentExitCode = await runDevelopmentEnvironment();
-if (developmentExitCode !== 0) {
-  process.exit(developmentExitCode);
-}
+process.exit(await runDevelopment());
 
-async function runDevelopmentEnvironment(): Promise<number> {
+async function runDevelopment(): Promise<number> {
   const { promise: shutdownSignaled, resolve: finishShutdownSignal } =
     Promise.withResolvers<void>();
   const requestShutdown = (): void => finishShutdownSignal();
@@ -32,8 +30,8 @@ async function runDevelopmentEnvironment(): Promise<number> {
   process.once("SIGTERM", requestShutdown);
 
   try {
-    const apiPort = readDevelopmentPort("STACKYARD_API_PORT", 3000);
-    const dashboardPort = readDevelopmentPort("STACKYARD_DASHBOARD_PORT", 5173);
+    const apiPort = readPort("STACKYARD_API_PORT", 3000);
+    const dashboardPort = readPort("STACKYARD_DASHBOARD_PORT", 5173);
     const started = await startDaemon({
       dataDirectory: join(repositoryRoot, ".stackyard", "development"),
       diagnostics,
@@ -48,7 +46,7 @@ async function runDevelopmentEnvironment(): Promise<number> {
     daemon = started.output;
 
     await registerRepository(daemon);
-    process.env.STACKYARD_CONTROL_URL = daemon.url.href;
+    process.env.STACKYARD_CONTROL_URL = daemon.url;
     dashboard = await createServer({
       clearScreen: false,
       configFile: join(repositoryRoot, "apps", "dashboard-web", "vite.config.ts"),
@@ -61,7 +59,7 @@ async function runDevelopmentEnvironment(): Promise<number> {
     });
     await dashboard.listen();
 
-    process.stdout.write(`API:       ${daemon.url.href}\n`);
+    process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
     await Promise.race([shutdownSignaled, daemon.shutdownRequested]);
   } catch (error) {
@@ -103,7 +101,7 @@ async function registerRepository(daemon: RunningDaemon): Promise<void> {
   }
 }
 
-function readDevelopmentPort(name: string, fallback: number): number {
+function readPort(name: string, fallback: number): number {
   const input = process.env[name];
   const port = input === undefined ? fallback : Number(input);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
