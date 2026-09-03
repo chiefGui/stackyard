@@ -1,8 +1,22 @@
 import { expect, test } from "bun:test";
 import { join, resolve } from "node:path";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
-import { evaluateProject } from "../packages/project-loader/src/evaluation.ts";
-import { captureProcessOutput } from "../packages/project-loader/src/process-output.ts";
+import { createDiagnostic, failure } from "../packages/diagnostics/src/index.ts";
+import {
+  makeBunProjectEvaluatorLayer,
+  ProjectEvaluationTimeout,
+} from "../packages/project-loader/src/bun-project-evaluator.ts";
+import {
+  evaluateProject,
+  ProjectEvaluator,
+} from "../packages/project-loader/src/project-evaluator.ts";
+import { loadProjectEffect } from "../packages/project-loader/src/load.ts";
+import {
+  captureProcessOutput,
+  emptyCapturedProcessOutput,
+} from "../packages/project-loader/src/process-output.ts";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 
@@ -23,12 +37,42 @@ test("process output is drained while retained output stays bounded", async () =
   expect(Object.isFrozen(output)).toBeTrue();
 });
 
-test("evaluator infrastructure failures become diagnostics", async () => {
-  const output = await evaluateProject(
-    "unused-evaluator.ts",
-    "unused-project.ts",
-    join(repositoryRoot, "tests/fixtures/project-that-does-not-exist"),
+test("project loading is independent of the evaluator implementation", async () => {
+  const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
+  const evaluator = Layer.succeed(
+    ProjectEvaluator,
+    ProjectEvaluator.of({
+      evaluate: () =>
+        Effect.succeed({
+          result: failure(
+            createDiagnostic({
+              code: "SYD2007",
+              message: "The supplied project evaluator was used.",
+            }),
+          ),
+          stderr: emptyCapturedProcessOutput(),
+          stdout: emptyCapturedProcessOutput(),
+        }),
+    }),
   );
+  const output = await Effect.runPromise(
+    loadProjectEffect({
+      currentDirectory: projectRoot,
+      path: projectRoot,
+    }).pipe(Effect.provide(evaluator)),
+  );
+
+  expect(output.result.success).toBeFalse();
+  if (!output.result.success) {
+    expect(output.result.diagnostics[0]?.message).toBe("The supplied project evaluator was used.");
+  }
+});
+
+test("evaluator infrastructure failures become diagnostics", async () => {
+  const output = await runEvaluation({
+    entrypoint: "unused-project.ts",
+    projectRoot: join(repositoryRoot, "tests/fixtures/project-that-does-not-exist"),
+  });
 
   expect(output.result.success).toBeFalse();
   if (!output.result.success) {
@@ -42,11 +86,10 @@ test("evaluator infrastructure failures become diagnostics", async () => {
 
 test("evaluator failures are normalized at the IPC boundary", async () => {
   const projectRoot = join(repositoryRoot, "tests/fixtures/invalid-project");
-  const output = await evaluateProject(
-    join(repositoryRoot, "apps/cli/src/main.ts"),
-    join(projectRoot, "stackyard/main.ts"),
+  const output = await runEvaluation({
+    entrypoint: join(projectRoot, "stackyard/main.ts"),
     projectRoot,
-  );
+  });
 
   expect(output.result.success).toBeFalse();
   if (!output.result.success) {
@@ -57,16 +100,42 @@ test("evaluator failures are normalized at the IPC boundary", async () => {
   }
 });
 
+test("evaluation timeouts stop the evaluator and become diagnostics", async () => {
+  const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
+  const output = await runEvaluation(
+    {
+      entrypoint: join(projectRoot, "stackyard/main.ts"),
+      projectRoot,
+    },
+    0,
+  );
+
+  expect(output.result.success).toBeFalse();
+  if (!output.result.success) {
+    expect(output.result.diagnostics[0]?.code).toBe("SYD2001");
+  }
+});
+
 test("evaluator waits until the parent receives its IPC result", async () => {
   const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
-  const evaluated = evaluateProject(
-    join(repositoryRoot, "apps/cli/src/main.ts"),
-    join(projectRoot, "stackyard/main.ts"),
+  const evaluated = runEvaluation({
+    entrypoint: join(projectRoot, "stackyard/main.ts"),
     projectRoot,
-  );
+  });
 
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
 
   const output = await evaluated;
   expect(output.result.success).toBeTrue();
 });
+
+function runEvaluation(input: Parameters<typeof evaluateProject>[0], timeoutMilliseconds?: number) {
+  const evaluation = evaluateProject(input).pipe(
+    Effect.provide(makeBunProjectEvaluatorLayer(join(repositoryRoot, "apps/cli/src/main.ts"))),
+  );
+  return Effect.runPromise(
+    timeoutMilliseconds === undefined
+      ? evaluation
+      : evaluation.pipe(Effect.provideService(ProjectEvaluationTimeout, timeoutMilliseconds)),
+  );
+}

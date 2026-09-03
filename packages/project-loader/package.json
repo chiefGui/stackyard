@@ -13,7 +13,8 @@
   "dependencies": {
     "@stackyard/diagnostics": "workspace:*",
     "@stackyard/protocol": "workspace:*",
-    "@stackyard/sdk": "workspace:*"
+    "@stackyard/sdk": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
