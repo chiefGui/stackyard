@@ -1,5 +1,5 @@
 import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
-import { Effect, Ref } from "effect";
+import { Effect } from "effect";
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
 import {
@@ -24,17 +24,14 @@ export interface ManagedDaemonOptions {
 export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
   options: ManagedDaemonOptions,
 ): Effect.fn.Return<number> {
-  const cleanupFailed = yield* Ref.make(false);
+  let cleanupFailed = false;
   const reportCleanupFailure: ReportCleanupFailure = (diagnostic) =>
-    Ref.set(cleanupFailed, true).pipe(
-      Effect.andThen(
-        Effect.sync(() => {
-          options.diagnostics.report(diagnostic);
-        }),
-      ),
-    );
+    Effect.sync(() => {
+      cleanupFailed = true;
+      options.diagnostics.report(diagnostic);
+    });
 
-  const exitCode = yield* manageDaemon(options, reportCleanupFailure).pipe(
+  return yield* manageDaemon(options, reportCleanupFailure).pipe(
     Effect.scoped,
     Effect.matchEffect({
       onFailure: (diagnostics) =>
@@ -42,10 +39,9 @@ export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
           reportDiagnostics(options.diagnostics, diagnostics);
           return 1;
         }),
-      onSuccess: () => Effect.succeed(0),
+      onSuccess: () => Effect.succeed(cleanupFailed ? 1 : 0),
     }),
   );
-  return (yield* Ref.get(cleanupFailed)) ? 1 : exitCode;
 });
 
 const manageDaemon = Effect.fn("manageDaemon")(function* (
