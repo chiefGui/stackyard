@@ -4,7 +4,7 @@ import { createDiagnostic, failure, isDiagnosticError, type Result } from "@stac
 import type { ProjectSpec } from "@stackyard/protocol";
 import { readProjectDefinition } from "@stackyard/sdk";
 
-import { createEvaluationMessage, isEvaluationAcknowledgement } from "./evaluation.ts";
+import { createEvaluationMessage, isEvaluationAcknowledgement } from "./evaluation-protocol.ts";
 
 export async function runProjectEvaluator(entrypoint: string): Promise<number> {
   let result: Result<ProjectSpec>;
