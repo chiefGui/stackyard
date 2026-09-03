@@ -17,6 +17,8 @@ import {
   projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
+import { BunRuntime } from "@effect/platform-bun";
+import { Effect } from "effect";
 
 import packageManifest from "../package.json" with { type: "json" };
 import { runCli } from "./cli.ts";
@@ -41,19 +43,29 @@ if (command === internalDaemonCommand) {
 }
 const diagnostics = createDiagnosticSink(diagnosticsPath);
 
-process.exitCode = await main();
+if (command === internalDaemonCommand) {
+  BunRuntime.runMain(
+    runDaemon().pipe(
+      Effect.tap((exitCode) =>
+        Effect.sync(() => {
+          process.exitCode = exitCode;
+        }),
+      ),
+      Effect.asVoid,
+    ),
+  );
+} else {
+  process.exitCode = await main();
+}
 
 function main(): Promise<number> {
-  if (command === internalDaemonCommand) {
-    return runDaemon();
-  }
   if (command === projectEvaluatorCommand) {
     return runProjectEvaluator(commandArguments[0] ?? "");
   }
   return runPublicCli();
 }
 
-function runDaemon(): Promise<number> {
+function runDaemon(): Effect.Effect<number> {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
     configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
@@ -72,12 +84,14 @@ function runPublicCli(): Promise<number> {
     diagnostics,
     find: () => findDaemon(),
     runForeground: (onStarted) =>
-      runManagedDaemon({
-        dashboardWebDirectory,
-        diagnostics,
-        evaluatorEntrypoint: cliEntrypoint,
-        onStarted,
-      }),
+      runForegroundDaemon(
+        runManagedDaemon({
+          dashboardWebDirectory,
+          diagnostics,
+          evaluatorEntrypoint: cliEntrypoint,
+          onStarted,
+        }),
+      ),
     start: () => ensureDaemon(daemonOptions),
     writeOutput,
   });
@@ -131,6 +145,21 @@ function runPublicCli(): Promise<number> {
     diagnostics,
     version: packageManifest.version,
     writeOutput,
+  });
+}
+
+function runForegroundDaemon(program: Effect.Effect<number>): Promise<number> {
+  return new Promise((resolveExitCode) => {
+    BunRuntime.runMain(
+      program.pipe(
+        Effect.tap((exitCode) =>
+          Effect.sync(() => {
+            resolveExitCode(exitCode);
+          }),
+        ),
+        Effect.asVoid,
+      ),
+    );
   });
 }
 

@@ -15,7 +15,8 @@
     "@stackyard/control-plane": "workspace:*",
     "@stackyard/diagnostics": "workspace:*",
     "@stackyard/project-loader": "workspace:*",
-    "@stackyard/protocol": "workspace:*"
+    "@stackyard/protocol": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
