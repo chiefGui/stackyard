@@ -4,7 +4,7 @@ import { createDiagnostic, failure, isDiagnosticError, type Result } from "@stac
 import type { ProjectSpec } from "@stackyard/protocol";
 import { readProjectDefinition } from "@stackyard/sdk";
 
-import { createEvaluationMessage } from "./evaluation.ts";
+import { createEvaluationMessage, isEvaluationAcknowledgement } from "./evaluation.ts";
 
 export async function runProjectEvaluator(entrypoint: string): Promise<number> {
   let result: Result<ProjectSpec>;
@@ -41,8 +41,18 @@ async function sendResult(result: Result<ProjectSpec>): Promise<void> {
     throw new Error("The project evaluator requires an IPC channel.");
   }
 
-  await new Promise<void>((resolve) => {
-    process.send?.(createEvaluationMessage(result), () => resolve());
-  });
-  process.disconnect?.();
+  const { promise: acknowledged, resolve: acknowledge } = Promise.withResolvers<void>();
+  const receiveAcknowledgement = (message: unknown): void => {
+    if (isEvaluationAcknowledgement(message)) {
+      acknowledge();
+    }
+  };
+  process.on("message", receiveAcknowledgement);
+  try {
+    process.send(createEvaluationMessage(result));
+    await acknowledged;
+  } finally {
+    process.off("message", receiveAcknowledgement);
+    process.disconnect?.();
+  }
 }

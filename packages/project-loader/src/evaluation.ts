@@ -14,6 +14,7 @@ import {
 import { projectEvaluatorCommand } from "./worker-command.ts";
 
 const evaluationTimeoutMilliseconds = 10_000;
+const evaluationAcknowledgementType = "stackyard:evaluation-acknowledged";
 const evaluationMessageType = "stackyard:evaluation";
 
 export interface EvaluationOutput {
@@ -42,6 +43,7 @@ export async function evaluateProject(
       const received = readEvaluationMessage(value);
       if (received) {
         message = received;
+        subprocess?.send({ type: evaluationAcknowledgementType });
       }
     });
 
@@ -152,6 +154,15 @@ async function terminateSubprocess(
 
 export function createEvaluationMessage(result: Result<ProjectSpec>): EvaluationMessage {
   return { result, type: evaluationMessageType };
+}
+
+export function isEvaluationAcknowledgement(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === evaluationAcknowledgementType
+  );
 }
 
 function readEvaluationMessage(value: unknown): EvaluationMessage | undefined {

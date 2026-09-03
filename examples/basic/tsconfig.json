@@ -1,9 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "paths": {
-      "stackyard": ["../../apps/cli/src/index.ts"]
-    }
+    "paths": { "stackyard": ["../../apps/cli/src/index.ts"] },
+    "types": ["bun"]
   },
-  "include": ["stackyard/**/*.ts"]
+  "include": ["service.ts", "stackyard/**/*.ts"]
 }
