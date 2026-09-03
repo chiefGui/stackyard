@@ -128,6 +128,7 @@ interface ResourceRuntime {
   readonly endpoints: Map<string, AllocatedEndpoint>;
   readonly logs: ResourceLogFeed;
   readonly name: string;
+  readonly spec: ProcessResourceSpec;
   exit?: ProcessExit;
   exitCode?: number;
   handle?: ProcessHandle;
@@ -229,7 +230,7 @@ export class ProjectManager {
             ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
             name: resource.name,
             state: resource.state,
-            startup: "automatic" as const,
+            startup: resource.spec.startup,
           }),
         ),
       ),
@@ -257,8 +258,8 @@ export class ProjectManager {
       );
     }
 
-    const serviceNames = automaticServiceNames(input.spec);
-    if (serviceNames.length === 0) {
+    const services = automaticServices(input.spec);
+    if (services.length === 0) {
       return failure(
         createDiagnostic({
           code: "SYD4009",
@@ -268,7 +269,7 @@ export class ProjectManager {
       );
     }
 
-    const project = createProject(input, serviceNames, this.#logs);
+    const project = createProject(input, services, this.#logs);
     this.#activeRoots.set(input.root, project);
     this.#activeProjects.set(project.id, project);
     const signal = combineCancellationSignals(input.signal, project.stopSignal);
@@ -285,7 +286,7 @@ export class ProjectManager {
       return this.#resolveStartFailure(project, canceled);
     }
 
-    const allocated = await this.#allocate(project, input.spec, signal);
+    const allocated = await this.#allocate(project, signal);
     if (!allocated.success) {
       return this.#resolveStartFailure(project, allocated);
     }
@@ -337,16 +338,10 @@ export class ProjectManager {
 
   async #allocate(
     project: ProjectRuntime,
-    spec: ProjectSpec,
     signal: CancellationSignal | undefined,
   ): Promise<Result<void>> {
     for (const resource of project.resources) {
-      const resourceSpec = spec.resources[resource.name];
-      if (!resourceSpec) {
-        throw new Error("Runtime resource does not have a project specification.");
-      }
-
-      for (const [name, endpoint] of Object.entries(resourceSpec.endpoints).toSorted(
+      for (const [name, endpoint] of Object.entries(resource.spec.endpoints).toSorted(
         ([left], [right]) => compareNames(left, right),
       )) {
         const canceled = cancellationFailure(signal);
@@ -377,22 +372,18 @@ export class ProjectManager {
   ): Result<readonly ProcessStart[]> {
     const starts: ProcessStart[] = [];
     for (const resource of project.resources) {
-      const spec = input.spec.resources[resource.name];
-      if (!spec) {
-        throw new Error("Runtime resource does not have a project specification.");
-      }
-      const environment = this.#resolveEnvironment(resource.name, spec, project, input);
+      const environment = this.#resolveEnvironment(resource.name, resource.spec, project, input);
       if (!environment.success) {
         resource.state = "failed";
         return environment;
       }
       starts.push({
-        args: spec.command.args,
+        args: resource.spec.command.args,
         env: environment.output,
-        executable: spec.command.executable,
+        executable: resource.spec.command.executable,
         logs: resource.logs,
         projectRoot: project.root,
-        workingDirectory: spec.cwd,
+        workingDirectory: resource.spec.cwd,
       });
     }
     return success(Object.freeze(starts));
@@ -755,7 +746,7 @@ export class ProjectManager {
 
 function createProject(
   input: StartProjectInput,
-  serviceNames: readonly string[],
+  services: readonly (readonly [name: string, spec: ProcessResourceSpec])[],
   logs: ResourceLogStore,
 ): ProjectRuntime {
   let complete!: (completion: ProjectCompletion) => void;
@@ -774,10 +765,11 @@ function createProject(
     id: input.id,
     name: input.spec.name,
     revision: input.revision,
-    resources: serviceNames.map((name) => ({
+    resources: services.map(([name, spec]) => ({
       endpoints: new Map(),
       logs: logs.createFeed(),
       name,
+      spec,
       state: "starting",
       stopRequested: false,
     })),
@@ -789,11 +781,12 @@ function createProject(
   };
 }
 
-function automaticServiceNames(spec: ProjectSpec): readonly string[] {
+function automaticServices(
+  spec: ProjectSpec,
+): readonly (readonly [name: string, spec: ProcessResourceSpec])[] {
   return Object.entries(spec.resources)
     .filter(([, resource]) => resource.startup === "automatic")
-    .map(([name]) => name)
-    .toSorted(compareNames);
+    .toSorted(([left], [right]) => compareNames(left, right));
 }
 
 function combineCancellationSignals(
