@@ -1,8 +1,11 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { createServer, type ViteDevServer } from "vite";
 
 import { startDaemon, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
+import { publishLocator } from "../apps/daemon/src/locator.ts";
 import {
   describeError,
   formatDiagnostic,
@@ -11,6 +14,7 @@ import {
 } from "../packages/diagnostics/src/index.ts";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
+const cliEntrypoint = join(repositoryRoot, "apps", "cli", "src", "main.ts");
 const diagnostics: DiagnosticSink = {
   report(diagnostic) {
     process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
@@ -25,17 +29,21 @@ async function runDevelopment(): Promise<number> {
   const requestShutdown = (): void => finishShutdownSignal();
   let daemon: RunningDaemon | undefined;
   let dashboard: ViteDevServer | undefined;
+  let dataDirectory: string | undefined;
+  let projectProcess: Bun.Subprocess | undefined;
   let exitCode = 0;
   process.once("SIGINT", requestShutdown);
   process.once("SIGTERM", requestShutdown);
 
   try {
+    const projectPath = readProjectPath();
     const apiPort = readPort("STACKYARD_API_PORT", 3000);
     const dashboardPort = readPort("STACKYARD_DASHBOARD_PORT", 5173);
+    dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-development-"));
     const started = await startDaemon({
-      dataDirectory: join(repositoryRoot, ".stackyard", "development"),
+      dataDirectory,
       diagnostics,
-      evaluatorEntrypoint: join(repositoryRoot, "apps", "cli", "src", "main.ts"),
+      evaluatorEntrypoint: cliEntrypoint,
       instanceId: crypto.randomUUID(),
       port: apiPort,
     });
@@ -45,7 +53,16 @@ async function runDevelopment(): Promise<number> {
     }
     daemon = started.output;
 
-    await registerRepository(daemon);
+    if (projectPath) {
+      await publishLocator(dataDirectory, {
+        instanceId: daemon.instanceId,
+        pid: process.pid,
+        port: daemon.port,
+        token: daemon.token,
+      });
+      projectProcess = await startDevelopmentProject(projectPath, dataDirectory);
+      process.stdout.write(`Project:   ${projectPath}\n`);
+    }
     process.env.STACKYARD_CONTROL_URL = daemon.url;
     dashboard = await createServer({
       clearScreen: false,
@@ -68,6 +85,17 @@ async function runDevelopment(): Promise<number> {
   } finally {
     process.off("SIGINT", requestShutdown);
     process.off("SIGTERM", requestShutdown);
+    if (projectProcess) {
+      try {
+        if (projectProcess.exitCode === null) {
+          projectProcess.kill("SIGINT");
+        }
+        await projectProcess.exited;
+      } catch (error) {
+        process.stderr.write(`Development project cleanup failed: ${describeError(error)}\n`);
+        exitCode = 1;
+      }
+    }
     if (dashboard) {
       try {
         await dashboard.close();
@@ -83,22 +111,62 @@ async function runDevelopment(): Promise<number> {
         exitCode = 1;
       }
     }
+    if (dataDirectory) {
+      try {
+        await rm(dataDirectory, { force: true, recursive: true });
+      } catch (error) {
+        process.stderr.write(`Development state cleanup failed: ${describeError(error)}\n`);
+        exitCode = 1;
+      }
+    }
   }
   return exitCode;
 }
 
-async function registerRepository(daemon: RunningDaemon): Promise<void> {
-  const response = await fetch(new URL("api/v1/projects", daemon.url), {
-    body: JSON.stringify({ path: repositoryRoot }),
-    headers: {
-      authorization: `Bearer ${daemon.token}`,
-      "content-type": "application/json",
-    },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(`The development project could not be registered (HTTP ${response.status}).`);
+async function startDevelopmentProject(
+  projectPath: string,
+  runtimeDirectory: string,
+): Promise<Bun.Subprocess> {
+  const environment = {
+    ...stringEnvironment(process.env),
+    STACKYARD_RUNTIME_DIR: runtimeDirectory,
+  };
+  const added = spawnCli(["add", projectPath], environment);
+  if ((await added.exited) !== 0) {
+    throw new Error("The development project could not be added.");
   }
+  return spawnCli(["run", projectPath], environment);
+}
+
+function spawnCli(
+  args: readonly string[],
+  environment: Readonly<Record<string, string>>,
+): Bun.Subprocess {
+  return Bun.spawn({
+    cmd: [process.execPath, cliEntrypoint, ...args],
+    cwd: repositoryRoot,
+    env: environment,
+    stderr: "inherit",
+    stdin: "ignore",
+    stdout: "ignore",
+    windowsHide: true,
+  });
+}
+
+function readProjectPath(): string | undefined {
+  const inputs = Bun.argv.slice(2);
+  if (inputs.length > 1) {
+    throw new Error("Usage: bun dev [project]");
+  }
+  return inputs[0] ? resolve(repositoryRoot, inputs[0]) : undefined;
+}
+
+function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
 }
 
 function readPort(name: string, fallback: number): number {

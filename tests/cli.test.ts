@@ -23,7 +23,9 @@ test("inspect discovers and evaluates a project in an isolated process", async (
   const spec = parsedSpec.output;
   expect(spec.name).toBe("basic");
   expect(spec.schemaVersion).toBe(1);
-  expect(Object.keys(spec.resources)).toEqual(["api", "web"]);
+  expect(Object.keys(spec.resources)).toEqual(["web"]);
+  expect(spec.resources.web?.command).toEqual({ args: ["service.ts"], executable: "bun" });
+  expect(spec.resources.web?.endpoints.http?.port).toEqual({ env: "PORT", kind: "allocated" });
 });
 
 test("Stackyard describes its development workflow through the public project API", async () => {

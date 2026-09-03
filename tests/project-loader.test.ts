@@ -56,3 +56,17 @@ test("evaluator failures are normalized at the IPC boundary", async () => {
     expect(Object.isFrozen(output.result.diagnostics[0])).toBeTrue();
   }
 });
+
+test("evaluator waits until the parent receives its IPC result", async () => {
+  const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
+  const evaluated = evaluateProject(
+    join(repositoryRoot, "apps/cli/src/main.ts"),
+    join(projectRoot, "stackyard/main.ts"),
+    projectRoot,
+  );
+
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
+
+  const output = await evaluated;
+  expect(output.result.success).toBeTrue();
+});
