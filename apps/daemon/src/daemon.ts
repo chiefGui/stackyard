@@ -1,13 +1,13 @@
-import { ProjectManager, ProjectOrchestrator, type ProjectCatalog } from "@stackyard/control-plane";
+import { ProjectManager, ProjectOrchestrator } from "@stackyard/control-plane";
 import {
   createDiagnostic,
   describeError,
-  failure,
-  success,
   type Diagnostic,
   type DiagnosticSink,
+  type NonEmptyDiagnostics,
   type Result,
 } from "@stackyard/diagnostics";
+import { Context, Effect, Layer, Scope } from "effect";
 
 import { BunPortAllocator } from "./ports.ts";
 import { BunProcessHost } from "./processes.ts";
@@ -28,26 +28,49 @@ export interface DaemonOptions {
   readonly handleUnhandledRequest?: UnhandledRequestHandler;
 }
 
-export interface RunningDaemon {
-  readonly instanceId: string;
-  readonly port: number;
-  readonly shutdownRequested: Promise<void>;
-  readonly token: string;
-  readonly url: string;
-  close(): Promise<Result<void>>;
+export class Daemon extends Context.Service<
+  Daemon,
+  {
+    readonly awaitShutdown: Effect.Effect<void>;
+    readonly instanceId: string;
+    readonly port: number;
+    readonly token: string;
+    readonly url: string;
+  }
+>()("stackyard/apps/daemon/Daemon") {}
+
+export type RunningDaemon = Daemon["Service"];
+export type ReportCleanupFailure = (diagnostic: Diagnostic) => Effect.Effect<void>;
+
+export function makeDaemonLayer(
+  options: DaemonOptions,
+  reportCleanupFailure: ReportCleanupFailure,
+): Layer.Layer<Daemon, NonEmptyDiagnostics> {
+  return Layer.effect(Daemon, acquireDaemon(options, reportCleanupFailure));
 }
 
-export async function startDaemon(options: DaemonOptions): Promise<Result<RunningDaemon>> {
-  const openedCatalog = await openProjectCatalog({
-    dataDirectory: options.dataDirectory,
-    diagnostics: options.diagnostics,
-    evaluatorEntrypoint: options.evaluatorEntrypoint,
-  });
-  if (!openedCatalog.success) {
-    return openedCatalog;
-  }
+const acquireDaemon = Effect.fn("acquireDaemon")(function* (
+  options: DaemonOptions,
+  reportCleanupFailure: ReportCleanupFailure,
+): Effect.fn.Return<RunningDaemon, NonEmptyDiagnostics, Scope.Scope> {
+  const catalog = yield* Effect.acquireRelease(
+    acquireResult(
+      () =>
+        openProjectCatalog({
+          dataDirectory: options.dataDirectory,
+          diagnostics: options.diagnostics,
+          evaluatorEntrypoint: options.evaluatorEntrypoint,
+        }),
+      "The project catalog could not open.",
+    ),
+    (openedCatalog) =>
+      releaseDaemonResource(
+        () => openedCatalog.close(),
+        "The project catalog could not close.",
+        reportCleanupFailure,
+      ),
+  );
 
-  const catalog = openedCatalog.output;
   const manager = new ProjectManager({
     ports: new BunPortAllocator(),
     processes: new BunProcessHost(options.diagnostics),
@@ -63,7 +86,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Result<Runnin
       return;
     }
     shuttingDown = true;
-    // Defer teardown long enough for the shutdown response to reach its caller.
+    // Let the accepted shutdown response flush before the scoped server finalizer runs.
     setTimeout(resolveShutdownRequest);
   };
   const started = startControlServer({
@@ -86,74 +109,74 @@ export async function startDaemon(options: DaemonOptions): Promise<Result<Runnin
     token,
   });
   if (!started.success) {
-    try {
-      await catalog.close();
-      return started;
-    } catch (error) {
-      return failure(
-        started.diagnostics[0],
-        ...started.diagnostics.slice(1),
-        createDaemonLifecycleDiagnostic("The project catalog could not close.", error),
-      );
-    }
+    return yield* Effect.fail(started.diagnostics);
   }
 
-  const server = started.output;
+  const server = yield* Effect.acquireRelease(Effect.succeed(started.output), (runningServer) =>
+    Effect.gen(function* () {
+      shuttingDown = true;
+      yield* releaseDaemonResource(
+        () => closeControlServer(manager, sockets, options.diagnostics),
+        "Managed projects could not stop.",
+        reportCleanupFailure,
+      );
+      yield* releaseDaemonResource(
+        () => runningServer.stop(true),
+        "The daemon server could not stop.",
+        reportCleanupFailure,
+      );
+    }),
+  );
   if (server.port === undefined) {
-    await server.stop(true);
-    await catalog.close();
-    return failure(
+    return yield* Effect.fail([
       createDiagnostic({
         code: "SYD3001",
         help: "Restart Stackyard, then retry.",
         message: "The daemon did not expose its allocated port.",
       }),
-    );
+    ] as const);
   }
 
-  let closing: Promise<Result<void>> | undefined;
-  const close = (): Promise<Result<void>> => {
-    shuttingDown = true;
-    closing ??= closeDaemon(server, manager, catalog, sockets, options.diagnostics);
-    return closing;
-  };
-  return success(
-    Object.freeze({
-      close,
-      instanceId: options.instanceId,
-      port: server.port,
-      shutdownRequested,
-      token,
-      url: server.url.href,
-    }),
-  );
-}
+  return Daemon.of({
+    awaitShutdown: Effect.promise(() => shutdownRequested),
+    instanceId: options.instanceId,
+    port: server.port,
+    token,
+    url: server.url.href,
+  });
+});
 
-async function closeDaemon(
-  server: Bun.Server<ControlData>,
-  manager: ProjectManager,
-  catalog: ProjectCatalog,
-  sockets: ReadonlySet<Bun.ServerWebSocket<ControlData>>,
-  diagnostics: DiagnosticSink,
-): Promise<Result<void>> {
-  const failures: Diagnostic[] = [];
-  try {
-    await closeControlServer(manager, sockets, diagnostics);
-  } catch (error) {
-    failures.push(createDaemonLifecycleDiagnostic("Managed projects could not stop.", error));
+const acquireResult = Effect.fn("acquireResult")(function* <T>(
+  operation: () => Promise<Result<T>>,
+  unexpectedMessage: string,
+): Effect.fn.Return<T, NonEmptyDiagnostics> {
+  const result = yield* Effect.tryPromise({
+    try: operation,
+    catch: (error) => lifecycleFailure(unexpectedMessage, error),
+  });
+  if (!result.success) {
+    return yield* Effect.fail(result.diagnostics);
   }
-  try {
-    await server.stop(true);
-  } catch (error) {
-    failures.push(createDaemonLifecycleDiagnostic("The daemon server could not stop.", error));
-  }
-  try {
-    await catalog.close();
-  } catch (error) {
-    failures.push(createDaemonLifecycleDiagnostic("The project catalog could not close.", error));
-  }
-  const first = failures[0];
-  return first ? failure(first, ...failures.slice(1)) : success(undefined);
+  return result.output;
+});
+
+export const releaseDaemonResource = Effect.fn("releaseDaemonResource")(
+  (
+    operation: () => Promise<unknown>,
+    failureMessage: string,
+    reportCleanupFailure: ReportCleanupFailure,
+  ) =>
+    Effect.tryPromise({
+      try: operation,
+      catch: (error) => createDaemonLifecycleDiagnostic(failureMessage, error),
+    }).pipe(
+      Effect.catch((diagnostic) => reportCleanupFailure(diagnostic)),
+      Effect.asVoid,
+    ),
+);
+
+function lifecycleFailure(message: string, error: unknown): NonEmptyDiagnostics {
+  return [createDaemonLifecycleDiagnostic(message, error)];
 }
 
 export function createDaemonLifecycleDiagnostic(message: string, error: unknown): Diagnostic {

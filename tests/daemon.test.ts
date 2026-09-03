@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Cause, Effect, Exit } from "effect";
 
 import { readPort } from "../apps/daemon/src/config.ts";
-import { startDaemon, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
+import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
+import { acquireDaemonLock, readLocator } from "../apps/daemon/src/locator.ts";
+import { runManagedDaemon } from "../apps/daemon/src/managed.ts";
 import { BunPortAllocator } from "../apps/daemon/src/ports.ts";
 import { BunProcessHost } from "../apps/daemon/src/processes.ts";
 import { startControlServer, type Projects } from "../apps/daemon/src/server.ts";
@@ -52,35 +55,114 @@ describe("daemon configuration", () => {
 describe("daemon lifecycle", () => {
   test("starts the catalog-backed server and releases its port", async () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-daemon-"));
-    let daemon: RunningDaemon | undefined;
+    let cleanupFailure: unknown;
+    let port = 0;
     try {
-      const started = await startDaemon({
-        dataDirectory,
-        diagnostics: { report() {} },
-        evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
-        instanceId: "catalog-daemon",
-        port: 0,
-      });
-      expect(started.success).toBeTrue();
-      if (!started.success) {
-        throw new Error("The catalog-backed daemon could not start.");
-      }
-      daemon = started.output;
+      await Effect.runPromise(
+        Daemon.use((daemon) =>
+          Effect.gen(function* () {
+            port = daemon.port;
+            const projects = yield* Effect.promise(() =>
+              fetch(new URL("/api/v1/projects", daemon.url)),
+            );
+            expect(projects.status).toBe(200);
+            expect(yield* Effect.promise(() => projects.json())).toEqual({
+              projects: [],
+              schemaVersion: 1,
+            });
+          }),
+        ).pipe(
+          Effect.provide(
+            makeDaemonLayer(
+              {
+                dataDirectory,
+                diagnostics: { report() {} },
+                evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+                instanceId: "catalog-daemon",
+                port: 0,
+              },
+              (diagnostic) =>
+                Effect.sync(() => {
+                  cleanupFailure = diagnostic;
+                }),
+            ),
+          ),
+        ),
+      );
 
-      const projects = await fetch(new URL("/api/v1/projects", daemon.url));
-      expect(projects.status).toBe(200);
-      expect(await projects.json()).toEqual({ projects: [], schemaVersion: 1 });
-
-      expect((await daemon.close()).success).toBeTrue();
-      expect((await daemon.close()).success).toBeTrue();
-      const rebound = startTestServer(daemon.port);
+      expect(cleanupFailure).toBeUndefined();
+      const rebound = startTestServer(port);
       expect(rebound.success).toBeTrue();
       if (rebound.success) {
         await rebound.output.stop(true);
       }
     } finally {
-      await daemon?.close();
       await rm(dataDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("interrupts the managed daemon and releases its locator and port", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-managed-daemon-"));
+    const runtimeDirectory = join(temporaryRoot, "runtime");
+    const controller = new AbortController();
+    const reported: unknown[] = [];
+    let port = 0;
+
+    try {
+      const exit = await Effect.runPromiseExit(
+        runManagedDaemon({
+          dashboardWebDirectory: resolve(import.meta.dir, "../apps/dashboard-web/dist"),
+          dataDirectory: join(temporaryRoot, "data"),
+          diagnostics: { report: (diagnostic) => reported.push(diagnostic) },
+          evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+          onStarted(locator) {
+            port = locator.port;
+            controller.abort();
+          },
+          runtimeDirectory,
+        }),
+        { signal: controller.signal },
+      );
+
+      expect(Exit.isFailure(exit)).toBeTrue();
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasInterruptsOnly(exit.cause)).toBeTrue();
+      }
+      expect(reported).toEqual([]);
+      await expectManagedResourcesReleased(runtimeDirectory, port);
+    } finally {
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
+  test("releases managed resources when startup fails after publication", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-managed-daemon-"));
+    const runtimeDirectory = join(temporaryRoot, "runtime");
+    const reported: unknown[] = [];
+    let port = 0;
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runManagedDaemon({
+          dashboardWebDirectory: resolve(import.meta.dir, "../apps/dashboard-web/dist"),
+          dataDirectory: join(temporaryRoot, "data"),
+          diagnostics: { report: (diagnostic) => reported.push(diagnostic) },
+          evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+          onStarted(locator) {
+            port = locator.port;
+            throw new Error("Expected startup callback failure.");
+          },
+          runtimeDirectory,
+        }),
+      );
+
+      expect(exitCode).toBe(1);
+      expect(reported).toMatchObject([
+        { code: "SYD3011", message: "The daemon startup callback failed." },
+      ]);
+      await expectManagedResourcesReleased(runtimeDirectory, port);
+    } finally {
+      await rm(temporaryRoot, { force: true, recursive: true });
     }
   });
 });
@@ -655,6 +737,25 @@ describe("service process lifecycle", () => {
     }
   }, 10_000);
 });
+
+async function expectManagedResourcesReleased(
+  runtimeDirectory: string,
+  port: number,
+): Promise<void> {
+  expect(await readLocator(runtimeDirectory)).toBeUndefined();
+  const lock = await acquireDaemonLock(runtimeDirectory, "after-shutdown");
+  expect(lock.success).toBeTrue();
+  if (lock.success) {
+    expect(lock.output).toBeDefined();
+    await lock.output?.release();
+  }
+
+  const rebound = startTestServer(port);
+  expect(rebound.success).toBeTrue();
+  if (rebound.success) {
+    await rebound.output.stop(true);
+  }
+}
 
 function startTestServer(
   port: number,

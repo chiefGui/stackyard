@@ -2,9 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { createServer, type ViteDevServer } from "vite";
 
-import { startDaemon, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
+import { Daemon, makeDaemonLayer, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
 import { publishLocator } from "../apps/daemon/src/locator.ts";
 import {
   describeError,
@@ -28,10 +29,12 @@ async function runDevelopment(): Promise<number> {
     Promise.withResolvers<void>();
   const requestShutdown = (): void => finishShutdownSignal();
   let daemon: RunningDaemon | undefined;
+  let daemonScope: Scope.Closeable | undefined;
   let dashboard: ViteDevServer | undefined;
   let dataDirectory: string | undefined;
   let projectProcess: Bun.Subprocess | undefined;
   let exitCode = 0;
+  let daemonCleanupFailed = false;
   process.once("SIGINT", requestShutdown);
   process.once("SIGTERM", requestShutdown);
 
@@ -40,18 +43,39 @@ async function runDevelopment(): Promise<number> {
     const apiPort = readPort("STACKYARD_API_PORT", 3000);
     const dashboardPort = readPort("STACKYARD_DASHBOARD_PORT", 5173);
     dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-development-"));
-    const started = await startDaemon({
-      dataDirectory,
-      diagnostics,
-      evaluatorEntrypoint: cliEntrypoint,
-      instanceId: crypto.randomUUID(),
-      port: apiPort,
-    });
+    daemonScope = await Effect.runPromise(Scope.make());
+    const started = await Effect.runPromise(
+      Layer.buildWithScope(
+        makeDaemonLayer(
+          {
+            dataDirectory,
+            diagnostics,
+            evaluatorEntrypoint: cliEntrypoint,
+            instanceId: crypto.randomUUID(),
+            port: apiPort,
+          },
+          (diagnostic) =>
+            Effect.sync(() => {
+              daemonCleanupFailed = true;
+              diagnostics.report(diagnostic);
+            }),
+        ),
+        daemonScope,
+      ).pipe(
+        Effect.match({
+          onFailure: (failureDiagnostics) => ({
+            diagnostics: failureDiagnostics,
+            success: false as const,
+          }),
+          onSuccess: (context) => ({ context, success: true as const }),
+        }),
+      ),
+    );
     if (!started.success) {
       reportDiagnostics(diagnostics, started.diagnostics);
       return 1;
     }
-    daemon = started.output;
+    daemon = Context.get(started.context, Daemon);
 
     if (projectPath) {
       await publishLocator(dataDirectory, {
@@ -78,7 +102,12 @@ async function runDevelopment(): Promise<number> {
 
     process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
-    await Promise.race([shutdownSignaled, daemon.shutdownRequested]);
+    await Effect.runPromise(
+      Effect.race(
+        Effect.promise(() => shutdownSignaled),
+        daemon.awaitShutdown,
+      ),
+    );
   } catch (error) {
     process.stderr.write(`Development environment failed: ${describeError(error)}\n`);
     exitCode = 1;
@@ -104,12 +133,11 @@ async function runDevelopment(): Promise<number> {
         exitCode = 1;
       }
     }
-    if (daemon) {
-      const closed = await daemon.close();
-      if (!closed.success) {
-        reportDiagnostics(diagnostics, closed.diagnostics);
-        exitCode = 1;
-      }
+    if (daemonScope) {
+      await Effect.runPromise(Scope.close(daemonScope, Exit.void));
+    }
+    if (daemonCleanupFailed) {
+      exitCode = 1;
     }
     if (dataDirectory) {
       try {
