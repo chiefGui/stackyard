@@ -31,26 +31,27 @@ export interface DaemonOptions {
 export class Daemon extends Context.Service<
   Daemon,
   {
+    readonly awaitShutdown: Effect.Effect<void>;
     readonly instanceId: string;
     readonly port: number;
-    readonly shutdownRequested: Promise<void>;
     readonly token: string;
     readonly url: string;
   }
 >()("stackyard/apps/daemon/Daemon") {}
 
 export type RunningDaemon = Daemon["Service"];
+export type ReportCleanupFailure = (diagnostic: Diagnostic) => Effect.Effect<void>;
 
 export function makeDaemonLayer(
   options: DaemonOptions,
-  reportCleanupFailure: (diagnostic: Diagnostic) => void,
+  reportCleanupFailure: ReportCleanupFailure,
 ): Layer.Layer<Daemon, NonEmptyDiagnostics> {
   return Layer.effect(Daemon, acquireDaemon(options, reportCleanupFailure));
 }
 
 const acquireDaemon = Effect.fn("acquireDaemon")(function* (
   options: DaemonOptions,
-  reportCleanupFailure: (diagnostic: Diagnostic) => void,
+  reportCleanupFailure: ReportCleanupFailure,
 ): Effect.fn.Return<RunningDaemon, NonEmptyDiagnostics, Scope.Scope> {
   const catalog = yield* Effect.acquireRelease(
     acquireResult(
@@ -137,9 +138,9 @@ const acquireDaemon = Effect.fn("acquireDaemon")(function* (
   }
 
   return Daemon.of({
+    awaitShutdown: Effect.promise(() => shutdownRequested),
     instanceId: options.instanceId,
     port: server.port,
-    shutdownRequested,
     token,
     url: server.url.href,
   });
@@ -163,17 +164,13 @@ export const releaseDaemonResource = Effect.fn("releaseDaemonResource")(
   (
     operation: () => Promise<unknown>,
     failureMessage: string,
-    reportCleanupFailure: (diagnostic: Diagnostic) => void,
+    reportCleanupFailure: ReportCleanupFailure,
   ) =>
     Effect.tryPromise({
       try: operation,
       catch: (error) => createDaemonLifecycleDiagnostic(failureMessage, error),
     }).pipe(
-      Effect.catch((diagnostic) =>
-        Effect.sync(() => {
-          reportCleanupFailure(diagnostic);
-        }),
-      ),
+      Effect.catch((diagnostic) => reportCleanupFailure(diagnostic)),
       Effect.asVoid,
     ),
 );

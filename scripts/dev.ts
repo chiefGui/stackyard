@@ -54,10 +54,11 @@ async function runDevelopment(): Promise<number> {
             instanceId: crypto.randomUUID(),
             port: apiPort,
           },
-          (diagnostic) => {
-            daemonCleanupFailed = true;
-            diagnostics.report(diagnostic);
-          },
+          (diagnostic) =>
+            Effect.sync(() => {
+              daemonCleanupFailed = true;
+              diagnostics.report(diagnostic);
+            }),
         ),
         daemonScope,
       ).pipe(
@@ -101,7 +102,12 @@ async function runDevelopment(): Promise<number> {
 
     process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
-    await Promise.race([shutdownSignaled, daemon.shutdownRequested]);
+    await Effect.runPromise(
+      Effect.race(
+        Effect.promise(() => shutdownSignaled),
+        daemon.awaitShutdown,
+      ),
+    );
   } catch (error) {
     process.stderr.write(`Development environment failed: ${describeError(error)}\n`);
     exitCode = 1;

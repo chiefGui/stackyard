@@ -1,5 +1,5 @@
-import { reportDiagnostics, type Diagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
-import { Context, Effect, Layer } from "effect";
+import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
+import { Effect, Ref } from "effect";
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
 import {
@@ -7,6 +7,7 @@ import {
   Daemon,
   makeDaemonLayer,
   releaseDaemonResource,
+  type ReportCleanupFailure,
 } from "./daemon.ts";
 import { resolveStackyardDirectories } from "./directories.ts";
 import { acquireDaemonLock, publishLocator, removeLocator, type DaemonLocator } from "./locator.ts";
@@ -23,13 +24,17 @@ export interface ManagedDaemonOptions {
 export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
   options: ManagedDaemonOptions,
 ): Effect.fn.Return<number> {
-  let cleanupFailed = false;
-  const reportCleanupFailure = (diagnostic: Diagnostic): void => {
-    cleanupFailed = true;
-    options.diagnostics.report(diagnostic);
-  };
+  const cleanupFailed = yield* Ref.make(false);
+  const reportCleanupFailure: ReportCleanupFailure = (diagnostic) =>
+    Ref.set(cleanupFailed, true).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          options.diagnostics.report(diagnostic);
+        }),
+      ),
+    );
 
-  return yield* manageDaemon(options, reportCleanupFailure).pipe(
+  const exitCode = yield* manageDaemon(options, reportCleanupFailure).pipe(
     Effect.scoped,
     Effect.matchEffect({
       onFailure: (diagnostics) =>
@@ -37,14 +42,15 @@ export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
           reportDiagnostics(options.diagnostics, diagnostics);
           return 1;
         }),
-      onSuccess: () => Effect.succeed(cleanupFailed ? 1 : 0),
+      onSuccess: () => Effect.succeed(0),
     }),
   );
+  return (yield* Ref.get(cleanupFailed)) ? 1 : exitCode;
 });
 
 const manageDaemon = Effect.fn("manageDaemon")(function* (
   options: ManagedDaemonOptions,
-  reportCleanupFailure: (diagnostic: Diagnostic) => void,
+  reportCleanupFailure: ReportCleanupFailure,
 ) {
   const directories = resolveStackyardDirectories({
     ...(options.dataDirectory ? { dataOverride: options.dataDirectory } : {}),
@@ -70,24 +76,34 @@ const manageDaemon = Effect.fn("manageDaemon")(function* (
       reportCleanupFailure,
     ),
   );
-  const daemonContext = yield* Layer.build(
-    makeDaemonLayer(
-      {
-        dataDirectory: directories.data,
-        diagnostics: options.diagnostics,
-        evaluatorEntrypoint: options.evaluatorEntrypoint,
-        handleUnhandledRequest: createDashboardWebHandler(options.dashboardWebDirectory),
-        instanceId: lock.instanceId,
-        port: 0,
-      },
-      reportCleanupFailure,
+  return yield* useDaemon(options, directories.runtime, lock.instanceId, reportCleanupFailure).pipe(
+    Effect.provide(
+      makeDaemonLayer(
+        {
+          dataDirectory: directories.data,
+          diagnostics: options.diagnostics,
+          evaluatorEntrypoint: options.evaluatorEntrypoint,
+          handleUnhandledRequest: createDashboardWebHandler(options.dashboardWebDirectory),
+          instanceId: lock.instanceId,
+          port: 0,
+        },
+        reportCleanupFailure,
+      ),
     ),
   );
-  const daemon = Context.get(daemonContext, Daemon);
+});
+
+const useDaemon = Effect.fn("useDaemon")(function* (
+  options: ManagedDaemonOptions,
+  runtimeDirectory: string,
+  instanceId: string,
+  reportCleanupFailure: ReportCleanupFailure,
+) {
+  const daemon = yield* Daemon;
   const locator = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
-        publishLocator(directories.runtime, {
+        publishLocator(runtimeDirectory, {
           instanceId: daemon.instanceId,
           pid: process.pid,
           port: daemon.port,
@@ -100,7 +116,7 @@ const manageDaemon = Effect.fn("manageDaemon")(function* (
     }),
     () =>
       releaseDaemonResource(
-        () => removeLocator(directories.runtime, instanceId),
+        () => removeLocator(runtimeDirectory, instanceId),
         "The daemon locator could not be removed.",
         reportCleanupFailure,
       ),
@@ -110,5 +126,5 @@ const manageDaemon = Effect.fn("manageDaemon")(function* (
     catch: (error) =>
       [createDaemonLifecycleDiagnostic("The daemon startup callback failed.", error)] as const,
   });
-  return yield* Effect.promise(() => daemon.shutdownRequested);
-});
+  return yield* daemon.awaitShutdown;
+}, Effect.scoped);

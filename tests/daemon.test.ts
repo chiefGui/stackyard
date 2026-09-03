@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { Cause, Context, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit } from "effect";
 
 import { readPort } from "../apps/daemon/src/config.ts";
 import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
@@ -59,23 +59,8 @@ describe("daemon lifecycle", () => {
     let port = 0;
     try {
       await Effect.runPromise(
-        Effect.scoped(
+        Daemon.use((daemon) =>
           Effect.gen(function* () {
-            const context = yield* Layer.build(
-              makeDaemonLayer(
-                {
-                  dataDirectory,
-                  diagnostics: { report() {} },
-                  evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
-                  instanceId: "catalog-daemon",
-                  port: 0,
-                },
-                (diagnostic) => {
-                  cleanupFailure = diagnostic;
-                },
-              ),
-            );
-            const daemon = Context.get(context, Daemon);
             port = daemon.port;
             const projects = yield* Effect.promise(() =>
               fetch(new URL("/api/v1/projects", daemon.url)),
@@ -86,6 +71,22 @@ describe("daemon lifecycle", () => {
               schemaVersion: 1,
             });
           }),
+        ).pipe(
+          Effect.provide(
+            makeDaemonLayer(
+              {
+                dataDirectory,
+                diagnostics: { report() {} },
+                evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+                instanceId: "catalog-daemon",
+                port: 0,
+              },
+              (diagnostic) =>
+                Effect.sync(() => {
+                  cleanupFailure = diagnostic;
+                }),
+            ),
+          ),
         ),
       );
 
@@ -128,18 +129,38 @@ describe("daemon lifecycle", () => {
         expect(Cause.hasInterruptsOnly(exit.cause)).toBeTrue();
       }
       expect(reported).toEqual([]);
-      expect(await readLocator(runtimeDirectory)).toBeUndefined();
-      const lock = await acquireDaemonLock(runtimeDirectory, "after-interruption");
-      expect(lock.success).toBeTrue();
-      if (lock.success) {
-        expect(lock.output).toBeDefined();
-        await lock.output?.release();
-      }
-      const rebound = startTestServer(port);
-      expect(rebound.success).toBeTrue();
-      if (rebound.success) {
-        await rebound.output.stop(true);
-      }
+      await expectManagedResourcesReleased(runtimeDirectory, port);
+    } finally {
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
+  });
+
+  test("releases managed resources when startup fails after publication", async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "stackyard-managed-daemon-"));
+    const runtimeDirectory = join(temporaryRoot, "runtime");
+    const reported: unknown[] = [];
+    let port = 0;
+
+    try {
+      const exitCode = await Effect.runPromise(
+        runManagedDaemon({
+          dashboardWebDirectory: resolve(import.meta.dir, "../apps/dashboard-web/dist"),
+          dataDirectory: join(temporaryRoot, "data"),
+          diagnostics: { report: (diagnostic) => reported.push(diagnostic) },
+          evaluatorEntrypoint: resolve(import.meta.dir, "../apps/cli/src/main.ts"),
+          onStarted(locator) {
+            port = locator.port;
+            throw new Error("Expected startup callback failure.");
+          },
+          runtimeDirectory,
+        }),
+      );
+
+      expect(exitCode).toBe(1);
+      expect(reported).toMatchObject([
+        { code: "SYD3011", message: "The daemon startup callback failed." },
+      ]);
+      await expectManagedResourcesReleased(runtimeDirectory, port);
     } finally {
       await rm(temporaryRoot, { force: true, recursive: true });
     }
@@ -716,6 +737,25 @@ describe("service process lifecycle", () => {
     }
   }, 10_000);
 });
+
+async function expectManagedResourcesReleased(
+  runtimeDirectory: string,
+  port: number,
+): Promise<void> {
+  expect(await readLocator(runtimeDirectory)).toBeUndefined();
+  const lock = await acquireDaemonLock(runtimeDirectory, "after-shutdown");
+  expect(lock.success).toBeTrue();
+  if (lock.success) {
+    expect(lock.output).toBeDefined();
+    await lock.output?.release();
+  }
+
+  const rebound = startTestServer(port);
+  expect(rebound.success).toBeTrue();
+  if (rebound.success) {
+    await rebound.output.stop(true);
+  }
+}
 
 function startTestServer(
   port: number,
