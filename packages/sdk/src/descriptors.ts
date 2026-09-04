@@ -62,7 +62,7 @@ export function service<const Endpoints extends EndpointInputRecord = Record<nev
     cwd: options.cwd ?? ".",
     endpoints: { ...options.endpoints },
     env: { ...options.env },
-    startWithProject: options.startWithProject ?? true,
+    startWithProject: options.startWithProject === undefined ? true : options.startWithProject,
   };
 
   const outputs = Object.fromEntries(

@@ -63,6 +63,23 @@ describe("project definitions", () => {
     });
   });
 
+  test("rejects invalid project-start behavior instead of enabling it", () => {
+    expectProjectError(
+      () =>
+        defineProject({
+          name: "example",
+          resources: {
+            worker: service({
+              command: ["bun", "worker.ts"],
+              // @ts-expect-error Exercise runtime validation beyond TypeScript callers.
+              startWithProject: null,
+            }),
+          },
+        }),
+      "SYD1013",
+    );
+  });
+
   test("rejects references to services outside the project", () => {
     const api = service({
       command: ["bun", "api.ts"],
