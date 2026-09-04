@@ -125,7 +125,7 @@ function runDevelopment(): Effect.Effect<number> {
 
     process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
-    yield* Effect.race(awaitShutdownSignal, daemon.awaitShutdown);
+    yield* daemon.awaitShutdown;
   }).pipe(
     Effect.scoped,
     Effect.match({
@@ -144,16 +144,6 @@ function runDevelopment(): Effect.Effect<number> {
     }),
   );
 }
-
-const awaitShutdownSignal = Effect.callback<void>((resume) => {
-  const requestShutdown = (): void => resume(Effect.void);
-  process.once("SIGINT", requestShutdown);
-  process.once("SIGTERM", requestShutdown);
-  return Effect.sync(() => {
-    process.off("SIGINT", requestShutdown);
-    process.off("SIGTERM", requestShutdown);
-  });
-});
 
 const startDashboard = Effect.fn("startDevelopmentDashboard")(function* (
   port: number,
