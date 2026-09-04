@@ -187,7 +187,11 @@ describe("daemon lifecycle", () => {
 describe("HTTP server", () => {
   test("reports an occupied port as a typed failure", async () => {
     const first = await startTestServer();
-    const second = await tryStartTestServer({ port: first.server.port });
+    const occupiedPort = first.server.port;
+    if (occupiedPort === undefined) {
+      throw new Error("Expected the first test server to expose its port.");
+    }
+    const second = await tryStartTestServer({ port: occupiedPort });
 
     expect(second.ok).toBeFalse();
     if (!second.ok) {
