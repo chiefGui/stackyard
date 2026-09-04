@@ -4,24 +4,29 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { createAddCommand } from "../apps/cli/src/add.ts";
-import { defineCliCommand, runCli, type CliDependencies } from "../apps/cli/src/cli.ts";
+import {
+  defineCliCommand,
+  runCli as runCliEffect,
+  type CliCommand,
+  type CliDependencies,
+} from "../apps/cli/src/cli.ts";
 import { createDaemonStatusCommand } from "../apps/cli/src/daemon-status.ts";
 import { createDaemonStopCommand } from "../apps/cli/src/daemon-stop.ts";
 import { createDaemonCommand } from "../apps/cli/src/daemon.ts";
 import { createInspectCommand } from "../apps/cli/src/inspect.ts";
 import { createListCommand } from "../apps/cli/src/list.ts";
+import { ProjectClient } from "../apps/cli/src/project-client.ts";
 import { createRemoveCommand } from "../apps/cli/src/remove.ts";
 import { createStartCommand } from "../apps/cli/src/start.ts";
 import { createStopCommand } from "../apps/cli/src/stop.ts";
-import {
-  createDiagnostic,
-  failure,
-  success,
-  type Diagnostic,
-} from "../packages/diagnostics/src/index.ts";
+import { createDiagnostic, failure, type Diagnostic } from "../packages/diagnostics/src/index.ts";
+import { ProjectEvaluator } from "../packages/project-loader/src/index.ts";
 import { createProjectList, type Project } from "../packages/protocol/src/index.ts";
+import { Effect, Layer } from "effect";
 
 const cliVersion = "1.2.3";
+type TestCliServices = ProjectClient | ProjectEvaluator;
+type TestCliDependencies = CliDependencies<TestCliServices>;
 
 test("the CLI dispatches injected commands without knowing their implementation", async () => {
   const receivedValues: string[] = [];
@@ -32,9 +37,11 @@ test("the CLI dispatches injected commands without knowing their implementation"
       value: { required: true, type: "positional" },
     },
     meta: { description: "A test command" },
-    async run({ args }) {
-      receivedValues.push(args.value);
-      return 7;
+    run({ args }) {
+      return Effect.sync(() => {
+        receivedValues.push(args.value);
+        return 7;
+      });
     },
   });
 
@@ -65,7 +72,7 @@ test("the CLI generates help from the command definitions", async () => {
     },
     meta: { description: "A test command" },
     run() {
-      throw new Error("Help must not run the command.");
+      return Effect.die(new Error("Help must not run the command."));
     },
   });
 
@@ -85,7 +92,7 @@ test("the CLI generates help from the command definitions", async () => {
 
 test("the CLI reports its version through either root flag", async () => {
   const output: string[] = [];
-  const dependencies: CliDependencies = {
+  const dependencies: TestCliDependencies = {
     commands: [],
     diagnostics: {
       report() {
@@ -124,8 +131,10 @@ test("the CLI prints help without running a command when invoked without argumen
   const command = defineCliCommand("default", "SYD9000", {
     meta: { description: "Default command" },
     run() {
-      executions += 1;
-      return 0;
+      return Effect.sync(() => {
+        executions += 1;
+        return 0;
+      });
     },
   });
 
@@ -154,14 +163,16 @@ test("the CLI dispatches nested daemon commands and renders contextual help", as
     {
       meta: { description: "Start test daemon" },
       run() {
-        executions += 1;
-        return 0;
+        return Effect.sync(() => {
+          executions += 1;
+          return 0;
+        });
       },
     },
     "daemon start",
   );
   const daemon = createDaemonCommand([start]);
-  const dependencies: CliDependencies = {
+  const dependencies: TestCliDependencies = {
     commands: [daemon],
     diagnostics: { report: (diagnostic) => diagnostics.push(diagnostic) },
     version: cliVersion,
@@ -209,14 +220,12 @@ test("invalid inspect arguments report the accepted syntax", async () => {
         reportedDiagnostics.push(diagnostic);
       },
     },
-    async loadProject() {
-      throw new Error("Invalid arguments must not load a project.");
-    },
+    loadProject: () => Effect.die(new Error("Invalid arguments must not load a project.")),
     writeError() {},
     writeOutput() {},
   });
 
-  const cliDependencies: CliDependencies = {
+  const cliDependencies: TestCliDependencies = {
     commands: [command],
     diagnostics: {
       report(diagnostic) {
@@ -251,13 +260,12 @@ test("inspect reports when captured project output was truncated", async () => {
         reportedDiagnostics.push(diagnostic);
       },
     },
-    async loadProject() {
-      return {
-        result: failure(createDiagnostic({ code: "SYD9000", message: "Expected failure." })),
+    loadProject: () =>
+      Effect.fail({
+        ...failure(createDiagnostic({ code: "SYD9000", message: "Expected failure." })),
         stderr: { text: "", truncated: false },
         stdout: { text: "partial output", truncated: true },
-      };
-    },
+      }),
     writeError(output) {
       errors.push(output);
     },
@@ -287,29 +295,21 @@ test("add sends the current project to the daemon", async () => {
   const output: string[] = [];
   const project = durableProject();
   const command = createAddCommand({
-    client: {
-      async add(path) {
-        paths.push(path);
-        return success(project);
-      },
-      async list() {
-        throw new Error("Unexpected list request.");
-      },
-      async remove() {
-        throw new Error("Unexpected remove request.");
-      },
-      async stop() {
-        throw new Error("Unexpected stop request.");
-      },
-    },
     currentDirectory: resolve("C:/projects/demo"),
     diagnostics: { report() {} },
     writeOutput(value) {
       output.push(value);
     },
   });
+  const client = projectClient({
+    add: (path) =>
+      Effect.sync(() => {
+        paths.push(path);
+        return project;
+      }),
+  });
 
-  const exitCode = await command.execute([]);
+  const exitCode = await executeProjectCommand(command, [], client);
 
   expect(exitCode).toBe(0);
   expect(paths).toEqual([resolve("C:/projects/demo")]);
@@ -320,29 +320,21 @@ test("remove forgets only the project and says that files are unchanged", async 
   const targets: string[] = [];
   const output: string[] = [];
   const command = createRemoveCommand({
-    client: {
-      async add() {
-        throw new Error("Unexpected add request.");
-      },
-      async list() {
-        throw new Error("Unexpected list request.");
-      },
-      async remove(target) {
-        targets.push(target);
-        return success(durableProject());
-      },
-      async stop() {
-        throw new Error("Unexpected stop request.");
-      },
-    },
     currentDirectory: resolve("C:/projects"),
     diagnostics: { report() {} },
     writeOutput(value) {
       output.push(value);
     },
   });
+  const client = projectClient({
+    remove: (target) =>
+      Effect.sync(() => {
+        targets.push(target);
+        return durableProject();
+      }),
+  });
 
-  expect(await command.execute(["demo"])).toBe(0);
+  expect(await executeProjectCommand(command, ["demo"], client)).toBe(0);
   expect(targets).toEqual(["demo"]);
   expect(output.join("")).toContain("Project files were not changed.");
 });
@@ -357,27 +349,19 @@ test("remove resolves a project directory to its canonical root", async () => {
     await mkdir(projectRoot);
     await symlink(projectRoot, projectLink, process.platform === "win32" ? "junction" : "dir");
     const command = createRemoveCommand({
-      client: {
-        async add() {
-          throw new Error("Unexpected add request.");
-        },
-        async list() {
-          throw new Error("Unexpected list request.");
-        },
-        async remove(target) {
-          targets.push(target);
-          return success(durableProject());
-        },
-        async stop() {
-          throw new Error("Unexpected stop request.");
-        },
-      },
       currentDirectory: temporaryRoot,
       diagnostics: { report() {} },
       writeOutput() {},
     });
+    const client = projectClient({
+      remove: (target) =>
+        Effect.sync(() => {
+          targets.push(target);
+          return durableProject();
+        }),
+    });
 
-    expect(await command.execute(["./project-link"])).toBe(0);
+    expect(await executeProjectCommand(command, ["./project-link"], client)).toBe(0);
     expect(targets).toEqual([await realpath(projectRoot)]);
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });
@@ -388,31 +372,20 @@ test("list renders durable project state and supports protocol JSON", async () =
   const output: string[] = [];
   const project = durableProject();
   const command = createListCommand({
-    client: {
-      async add() {
-        throw new Error("Unexpected add request.");
-      },
-      async list() {
-        return success(createProjectList({ projects: [project] }));
-      },
-      async remove() {
-        throw new Error("Unexpected remove request.");
-      },
-      async stop() {
-        throw new Error("Unexpected stop request.");
-      },
-    },
     diagnostics: { report() {} },
     writeOutput(value) {
       output.push(value);
     },
   });
+  const client = projectClient({
+    list: Effect.succeed(createProjectList({ projects: [project] })),
+  });
 
-  expect(await command.execute([])).toBe(0);
+  expect(await executeProjectCommand(command, [], client)).toBe(0);
   expect(output.join("")).toContain("State: stopped");
   expect(output.join("")).toContain("Services: 1 service");
   output.length = 0;
-  expect(await command.execute(["--json"])).toBe(0);
+  expect(await executeProjectCommand(command, ["--json"], client)).toBe(0);
   expect(JSON.parse(output.join(""))).toEqual(createProjectList({ projects: [project] }));
 });
 
@@ -423,29 +396,29 @@ test("start reports one stable dashboard URL in detached and foreground modes", 
   const locator = daemonLocator();
   const command = createStartCommand({
     diagnostics: { report() {} },
-    async find() {
-      return success(undefined);
-    },
-    async runForeground(onStarted) {
-      foregroundStarts += 1;
-      onStarted(locator);
-      return 0;
-    },
-    async start() {
-      detachedStarts += 1;
-      return success(locator);
-    },
+    find: () => Effect.succeed(undefined),
+    runForeground: (onStarted) =>
+      Effect.sync(() => {
+        foregroundStarts += 1;
+        onStarted(locator);
+        return 0;
+      }),
+    start: () =>
+      Effect.sync(() => {
+        detachedStarts += 1;
+        return locator;
+      }),
     writeOutput(value) {
       output.push(value);
     },
   });
 
-  expect(await command.execute([])).toBe(0);
+  expect(await executePlainCommand(command)).toBe(0);
   expect(detachedStarts).toBe(1);
   expect(output.join("")).toBe("Stackyard is running at http://127.0.0.1:4310/\n");
 
   output.length = 0;
-  expect(await command.execute(["--foreground"])).toBe(0);
+  expect(await executePlainCommand(command, ["--foreground"])).toBe(0);
   expect(foregroundStarts).toBe(1);
   expect(output.join("")).toBe(
     "Stackyard is running at http://127.0.0.1:4310/\nPress Ctrl+C to stop.\n",
@@ -457,20 +430,17 @@ test("foreground start refuses to pretend it attached to an existing daemon", as
   let foregroundStarts = 0;
   const command = createStartCommand({
     diagnostics: { report: (diagnostic) => diagnostics.push(diagnostic) },
-    async find() {
-      return success(daemonLocator());
-    },
-    async runForeground() {
-      foregroundStarts += 1;
-      return 0;
-    },
-    async start() {
-      throw new Error("Unexpected detached start.");
-    },
+    find: () => Effect.succeed(daemonLocator()),
+    runForeground: () =>
+      Effect.sync(() => {
+        foregroundStarts += 1;
+        return 0;
+      }),
+    start: () => Effect.die(new Error("Unexpected detached start.")),
     writeOutput() {},
   });
 
-  expect(await command.execute(["--foreground"])).toBe(1);
+  expect(await executePlainCommand(command, ["--foreground"])).toBe(1);
   expect(foregroundStarts).toBe(0);
   expect(diagnostics).toMatchObject([
     {
@@ -486,20 +456,21 @@ test("daemon stop is idempotent and reports whether a daemon was running", async
   const statuses: ("not-running" | "stopped")[] = ["stopped", "not-running"];
   const command = createDaemonStopCommand({
     diagnostics: { report() {} },
-    async stop() {
-      const status = statuses.shift();
-      if (!status) {
-        throw new Error("Unexpected stop request.");
-      }
-      return success(status);
-    },
+    stop: () =>
+      Effect.sync(() => {
+        const status = statuses.shift();
+        if (!status) {
+          throw new Error("Unexpected stop request.");
+        }
+        return status;
+      }),
     writeOutput(value) {
       output.push(value);
     },
   });
 
-  expect(await command.execute([])).toBe(0);
-  expect(await command.execute([])).toBe(0);
+  expect(await executePlainCommand(command)).toBe(0);
+  expect(await executePlainCommand(command)).toBe(0);
   expect(output).toEqual(["Stackyard stopped.\n", "Stackyard is not running.\n"]);
 });
 
@@ -508,14 +479,12 @@ test("daemon status reports both lifecycle states", async () => {
   const locators = [daemonLocator(), undefined];
   const command = createDaemonStatusCommand({
     diagnostics: { report() {} },
-    async find() {
-      return success(locators.shift());
-    },
+    find: () => Effect.sync(() => locators.shift()),
     writeOutput: (value) => output.push(value),
   });
 
-  expect(await command.execute([])).toBe(0);
-  expect(await command.execute([])).toBe(0);
+  expect(await executePlainCommand(command)).toBe(0);
+  expect(await executePlainCommand(command)).toBe(0);
   expect(output).toEqual([
     "Stackyard is running at http://127.0.0.1:4310/\nPID: 123\n",
     "Stackyard is not running.\n",
@@ -533,27 +502,19 @@ test("stop resolves the project containing the current directory", async () => {
     await mkdir(nestedDirectory);
     await writeFile(join(projectRoot, "stackyard", "main.ts"), "export {};\n");
     const command = createStopCommand({
-      client: {
-        async add() {
-          throw new Error("Unexpected add request.");
-        },
-        async list() {
-          throw new Error("Unexpected list request.");
-        },
-        async remove() {
-          throw new Error("Unexpected remove request.");
-        },
-        async stop(target) {
-          targets.push(target);
-          return success({ kind: "stopped", project: durableProject() } as const);
-        },
-      },
       currentDirectory: nestedDirectory,
       diagnostics: { report() {} },
       writeOutput() {},
     });
+    const client = projectClient({
+      stop: (target) =>
+        Effect.sync(() => {
+          targets.push(target);
+          return { kind: "stopped", project: durableProject() } as const;
+        }),
+    });
 
-    expect(await command.execute([])).toBe(0);
+    expect(await executeProjectCommand(command, [], client)).toBe(0);
     expect(targets).toEqual([await realpath(projectRoot)]);
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });
@@ -563,28 +524,65 @@ test("stop resolves the project containing the current directory", async () => {
 test("stop does not start Stackyard when the daemon is not running", async () => {
   const output: string[] = [];
   const command = createStopCommand({
-    client: {
-      async add() {
-        throw new Error("Unexpected add request.");
-      },
-      async list() {
-        throw new Error("Unexpected list request.");
-      },
-      async remove() {
-        throw new Error("Unexpected remove request.");
-      },
-      async stop() {
-        return success({ kind: "daemon-not-running" } as const);
-      },
-    },
     currentDirectory: resolve("C:/projects"),
     diagnostics: { report() {} },
     writeOutput: (value) => output.push(value),
   });
+  const client = projectClient({
+    stop: () => Effect.succeed({ kind: "daemon-not-running" } as const),
+  });
 
-  expect(await command.execute(["demo"])).toBe(0);
+  expect(await executeProjectCommand(command, ["demo"], client)).toBe(0);
   expect(output).toEqual(["No project is running because Stackyard is not running.\n"]);
 });
+
+function runCli(args: readonly string[], dependencies: TestCliDependencies): Promise<number> {
+  return Effect.runPromise(
+    runCliEffect(args, dependencies).pipe(
+      Effect.provide(
+        Layer.merge(
+          Layer.succeed(ProjectClient, projectClient()),
+          Layer.succeed(
+            ProjectEvaluator,
+            ProjectEvaluator.of({
+              evaluate: () => Effect.die(new Error("Unexpected project evaluation.")),
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+function executePlainCommand(command: CliCommand, args: readonly string[] = []): Promise<number> {
+  return Effect.runPromise(command.execute(args));
+}
+
+function executeProjectCommand(
+  command: CliCommand<ProjectClient>,
+  args: readonly string[],
+  client: ProjectClient["Service"],
+): Promise<number> {
+  return Effect.runPromise(
+    command.execute(args).pipe(Effect.provideService(ProjectClient, client)),
+  );
+}
+
+function projectClient(
+  overrides: Partial<ProjectClient["Service"]> = {},
+): ProjectClient["Service"] {
+  return ProjectClient.of({
+    add: () => unexpectedProjectOperation("add"),
+    list: unexpectedProjectOperation("list"),
+    remove: () => unexpectedProjectOperation("remove"),
+    stop: () => unexpectedProjectOperation("stop"),
+    ...overrides,
+  });
+}
+
+function unexpectedProjectOperation(operation: string) {
+  return Effect.die(new Error(`Unexpected project client ${operation}.`));
+}
 
 function durableProject(): Project {
   return {

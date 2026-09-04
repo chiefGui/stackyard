@@ -1,5 +1,5 @@
 import {
-  type ProjectManager,
+  ProjectManager,
   type RuntimeProject,
   type ResourceLogSnapshot,
   type ResourceLogSource,
@@ -7,6 +7,7 @@ import {
 import { createDiagnosticReport } from "@stackyard/diagnostics";
 import { createProjectList } from "@stackyard/protocol/projects";
 import { createResourceLogBatch, type ResourceLogBatch } from "@stackyard/protocol/resource-logs";
+import { Effect } from "effect";
 
 /* oxlint-disable eslint/no-await-in-loop -- Each pull waits for the next revision in sequence. */
 
@@ -14,17 +15,17 @@ const entriesPerBatch = 256;
 const encoder = new TextEncoder();
 
 export interface ResourceLogHttpOptions {
-  readonly manager: ProjectManager;
   readonly token: string;
   disableRequestTimeout(): void;
   isShuttingDown(): boolean;
 }
 
-export function handleResourceLogHttpRequest(
+export const handleResourceLogHttpRequest = Effect.fn("handleResourceLogHttpRequest")(function* (
   request: Request,
   url: URL,
   options: ResourceLogHttpOptions,
-): Response | undefined {
+): Effect.fn.Return<Response | undefined, never, ProjectManager> {
+  const manager = yield* ProjectManager;
   if (url.pathname === "/api/v1/projects/recent") {
     if (!isAuthorized(request, options.token)) {
       return unauthorizedResponse();
@@ -37,7 +38,7 @@ export function handleResourceLogHttpRequest(
     }
     return Response.json(
       createProjectList({
-        projects: options.manager.listRecentProjects().projects.map(recentProject),
+        projects: (yield* manager.listRecentProjects).projects.map(recentProject),
       }),
       {
         headers: { "cache-control": "no-store" },
@@ -59,7 +60,7 @@ export function handleResourceLogHttpRequest(
     return new Response("Resource log request is invalid.", { status: 400 });
   }
 
-  const source = options.manager.getResourceLogs(target.projectId, target.resourceName);
+  const source = yield* manager.getResourceLogs(target.projectId, target.resourceName);
   if (!source) {
     return new Response("Resource log feed not found.", { status: 404 });
   }
@@ -76,7 +77,7 @@ export function handleResourceLogHttpRequest(
     signal: request.signal,
     source,
   });
-}
+});
 
 function recentProject(project: RuntimeProject) {
   return {
@@ -144,7 +145,9 @@ export function createResourceLogResponse(options: ResourceLogResponseOptions): 
             return;
           }
 
-          await options.source.waitForChange(snapshot.revision, cancellation.signal);
+          await Effect.runPromise(options.source.waitForChange(snapshot.revision), {
+            signal: cancellation.signal,
+          });
         }
         controller.close();
       } catch (error) {

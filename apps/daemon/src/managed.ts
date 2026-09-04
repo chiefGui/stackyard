@@ -1,4 +1,4 @@
-import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
+import { failure, reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
 import { Effect } from "effect";
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
@@ -34,9 +34,9 @@ export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
   return yield* manageDaemon(options, reportCleanupFailure).pipe(
     Effect.scoped,
     Effect.matchEffect({
-      onFailure: (diagnostics) =>
+      onFailure: (failed) =>
         Effect.sync(() => {
-          reportDiagnostics(options.diagnostics, diagnostics);
+          reportDiagnostics(options.diagnostics, failed.diagnostics);
           return 1;
         }),
       onSuccess: () => Effect.succeed(cleanupFailed ? 1 : 0),
@@ -53,22 +53,18 @@ const manageDaemon = Effect.fn("manageDaemon")(function* (
     ...(options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {}),
   });
   const instanceId = crypto.randomUUID();
-  const lockResult = yield* Effect.tryPromise({
-    try: () => acquireDaemonLock(directories.runtime, instanceId),
-    catch: (error) =>
-      [createDaemonLifecycleDiagnostic("The daemon lock could not be acquired.", error)] as const,
-  });
-  if (!lockResult.success) {
-    return yield* Effect.fail(lockResult.diagnostics);
-  }
-  if (!lockResult.output) {
+  const acquiredLock = yield* acquireDaemonLock(directories.runtime, instanceId);
+  if (!acquiredLock) {
     return yield* Effect.void;
   }
 
-  const lock = yield* Effect.acquireRelease(Effect.succeed(lockResult.output), (daemonLock) =>
+  const lock = yield* Effect.acquireRelease(Effect.succeed(acquiredLock), (daemonLock) =>
     releaseDaemonResource(
-      () => daemonLock.release(),
-      "The daemon lock could not be released.",
+      daemonLock.release.pipe(
+        Effect.mapError((error) =>
+          createDaemonLifecycleDiagnostic("The daemon lock could not be released.", error),
+        ),
+      ),
       reportCleanupFailure,
     ),
   );
@@ -97,30 +93,32 @@ const useDaemon = Effect.fn("useDaemon")(function* (
 ) {
   const daemon = yield* Daemon;
   const locator = yield* Effect.acquireRelease(
-    Effect.tryPromise({
-      try: () =>
-        publishLocator(runtimeDirectory, {
-          instanceId: daemon.instanceId,
-          pid: process.pid,
-          port: daemon.port,
-          token: daemon.token,
-        }),
-      catch: (error) =>
-        [
+    publishLocator(runtimeDirectory, {
+      instanceId: daemon.instanceId,
+      pid: process.pid,
+      port: daemon.port,
+      token: daemon.token,
+    }).pipe(
+      Effect.mapError((error) =>
+        failure(
           createDaemonLifecycleDiagnostic("The daemon locator could not be published.", error),
-        ] as const,
-    }),
+        ),
+      ),
+    ),
     () =>
       releaseDaemonResource(
-        () => removeLocator(runtimeDirectory, instanceId),
-        "The daemon locator could not be removed.",
+        removeLocator(runtimeDirectory, instanceId).pipe(
+          Effect.mapError((error) =>
+            createDaemonLifecycleDiagnostic("The daemon locator could not be removed.", error),
+          ),
+        ),
         reportCleanupFailure,
       ),
   );
   yield* Effect.try({
     try: () => options.onStarted?.(locator),
     catch: (error) =>
-      [createDaemonLifecycleDiagnostic("The daemon startup callback failed.", error)] as const,
+      failure(createDaemonLifecycleDiagnostic("The daemon startup callback failed.", error)),
   });
   return yield* daemon.awaitShutdown;
 }, Effect.scoped);

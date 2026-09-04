@@ -1,14 +1,9 @@
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import {
-  createDiagnostic,
-  describeError,
-  failure,
-  success,
-  type Result,
-} from "@stackyard/diagnostics";
+import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import { protocolVersion } from "@stackyard/protocol";
+import { Cause, Effect, Exit, Result as EffectResult, Schema } from "effect";
 
 import { resolveStackyardDirectories } from "./directories.ts";
 
@@ -34,9 +29,28 @@ interface LockOwner {
   readonly pid: number;
 }
 
+const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const port = positiveInteger.check(Schema.isLessThanOrEqualTo(65_535));
+const DaemonLocatorSchema = Schema.Struct({
+  instanceId: Schema.NonEmptyString,
+  pid: positiveInteger,
+  port,
+  protocolVersion: Schema.Literal(protocolVersion),
+  schemaVersion: Schema.Literal(version),
+  token: Schema.NonEmptyString,
+});
+const LocatorProcessSchema = Schema.Struct({
+  pid: positiveInteger,
+  protocolVersion: Schema.optionalKey(positiveInteger),
+});
+const LockOwnerSchema = Schema.Struct({
+  instanceId: Schema.NonEmptyString,
+  pid: positiveInteger,
+});
+
 export interface DaemonLock {
   readonly instanceId: string;
-  release(): Promise<void>;
+  readonly release: Effect.Effect<void, unknown>;
 }
 
 export interface EnsureDaemonOptions {
@@ -55,401 +69,432 @@ export function daemonUrl(locator: Pick<DaemonLocator, "port">): string {
   return `http://${daemonHostname}:${locator.port}/`;
 }
 
-export async function findDaemon(
+export const findDaemon = Effect.fn("findDaemon")(function* (
   options: FindDaemonOptions = {},
-): Promise<Result<DaemonLocator | undefined>> {
+): Effect.fn.Return<DaemonLocator | undefined, Failure> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
-  return findDaemonInDirectory(directories.runtime);
-}
+  return yield* findDaemonInDirectory(directories.runtime);
+});
 
-export async function ensureDaemon(options: EnsureDaemonOptions): Promise<Result<DaemonLocator>> {
+export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
+  options: EnsureDaemonOptions,
+): Effect.fn.Return<DaemonLocator, Failure> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
   const directory = directories.runtime;
-  await mkdir(directory, { mode: 0o700, recursive: true });
+  yield* Effect.tryPromise({
+    try: () => mkdir(directory, { mode: 0o700, recursive: true }),
+    catch: (error) =>
+      daemonUnavailable(`The runtime directory could not be created: ${describeError(error)}`),
+  });
 
-  const active = await findDaemonInDirectory(directory);
-  if (!active.success) {
+  const active = yield* findDaemonInDirectory(directory);
+  if (active) {
     return active;
-  }
-  if (active.output) {
-    return success(active.output);
   }
 
   const diagnosticsPath = join(directory, diagnosticsName);
-  try {
-    await writeFile(diagnosticsPath, "", { encoding: "utf8", mode: 0o600 });
-  } catch (error) {
-    return daemonUnavailable(
-      `The daemon diagnostic log could not be created: ${describeError(error)}`,
-    );
-  }
+  yield* Effect.tryPromise({
+    try: () => writeFile(diagnosticsPath, "", { encoding: "utf8", mode: 0o600 }),
+    catch: (error) =>
+      daemonUnavailable(`The daemon diagnostic log could not be created: ${describeError(error)}`),
+  });
   const environment = stringEnvironment(process.env);
   environment.STACKYARD_DATA_DIR = directories.data;
   environment.STACKYARD_DIAGNOSTICS_PATH = diagnosticsPath;
   environment.STACKYARD_RUNTIME_DIR = directory;
   environment.STACKYARD_DASHBOARD_WEB_DIR = resolve(options.dashboardWebDirectory);
 
-  try {
-    const subprocess = Bun.spawn({
-      cmd: [process.execPath, options.daemonEntrypoint, internalDaemonCommand],
-      detached: true,
-      env: environment,
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "ignore",
-      windowsHide: true,
-    });
-    subprocess.unref();
-  } catch (error) {
-    return daemonUnavailable(await daemonFailureNote(directory, describeError(error)));
-  }
-
-  const locator = await waitForDaemon(directory, Date.now() + 5_000);
-  if (locator) {
-    return success(locator);
-  }
-
-  return daemonUnavailable(
-    await daemonFailureNote(directory, "The daemon did not become ready within five seconds."),
+  const spawned = yield* Effect.try({
+    try: () => {
+      const subprocess = Bun.spawn({
+        cmd: [process.execPath, options.daemonEntrypoint, internalDaemonCommand],
+        detached: true,
+        env: environment,
+        stderr: "ignore",
+        stdin: "ignore",
+        stdout: "ignore",
+        windowsHide: true,
+      });
+      subprocess.unref();
+    },
+    catch: (error) => error,
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
   );
-}
+  if (!spawned.success) {
+    const note = yield* daemonFailureNote(directory, describeError(spawned.error));
+    return yield* Effect.fail(daemonUnavailable(note));
+  }
 
-export async function stopDaemon(
+  const locator = yield* waitForDaemon(directory, 100);
+  if (locator) {
+    return locator;
+  }
+  const note = yield* daemonFailureNote(
+    directory,
+    "The daemon did not become ready within five seconds.",
+  );
+  return yield* Effect.fail(daemonUnavailable(note));
+});
+
+export const stopDaemon = Effect.fn("stopDaemon")(function* (
   options: FindDaemonOptions = {},
-): Promise<Result<StopDaemonStatus>> {
+): Effect.fn.Return<StopDaemonStatus, Failure> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
-  const active = await findDaemonInDirectory(directories.runtime);
-  if (!active.success) {
-    return active;
-  }
-  if (!active.output) {
-    return success("not-running");
+  const locator = yield* findDaemonInDirectory(directories.runtime);
+  if (!locator) {
+    return "not-running";
   }
 
-  const locator = active.output;
-  let response: Response;
-  try {
-    response = await fetch(new URL("api/v1/shutdown", daemonUrl(locator)), {
-      headers: { authorization: `Bearer ${locator.token}` },
-      method: "POST",
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch (error) {
-    return daemonStopFailure(describeError(error));
-  }
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      fetch(new URL("api/v1/shutdown", daemonUrl(locator)), {
+        headers: { authorization: `Bearer ${locator.token}` },
+        method: "POST",
+        signal: AbortSignal.timeout(5_000),
+      }),
+    catch: (error) => daemonStopFailure(describeError(error)),
+  });
   if (response.status !== 202) {
-    return daemonStopFailure(`The daemon returned HTTP ${response.status}.`);
+    return yield* Effect.fail(daemonStopFailure(`The daemon returned HTTP ${response.status}.`));
   }
 
-  let stopped: boolean;
-  try {
-    stopped = await waitForDaemonStop(directories.runtime, locator, Date.now() + 15_000);
-  } catch (error) {
-    return daemonStopFailure(describeError(error));
-  }
-  return stopped
-    ? success("stopped")
-    : daemonStopFailure(`Daemon process ${locator.pid} did not stop within fifteen seconds.`);
-}
-
-async function findDaemonInDirectory(
-  directory: string,
-): Promise<Result<DaemonLocator | undefined>> {
-  try {
-    const current = await readLocator(directory);
-    if (current && (await isReachable(current))) {
-      return success(current);
-    }
-
-    const incompatible = current ? undefined : await readLocatorProcess(directory);
-    if (incompatible && isProcessAlive(incompatible.pid)) {
-      return daemonUnavailable(
-        `Daemon process ${incompatible.pid} uses protocol ${incompatible.protocolVersion ?? "unknown"}; this CLI requires protocol ${protocolVersion}.`,
-      );
-    }
-
-    if (current && isProcessAlive(current.pid)) {
-      return daemonUnavailable(
-        await daemonFailureNote(
-          directory,
-          `Daemon process ${current.pid} is running but did not answer a health check.`,
-        ),
-      );
-    }
-    return success(undefined);
-  } catch (error) {
-    return daemonUnavailable(
-      `The daemon runtime state could not be inspected: ${describeError(error)}`,
+  const stopped = yield* waitForDaemonStop(directories.runtime, locator, 300).pipe(
+    Effect.mapError((error) => daemonStopFailure(describeError(error))),
+  );
+  if (!stopped) {
+    return yield* Effect.fail(
+      daemonStopFailure(`Daemon process ${locator.pid} did not stop within fifteen seconds.`),
     );
   }
-}
+  return "stopped";
+});
 
-export async function acquireDaemonLock(
+const findDaemonInDirectory = Effect.fn("findDaemonInDirectory")(function* (
+  directory: string,
+): Effect.fn.Return<DaemonLocator | undefined, Failure> {
+  const current = yield* readLocator(directory).pipe(
+    Effect.mapError((error) =>
+      daemonUnavailable(`The daemon runtime state could not be inspected: ${describeError(error)}`),
+    ),
+  );
+  if (current && (yield* isReachable(current))) {
+    return current;
+  }
+
+  const incompatible = current ? undefined : yield* readLocatorProcess(directory);
+  if (incompatible && isProcessAlive(incompatible.pid)) {
+    return yield* Effect.fail(
+      daemonUnavailable(
+        `Daemon process ${incompatible.pid} uses protocol ${incompatible.protocolVersion ?? "unknown"}; this CLI requires protocol ${protocolVersion}.`,
+      ),
+    );
+  }
+
+  if (current && isProcessAlive(current.pid)) {
+    const note = yield* daemonFailureNote(
+      directory,
+      `Daemon process ${current.pid} is running but did not answer a health check.`,
+    );
+    return yield* Effect.fail(daemonUnavailable(note));
+  }
+  return undefined;
+});
+
+export const acquireDaemonLock = Effect.fn("acquireDaemonLock")(function* (
   directory: string,
   instanceId: string,
-): Promise<Result<DaemonLock | undefined>> {
-  await mkdir(directory, { mode: 0o700, recursive: true });
-  const lockDirectory = join(directory, lockName);
-  return tryAcquireLock(lockDirectory, instanceId, 100);
-}
+): Effect.fn.Return<DaemonLock | undefined, Failure> {
+  yield* Effect.tryPromise({
+    try: () => mkdir(directory, { mode: 0o700, recursive: true }),
+    catch: lockFailure,
+  });
+  return yield* tryAcquireLock(join(directory, lockName), instanceId, 100);
+});
 
-async function tryAcquireLock(
+const tryAcquireLock = Effect.fn("tryAcquireLock")(function* (
   lockDirectory: string,
   instanceId: string,
   attemptsRemaining: number,
-): Promise<Result<DaemonLock | undefined>> {
-  const published = await publishLockDirectory(lockDirectory, instanceId);
-  if (!published.success) {
-    return published;
-  }
-  if (published.output) {
-    return success({
+): Effect.fn.Return<DaemonLock | undefined, Failure> {
+  const published = yield* publishLockDirectory(lockDirectory, instanceId);
+  if (published) {
+    return {
       instanceId,
-      async release() {
-        const current = await readLockOwner(lockDirectory);
-        if (current?.instanceId === instanceId && current.pid === process.pid) {
-          await rm(lockDirectory, { force: true, recursive: true });
-        }
-      },
-    });
+      release: removeOwnedLock(lockDirectory, instanceId),
+    };
   }
 
-  const owner = await readLockOwner(lockDirectory);
+  const owner = yield* readLockOwner(lockDirectory);
   if (owner && isProcessAlive(owner.pid)) {
-    return success(undefined);
+    return undefined;
   }
-  if (!owner) {
-    const present = await lockExists(lockDirectory);
-    if (!present.success) {
-      return present;
+  if (!owner && !(yield* lockExists(lockDirectory))) {
+    if (attemptsRemaining <= 1) {
+      return yield* Effect.fail(
+        lockFailure(new Error("Concurrent daemon lock publication did not converge.")),
+      );
     }
-    if (!present.output) {
-      if (attemptsRemaining <= 1) {
-        return lockFailure(new Error("Concurrent daemon lock publication did not converge."));
-      }
-      await Bun.sleep(25);
-      return tryAcquireLock(lockDirectory, instanceId, attemptsRemaining - 1);
-    }
+    yield* Effect.sleep("25 millis");
+    return yield* tryAcquireLock(lockDirectory, instanceId, attemptsRemaining - 1);
   }
+  return yield* recoverStaleLock(lockDirectory, instanceId, attemptsRemaining);
+});
 
-  return recoverStaleLock(lockDirectory, instanceId, attemptsRemaining);
-}
-
-async function recoverStaleLock(
+const recoverStaleLock = Effect.fn("recoverStaleLock")(function* (
   lockDirectory: string,
   instanceId: string,
   attemptsRemaining: number,
-): Promise<Result<DaemonLock | undefined>> {
+): Effect.fn.Return<DaemonLock | undefined, Failure> {
   const recoveryDirectory = `${lockDirectory}.recovery`;
-  const recovery = await publishLockDirectory(recoveryDirectory, instanceId);
-  if (!recovery.success) {
-    return recovery;
-  }
-  if (!recovery.output) {
-    const owner = await readLockOwner(recoveryDirectory);
+  const recovery = yield* publishLockDirectory(recoveryDirectory, instanceId);
+  if (!recovery) {
+    const owner = yield* readLockOwner(recoveryDirectory);
     if (owner && !isProcessAlive(owner.pid)) {
-      return lockFailure(
-        new Error(`Stale daemon lock recovery remains at '${recoveryDirectory}'.`),
+      return yield* Effect.fail(
+        lockFailure(new Error(`Stale daemon lock recovery remains at '${recoveryDirectory}'.`)),
       );
     }
     if (attemptsRemaining <= 1) {
-      return lockFailure(new Error("Concurrent daemon lock recovery did not converge."));
+      return yield* Effect.fail(
+        lockFailure(new Error("Concurrent daemon lock recovery did not converge.")),
+      );
     }
-    await Bun.sleep(25);
-    return tryAcquireLock(lockDirectory, instanceId, attemptsRemaining - 1);
+    yield* Effect.sleep("25 millis");
+    return yield* tryAcquireLock(lockDirectory, instanceId, attemptsRemaining - 1);
   }
 
-  try {
-    const current = await readLockOwner(lockDirectory);
-    if (!current) {
-      return lockFailure(new Error(`Daemon lock ownership is incomplete at '${lockDirectory}'.`));
-    }
-    if (isProcessAlive(current.pid)) {
-      return success(undefined);
-    }
-    await rm(lockDirectory, { force: true, recursive: true });
-    return await tryAcquireLock(lockDirectory, instanceId, 1);
-  } finally {
-    await removeOwnedLock(recoveryDirectory, instanceId);
+  const recovered = yield* Effect.exit(
+    Effect.gen(function* () {
+      const current = yield* readLockOwner(lockDirectory);
+      if (!current) {
+        return yield* Effect.fail(
+          lockFailure(new Error(`Daemon lock ownership is incomplete at '${lockDirectory}'.`)),
+        );
+      }
+      if (isProcessAlive(current.pid)) {
+        return undefined;
+      }
+      yield* Effect.tryPromise({
+        try: () => rm(lockDirectory, { force: true, recursive: true }),
+        catch: lockFailure,
+      });
+      return yield* tryAcquireLock(lockDirectory, instanceId, 1);
+    }),
+  );
+  const released = yield* removeOwnedLock(recoveryDirectory, instanceId).pipe(
+    Effect.mapError(lockFailure),
+    Effect.exit,
+  );
+  if (Exit.isFailure(recovered) && Exit.isFailure(released)) {
+    return yield* Effect.failCause(Cause.combine(recovered.cause, released.cause));
   }
-}
+  if (Exit.isFailure(recovered)) {
+    return yield* Effect.failCause(recovered.cause);
+  }
+  if (Exit.isFailure(released)) {
+    return yield* Effect.failCause(released.cause);
+  }
+  return recovered.value;
+});
 
-async function publishLockDirectory(
+const publishLockDirectory = Effect.fn("publishLockDirectory")(function* (
   directory: string,
   instanceId: string,
-): Promise<Result<boolean>> {
+): Effect.fn.Return<boolean, Failure> {
   const candidate = `${directory}.candidate.${instanceId}`;
-  try {
-    await mkdir(candidate);
-    const owner: LockOwner = { instanceId, pid: process.pid };
-    await writeFile(join(candidate, "owner.json"), JSON.stringify(owner), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  } catch (error) {
-    try {
-      await rm(candidate, { force: true, recursive: true });
-    } catch (cleanupError) {
-      return lockFailure(cleanupError);
-    }
-    return lockFailure(error);
+  const prepared = yield* Effect.tryPromise({
+    try: async () => {
+      await mkdir(candidate);
+      const owner: LockOwner = { instanceId, pid: process.pid };
+      await writeFile(join(candidate, "owner.json"), JSON.stringify(owner), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    },
+    catch: (error) => error,
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
+  );
+  if (!prepared.success) {
+    const removed = yield* removePath(candidate);
+    return yield* Effect.fail(lockFailure(removed ?? prepared.error));
   }
 
-  try {
-    await rename(candidate, directory);
-    return success(true);
-  } catch (error) {
-    try {
-      await rm(candidate, { force: true, recursive: true });
-    } catch (cleanupError) {
-      return lockFailure(cleanupError);
-    }
-    return isAlreadyExists(error) ? success(false) : lockFailure(error);
-  }
-}
-
-async function waitForDaemon(
-  directory: string,
-  deadline: number,
-): Promise<DaemonLocator | undefined> {
-  if (Date.now() >= deadline) {
-    return undefined;
-  }
-
-  await Bun.sleep(50);
-  const locator = await readLocator(directory);
-  if (locator && (await isReachable(locator))) {
-    return locator;
-  }
-  return waitForDaemon(directory, deadline);
-}
-
-async function waitForDaemonStop(
-  directory: string,
-  locator: DaemonLocator,
-  deadline: number,
-): Promise<boolean> {
-  const current = await readLocator(directory);
-  if (
-    (current !== undefined && current.instanceId !== locator.instanceId) ||
-    !isProcessAlive(locator.pid)
-  ) {
+  const renamed = yield* Effect.tryPromise({
+    try: () => rename(candidate, directory),
+    catch: (error) => error,
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
+  );
+  if (renamed.success) {
     return true;
   }
-  if (Date.now() >= deadline) {
-    return false;
+  const removed = yield* removePath(candidate);
+  if (removed) {
+    return yield* Effect.fail(lockFailure(removed));
   }
+  return isAlreadyExists(renamed.error) ? false : yield* Effect.fail(lockFailure(renamed.error));
+});
 
-  await Bun.sleep(50);
-  return waitForDaemonStop(directory, locator, deadline);
-}
+const waitForDaemon = Effect.fn("waitForDaemon")(function* (
+  directory: string,
+  attempts: number,
+): Effect.fn.Return<DaemonLocator | undefined> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    yield* Effect.sleep("50 millis");
+    const locator = yield* readLocator(directory).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    if (locator && (yield* isReachable(locator))) {
+      return locator;
+    }
+  }
+  return undefined;
+});
 
-export async function publishLocator(
+const waitForDaemonStop = Effect.fn("waitForDaemonStop")(function* (
+  directory: string,
+  locator: DaemonLocator,
+  attempts: number,
+): Effect.fn.Return<boolean, unknown> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = yield* readLocator(directory);
+    if ((current && current.instanceId !== locator.instanceId) || !isProcessAlive(locator.pid)) {
+      return true;
+    }
+    yield* Effect.sleep("50 millis");
+  }
+  return false;
+});
+
+export const publishLocator = Effect.fn("publishLocator")(function* (
   directory: string,
   input: Omit<DaemonLocator, "protocolVersion" | "schemaVersion">,
-): Promise<DaemonLocator> {
+): Effect.fn.Return<DaemonLocator, unknown> {
   const locator = Object.freeze({ ...input, protocolVersion, schemaVersion: version });
   const path = join(directory, locatorName);
   const temporaryPath = join(directory, `${locatorName}.${input.instanceId}.tmp`);
-  await writeFile(temporaryPath, JSON.stringify(locator), { encoding: "utf8", mode: 0o600 });
-  await rename(temporaryPath, path);
+  yield* Effect.tryPromise({
+    try: async () => {
+      await writeFile(temporaryPath, JSON.stringify(locator), { encoding: "utf8", mode: 0o600 });
+      await rename(temporaryPath, path);
+    },
+    catch: (error) => error,
+  });
   return locator;
-}
+});
 
-export async function removeLocator(directory: string, instanceId: string): Promise<void> {
-  const current = await readLocator(directory);
-  if (current?.instanceId === instanceId) {
-    await rm(join(directory, locatorName), { force: true });
-  }
-}
-
-export async function readLocator(directory: string): Promise<DaemonLocator | undefined> {
-  try {
-    const value: unknown = JSON.parse(await readFile(join(directory, locatorName), "utf8"));
-    return isLocator(value) ? Object.freeze(value) : undefined;
-  } catch (error) {
-    if (
-      error instanceof SyntaxError ||
-      (isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR"))
-    ) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function isLocator(value: unknown): value is DaemonLocator {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Reflect.get(value, "schemaVersion") === version &&
-    isNonEmptyString(Reflect.get(value, "instanceId")) &&
-    isNonEmptyString(Reflect.get(value, "token")) &&
-    isPositiveInteger(Reflect.get(value, "pid")) &&
-    isPort(Reflect.get(value, "port")) &&
-    Reflect.get(value, "protocolVersion") === protocolVersion
-  );
-}
-
-async function isReachable(locator: DaemonLocator): Promise<boolean> {
-  try {
-    const response = await fetch(new URL("health", daemonUrl(locator)), {
-      signal: AbortSignal.timeout(500),
-    });
-    const body: unknown = await response.json();
-    return (
-      response.ok &&
-      typeof body === "object" &&
-      body !== null &&
-      Reflect.get(body, "instanceId") === locator.instanceId &&
-      Reflect.get(body, "protocolVersion") === protocolVersion &&
-      Reflect.get(body, "status") === "ok"
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function readLocatorProcess(
+export const removeLocator = Effect.fn("removeLocator")(function* (
   directory: string,
-): Promise<{ readonly pid: number; readonly protocolVersion: number | undefined } | undefined> {
-  try {
-    const value: unknown = JSON.parse(await readFile(join(directory, locatorName), "utf8"));
-    if (typeof value !== "object" || value === null) {
-      return undefined;
-    }
-    const pid = Reflect.get(value, "pid");
-    const candidateVersion = Reflect.get(value, "protocolVersion");
-    return isPositiveInteger(pid)
-      ? {
-          pid,
-          protocolVersion: isPositiveInteger(candidateVersion) ? candidateVersion : undefined,
-        }
-      : undefined;
-  } catch {
-    return undefined;
+  instanceId: string,
+): Effect.fn.Return<void, unknown> {
+  const current = yield* readLocator(directory);
+  if (current?.instanceId === instanceId) {
+    yield* Effect.tryPromise({
+      try: () => rm(join(directory, locatorName), { force: true }),
+      catch: (error) => error,
+    });
   }
-}
+});
 
-async function readLockOwner(lockDirectory: string): Promise<LockOwner | undefined> {
-  try {
-    const value: unknown = JSON.parse(await readFile(join(lockDirectory, "owner.json"), "utf8"));
-    if (typeof value !== "object" || value === null) {
-      return undefined;
-    }
-    const instanceId = Reflect.get(value, "instanceId");
-    const pid = Reflect.get(value, "pid");
-    return isNonEmptyString(instanceId) && isPositiveInteger(pid) ? { instanceId, pid } : undefined;
-  } catch {
+export const readLocator = Effect.fn("readLocator")(function* (
+  directory: string,
+): Effect.fn.Return<DaemonLocator | undefined, unknown> {
+  const read = yield* Effect.tryPromise({
+    try: async () => JSON.parse(await readFile(join(directory, locatorName), "utf8")) as unknown,
+    catch: (error) => error,
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: (value) => ({ success: true as const, value }),
+    }),
+  );
+  if (read.success) {
+    const parsed = Schema.decodeUnknownResult(DaemonLocatorSchema, {
+      onExcessProperty: "error",
+    })(read.value);
+    return EffectResult.isSuccess(parsed) ? Object.freeze(parsed.success) : undefined;
+  }
+  if (
+    read.error instanceof SyntaxError ||
+    (isFileSystemError(read.error) &&
+      (read.error.code === "ENOENT" || read.error.code === "ENOTDIR"))
+  ) {
     return undefined;
   }
-}
+  return yield* Effect.fail(read.error);
+});
+
+const isReachable = Effect.fn("isReachable")((locator: DaemonLocator) =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(new URL("health", daemonUrl(locator)), {
+        signal: AbortSignal.timeout(500),
+      });
+      const body: unknown = await response.json();
+      return (
+        response.ok &&
+        typeof body === "object" &&
+        body !== null &&
+        Reflect.get(body, "instanceId") === locator.instanceId &&
+        Reflect.get(body, "protocolVersion") === protocolVersion &&
+        Reflect.get(body, "status") === "ok"
+      );
+    },
+    catch: () => false,
+  }).pipe(Effect.catch(() => Effect.succeed(false))),
+);
+
+const readLocatorProcess = Effect.fn("readLocatorProcess")(function* (
+  directory: string,
+): Effect.fn.Return<
+  { readonly pid: number; readonly protocolVersion: number | undefined } | undefined
+> {
+  return yield* Effect.tryPromise({
+    try: async () => JSON.parse(await readFile(join(directory, locatorName), "utf8")) as unknown,
+    catch: () => undefined,
+  }).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.map((value) => {
+      const parsed = Schema.decodeUnknownResult(LocatorProcessSchema)(value);
+      return EffectResult.isSuccess(parsed)
+        ? { pid: parsed.success.pid, protocolVersion: parsed.success.protocolVersion }
+        : undefined;
+    }),
+  );
+});
+
+const readLockOwner = Effect.fn("readLockOwner")((lockDirectory: string) =>
+  Effect.tryPromise({
+    try: async () =>
+      JSON.parse(await readFile(join(lockDirectory, "owner.json"), "utf8")) as unknown,
+    catch: () => undefined,
+  }).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.map((value): LockOwner | undefined => {
+      const parsed = Schema.decodeUnknownResult(LockOwnerSchema, {
+        onExcessProperty: "error",
+      })(value);
+      return EffectResult.isSuccess(parsed) ? parsed.success : undefined;
+    }),
+  ),
+);
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -468,23 +513,11 @@ function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, strin
   );
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-function isPort(value: unknown): value is number {
-  return isPositiveInteger(value) && value <= 65_535;
-}
-
 function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
 
-function daemonUnavailable<T = DaemonLocator>(note: string): Result<T> {
+function daemonUnavailable(note: string): Failure {
   return failure(
     createDiagnostic({
       code: "SYD3005",
@@ -495,7 +528,7 @@ function daemonUnavailable<T = DaemonLocator>(note: string): Result<T> {
   );
 }
 
-function daemonStopFailure(note: string): Result<StopDaemonStatus> {
+function daemonStopFailure(note: string): Failure {
   return failure(
     createDiagnostic({
       code: "SYD3017",
@@ -506,16 +539,23 @@ function daemonStopFailure(note: string): Result<StopDaemonStatus> {
   );
 }
 
-async function daemonFailureNote(directory: string, summary: string): Promise<string> {
-  try {
-    const details = (await readFile(join(directory, diagnosticsName), "utf8")).trim();
-    return details ? `${summary}\nDaemon diagnostics:\n${details}` : summary;
-  } catch {
-    return summary;
-  }
-}
+const daemonFailureNote = Effect.fn("daemonFailureNote")(function* (
+  directory: string,
+  summary: string,
+) {
+  return yield* Effect.tryPromise({
+    try: () => readFile(join(directory, diagnosticsName), "utf8"),
+    catch: () => undefined,
+  }).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.map((value) => {
+      const details = value?.trim();
+      return details ? `${summary}\nDaemon diagnostics:\n${details}` : summary;
+    }),
+  );
+});
 
-function lockFailure<T = DaemonLock>(error: unknown): Result<T> {
+function lockFailure(error: unknown): Failure {
   return failure(
     createDiagnostic({
       code: "SYD3006",
@@ -530,26 +570,45 @@ function isAlreadyExists(error: unknown): boolean {
   if (!isFileSystemError(error)) {
     return false;
   }
-  if (error.code === "EEXIST" || error.code === "ENOTEMPTY") {
-    return true;
-  }
-  return error.code === "EPERM";
+  return error.code === "EEXIST" || error.code === "ENOTEMPTY" || error.code === "EPERM";
 }
 
-async function lockExists(directory: string): Promise<Result<boolean>> {
-  try {
-    await stat(directory);
-    return success(true);
-  } catch (error) {
-    return isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
-      ? success(false)
-      : lockFailure(error);
-  }
-}
+const lockExists = Effect.fn("lockExists")((directory: string) =>
+  Effect.tryPromise({
+    try: () => stat(directory),
+    catch: (error) => error,
+  }).pipe(
+    Effect.matchEffect({
+      onFailure: (error) =>
+        isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
+          ? Effect.succeed(false)
+          : Effect.fail(lockFailure(error)),
+      onSuccess: () => Effect.succeed(true),
+    }),
+  ),
+);
 
-async function removeOwnedLock(directory: string, instanceId: string): Promise<void> {
-  const owner = await readLockOwner(directory);
+const removeOwnedLock = Effect.fn("removeOwnedLock")(function* (
+  directory: string,
+  instanceId: string,
+): Effect.fn.Return<void, unknown> {
+  const owner = yield* readLockOwner(directory);
   if (owner?.instanceId === instanceId && owner.pid === process.pid) {
-    await rm(directory, { force: true, recursive: true });
+    yield* Effect.tryPromise({
+      try: () => rm(directory, { force: true, recursive: true }),
+      catch: (error) => error,
+    });
   }
-}
+});
+
+const removePath = Effect.fn("removePath")((path: string) =>
+  Effect.tryPromise({
+    try: () => rm(path, { force: true, recursive: true }),
+    catch: (error) => error,
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => error,
+      onSuccess: () => undefined,
+    }),
+  ),
+);

@@ -1,3 +1,5 @@
+import { Effect } from "effect";
+
 const maximumCapturedOutputBytes = 64 * 1024;
 
 export interface CapturedProcessOutput {
@@ -5,10 +7,10 @@ export interface CapturedProcessOutput {
   readonly truncated: boolean;
 }
 
-export async function captureProcessOutput(
+export const captureProcessOutput = Effect.fn("captureProcessOutput")(function* (
   stream: ReadableStream<Uint8Array>,
   maximumBytes = maximumCapturedOutputBytes,
-): Promise<CapturedProcessOutput> {
+): Effect.fn.Return<CapturedProcessOutput, unknown> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
     throw new RangeError("Maximum captured output must be a positive safe integer.");
   }
@@ -20,7 +22,10 @@ export async function captureProcessOutput(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = yield* Effect.tryPromise({
+        try: () => reader.read(),
+        catch: (error) => error,
+      });
       if (done) {
         break;
       }
@@ -45,7 +50,7 @@ export async function captureProcessOutput(
     text: new TextDecoder().decode(retained.subarray(0, retainedBytes)),
     truncated,
   });
-}
+});
 
 export function emptyCapturedProcessOutput(): CapturedProcessOutput {
   return emptyOutput;

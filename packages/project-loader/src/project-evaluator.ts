@@ -1,7 +1,6 @@
-import type { Result } from "@stackyard/diagnostics";
+import type { Failure } from "@stackyard/diagnostics";
 import type { ProjectSpec } from "@stackyard/protocol";
-import * as Context from "effect/Context";
-import * as Effect from "effect/Effect";
+import { Context, Effect } from "effect";
 
 import type { CapturedProcessOutput } from "./process-output.ts";
 
@@ -10,8 +9,13 @@ export interface ProjectEvaluationInput {
   readonly projectRoot: string;
 }
 
-export interface ProjectEvaluationOutput {
-  readonly result: Result<ProjectSpec>;
+export interface ProjectEvaluation {
+  readonly spec: ProjectSpec;
+  readonly stderr: CapturedProcessOutput;
+  readonly stdout: CapturedProcessOutput;
+}
+
+export interface ProjectEvaluationFailure extends Failure {
   readonly stderr: CapturedProcessOutput;
   readonly stdout: CapturedProcessOutput;
 }
@@ -19,7 +23,9 @@ export interface ProjectEvaluationOutput {
 export class ProjectEvaluator extends Context.Service<
   ProjectEvaluator,
   {
-    readonly evaluate: (input: ProjectEvaluationInput) => Effect.Effect<ProjectEvaluationOutput>;
+    readonly evaluate: (
+      input: ProjectEvaluationInput,
+    ) => Effect.Effect<ProjectEvaluation, ProjectEvaluationFailure>;
   }
 >()("stackyard/project-loader/ProjectEvaluator") {}
 

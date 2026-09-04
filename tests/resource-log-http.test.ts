@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Deferred, Effect, Layer, ManagedRuntime } from "effect";
 
-import { startControlServer, type ControlData, type Projects } from "../apps/daemon/src/server.ts";
+import { startControlServer, type ControlData } from "../apps/daemon/src/server.ts";
 import {
+  makeProjectManagerLayer,
+  PortAllocator,
+  ProcessHost,
   ProjectManager,
-  type PortAllocator,
+  ProjectOrchestrator,
   type ProcessExit,
   type ProcessHandle,
-  type ProcessHost,
   type ProcessLogLine,
   type ProcessStart,
 } from "../packages/control-plane/src/index.ts";
@@ -21,54 +24,72 @@ import {
 /* oxlint-disable eslint/no-await-in-loop -- Stream frames and condition checks are sequential. */
 
 const servers: Bun.Server<ControlData>[] = [];
-const unusedProjects: Projects = {
-  add: unavailable,
-  list: () => [],
-  remove: unavailable,
-  start: unavailable,
-  stop: unavailable,
-};
+const disposeRuntimes: Array<() => Promise<void>> = [];
+const diagnostics = { report() {} };
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.stop(true)));
+  await Promise.all(disposeRuntimes.splice(0).map((dispose) => dispose()));
 });
 
 describe("resource log HTTP API", () => {
   test("streams authenticated live logs and resumes completed history by cursor", async () => {
     const processes = new TestProcesses();
-    const manager = new ProjectManager({
-      ports: new NoPorts(),
-      processes,
-    });
-    const startedProject = await manager.start({
-      environment: {},
-      environmentNamesCaseInsensitive: true,
-      id: "project-1",
-      revision: 1,
-      root: "C:/project",
-      spec: projectSpec(),
-    });
-    if (!startedProject.success) {
-      throw new Error("Expected the project to start.");
-    }
+    const managerLayer = makeProjectManagerLayer({ diagnostics }).pipe(
+      Layer.provide(
+        Layer.merge(
+          Layer.succeed(
+            PortAllocator,
+            PortAllocator.of({
+              reserve: () => Effect.die(new Error("This project does not allocate ports.")),
+            }),
+          ),
+          Layer.succeed(ProcessHost, processes.service),
+        ),
+      ),
+    );
+    const runtime = ManagedRuntime.make(
+      Layer.merge(
+        managerLayer,
+        Layer.succeed(
+          ProjectOrchestrator,
+          ProjectOrchestrator.of({
+            add: unavailable,
+            list: unavailable(),
+            remove: unavailable,
+            start: unavailable,
+            stop: unavailable,
+          }),
+        ),
+      ),
+    );
+    disposeRuntimes.push(() => runtime.dispose());
+    const manager = await runtime.runPromise(ProjectManager);
+    const startedProject = await Effect.runPromise(
+      manager.start({
+        environment: {},
+        environmentNamesCaseInsensitive: true,
+        id: "project-1",
+        revision: 1,
+        root: "C:/project",
+        spec: projectSpec(),
+      }),
+    );
     processes.write({ observedAt: 10, stream: "stdout", text: "ready" });
 
-    const startedServer = startControlServer({
-      diagnostics: { report() {} },
-      instanceId: "test-daemon",
-      isShuttingDown: () => false,
-      manager,
-      onClose() {},
-      onOpen() {},
-      port: 0,
-      projects: unusedProjects,
-      requestShutdown() {},
-      token: "test-token",
-    });
-    if (!startedServer.success) {
-      throw new Error("Expected the daemon server to start.");
-    }
-    const server = startedServer.output;
+    const server = await Effect.runPromise(
+      startControlServer({
+        diagnostics,
+        instanceId: "test-daemon",
+        isShuttingDown: () => false,
+        onClose() {},
+        onOpen() {},
+        port: 0,
+        requestShutdown() {},
+        runtime,
+        token: "test-token",
+      }),
+    );
     servers.push(server);
     const logsUrl = new URL("/api/v1/projects/project-1/resources/api/logs", server.url);
 
@@ -112,7 +133,7 @@ describe("resource log HTTP API", () => {
     const continued = new NdjsonFrames(continuedResponse);
     expect(await continued.next()).toMatchObject({ cursor: 2, entries: [], status: "live" });
 
-    expect((await startedProject.output.stop()).success).toBeTrue();
+    await Effect.runPromise(startedProject.stop);
     expect(await continued.next()).toMatchObject({ cursor: 2, entries: [], status: "complete" });
     expect(await continued.done()).toBeTrue();
 
@@ -137,8 +158,8 @@ describe("resource log HTTP API", () => {
   });
 });
 
-function unavailable(): never {
-  throw new Error("Project operations are outside this test's scope.");
+function unavailable(): Effect.Effect<never> {
+  return Effect.die(new Error("Project operations are outside this test's scope."));
 }
 
 function authorized(): RequestInit {
@@ -164,20 +185,16 @@ function projectSpec() {
   return created.output;
 }
 
-class NoPorts implements PortAllocator {
-  async reserve(): Promise<never> {
-    throw new Error("This test project does not allocate ports.");
-  }
-}
-
-class TestProcesses implements ProcessHost {
+class TestProcesses {
   #start: ProcessStart | undefined;
   readonly handle = new TestHandle();
-
-  async start(input: ProcessStart) {
-    this.#start = input;
-    return success<ProcessHandle>(this.handle);
-  }
+  readonly service = ProcessHost.of({
+    start: (input: ProcessStart) =>
+      Effect.sync(() => {
+        this.#start = input;
+        return this.handle;
+      }),
+  });
 
   write(...entries: ProcessLogLine[]): void {
     if (!this.#start) {
@@ -188,30 +205,27 @@ class TestProcesses implements ProcessHost {
 }
 
 class TestHandle implements ProcessHandle {
-  readonly exited: Promise<ProcessExit>;
-  readonly leaderExited: Promise<number>;
+  readonly #exit = Deferred.makeUnsafe<ProcessExit>();
+  readonly #leaderExit = Deferred.makeUnsafe<number>();
+  readonly exited = Deferred.await(this.#exit);
+  readonly leaderExited = Deferred.await(this.#leaderExit);
   readonly pid = 100;
-  #exit!: (exit: ProcessExit) => void;
-  #leaderExit!: (exitCode: number) => void;
   #stopped = false;
 
-  constructor() {
-    this.exited = new Promise((resolve) => {
-      this.#exit = resolve;
-    });
-    this.leaderExited = new Promise((resolve) => {
-      this.#leaderExit = resolve;
-    });
-  }
-
-  async stop() {
-    if (!this.#stopped) {
-      this.#stopped = true;
-      this.#leaderExit(0);
-      this.#exit({ cleanup: success(undefined), exitCode: 0, logCapture: success(undefined) });
+  readonly stop = Effect.sync(() => {
+    if (this.#stopped) {
+      return;
     }
-    return success(undefined);
-  }
+    this.#stopped = true;
+    Effect.runSync(Deferred.succeed(this.#leaderExit, 0));
+    Effect.runSync(
+      Deferred.succeed(this.#exit, {
+        cleanup: success(undefined),
+        exitCode: 0,
+        logCapture: success(undefined),
+      }),
+    );
+  });
 }
 
 class NdjsonFrames {

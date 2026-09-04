@@ -1,11 +1,12 @@
 import { extname, join, normalize, relative, resolve } from "node:path";
+import { Effect } from "effect";
 
 import type { UnhandledRequestHandler } from "./server.ts";
 
 export function createDashboardWebHandler(directory: string): UnhandledRequestHandler {
   const root = resolve(directory);
 
-  return async (request, url) => {
+  return Effect.fn("serveDashboardWeb")(function* (request, url) {
     let decoded: string;
     try {
       decoded = decodeURIComponent(url.pathname);
@@ -25,31 +26,31 @@ export function createDashboardWebHandler(directory: string): UnhandledRequestHa
       return new Response("Not found.", { status: 404 });
     }
 
-    const response = await fileResponse(filePath);
+    const response = yield* fileResponse(filePath);
     if (response) {
       return response;
     }
 
     if (isAppNavigation(request, decoded)) {
-      const indexResponse = await fileResponse(join(root, "index.html"));
+      const indexResponse = yield* fileResponse(join(root, "index.html"));
       if (indexResponse) {
         return indexResponse;
       }
     }
     return new Response("Not found.", { status: 404 });
-  };
+  });
 }
 
-async function fileResponse(filePath: string): Promise<Response | undefined> {
+const fileResponse = Effect.fn("dashboardFileResponse")(function* (filePath: string) {
   const file = Bun.file(filePath);
-  if (!(await file.exists())) {
+  if (!(yield* Effect.promise(() => file.exists()))) {
     return undefined;
   }
 
   const cacheControl =
     extname(filePath) === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
   return new Response(file, { headers: { "cache-control": cacheControl } });
-}
+});
 
 function isAppNavigation(request: Request, path: string): boolean {
   return (

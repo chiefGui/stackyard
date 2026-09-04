@@ -2,14 +2,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { Context, Effect, Exit, Layer, Scope } from "effect";
+import { BunRuntime } from "@effect/platform-bun";
+import { Context, Effect, Layer } from "effect";
 import { createServer, type ViteDevServer } from "vite";
 
-import { Daemon, makeDaemonLayer, type RunningDaemon } from "../apps/daemon/src/daemon.ts";
+import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
 import { publishLocator } from "../apps/daemon/src/locator.ts";
 import {
   describeError,
   formatDiagnostic,
+  isNonEmptyDiagnostics,
   reportDiagnostics,
   type DiagnosticSink,
 } from "../packages/diagnostics/src/index.ts";
@@ -22,149 +24,174 @@ const diagnostics: DiagnosticSink = {
   },
 };
 
-process.exit(await runDevelopment());
+BunRuntime.runMain(
+  runDevelopment().pipe(
+    Effect.tap((exitCode) =>
+      Effect.sync(() => {
+        process.exitCode = exitCode;
+      }),
+    ),
+    Effect.asVoid,
+  ),
+);
 
-async function runDevelopment(): Promise<number> {
-  const { promise: shutdownSignaled, resolve: finishShutdownSignal } =
-    Promise.withResolvers<void>();
-  const requestShutdown = (): void => finishShutdownSignal();
-  let daemon: RunningDaemon | undefined;
-  let daemonScope: Scope.Closeable | undefined;
-  let dashboard: ViteDevServer | undefined;
-  let dataDirectory: string | undefined;
-  let projectProcess: Bun.Subprocess | undefined;
-  let exitCode = 0;
-  let daemonCleanupFailed = false;
-  process.once("SIGINT", requestShutdown);
-  process.once("SIGTERM", requestShutdown);
+function runDevelopment(): Effect.Effect<number> {
+  let cleanupFailed = false;
+  const reportCleanupFailure = (message: string, error: unknown): Effect.Effect<void> =>
+    Effect.sync(() => {
+      cleanupFailed = true;
+      process.stderr.write(`${message}: ${describeError(error)}\n`);
+    });
 
-  try {
-    const projectPath = readProjectPath();
-    const apiPort = readPort("STACKYARD_API_PORT", 3000);
-    const dashboardPort = readPort("STACKYARD_DASHBOARD_PORT", 5173);
-    dataDirectory = await mkdtemp(join(tmpdir(), "stackyard-development-"));
-    daemonScope = await Effect.runPromise(Scope.make());
-    const started = await Effect.runPromise(
-      Layer.buildWithScope(
-        makeDaemonLayer(
-          {
-            dataDirectory,
-            diagnostics,
-            evaluatorEntrypoint: cliEntrypoint,
-            instanceId: crypto.randomUUID(),
-            port: apiPort,
-          },
-          (diagnostic) =>
-            Effect.sync(() => {
-              daemonCleanupFailed = true;
-              diagnostics.report(diagnostic);
-            }),
+  return Effect.gen(function* () {
+    const projectPath = yield* Effect.try({ try: readProjectPath, catch: (error) => error });
+    const apiPort = yield* Effect.try({
+      try: () => readPort("STACKYARD_API_PORT", 3000),
+      catch: (error) => error,
+    });
+    const dashboardPort = yield* Effect.try({
+      try: () => readPort("STACKYARD_DASHBOARD_PORT", 5173),
+      catch: (error) => error,
+    });
+    const dataDirectory = yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: () => mkdtemp(join(tmpdir(), "stackyard-development-")),
+        catch: (error) => error,
+      }),
+      (directory) =>
+        Effect.tryPromise({
+          try: () => rm(directory, { force: true, recursive: true }),
+          catch: (error) => error,
+        }).pipe(
+          Effect.catch((error) => reportCleanupFailure("Development state cleanup failed", error)),
         ),
-        daemonScope,
-      ).pipe(
-        Effect.match({
-          onFailure: (failureDiagnostics) => ({
-            diagnostics: failureDiagnostics,
-            success: false as const,
+    );
+    const daemonContext = yield* Layer.build(
+      makeDaemonLayer(
+        {
+          dataDirectory,
+          diagnostics,
+          evaluatorEntrypoint: cliEntrypoint,
+          instanceId: crypto.randomUUID(),
+          port: apiPort,
+        },
+        (diagnostic) =>
+          Effect.sync(() => {
+            cleanupFailed = true;
+            diagnostics.report(diagnostic);
           }),
-          onSuccess: (context) => ({ context, success: true as const }),
-        }),
       ),
     );
-    if (!started.success) {
-      reportDiagnostics(diagnostics, started.diagnostics);
-      return 1;
-    }
-    daemon = Context.get(started.context, Daemon);
+    const daemon = Context.get(daemonContext, Daemon);
 
     if (projectPath) {
-      await publishLocator(dataDirectory, {
+      yield* publishLocator(dataDirectory, {
         instanceId: daemon.instanceId,
         pid: process.pid,
         port: daemon.port,
         token: daemon.token,
       });
-      projectProcess = await startDevelopmentProject(projectPath, dataDirectory);
+      yield* Effect.acquireRelease(
+        startDevelopmentProject(projectPath, dataDirectory),
+        (subprocess) =>
+          stopDevelopmentProject(subprocess).pipe(
+            Effect.catch((error) =>
+              reportCleanupFailure("Development project cleanup failed", error),
+            ),
+          ),
+      );
       process.stdout.write(`Project:   ${projectPath}\n`);
     }
-    process.env.STACKYARD_CONTROL_URL = daemon.url;
-    dashboard = await createServer({
-      clearScreen: false,
-      configFile: join(repositoryRoot, "apps", "dashboard-web", "vite.config.ts"),
-      root: join(repositoryRoot, "apps", "dashboard-web"),
-      server: {
-        host: "127.0.0.1",
-        port: dashboardPort,
-        strictPort: true,
-      },
-    });
-    await dashboard.listen();
+
+    const previousControlUrl = process.env.STACKYARD_CONTROL_URL;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.env.STACKYARD_CONTROL_URL = daemon.url;
+      }),
+      () =>
+        Effect.sync(() => {
+          if (previousControlUrl === undefined) {
+            delete process.env.STACKYARD_CONTROL_URL;
+          } else {
+            process.env.STACKYARD_CONTROL_URL = previousControlUrl;
+          }
+        }),
+    );
+    yield* Effect.acquireRelease(startDashboard(dashboardPort), (server) =>
+      Effect.tryPromise({ try: () => server.close(), catch: (error) => error }).pipe(
+        Effect.catch((error) => reportCleanupFailure("Dashboard cleanup failed", error)),
+      ),
+    );
 
     process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
-    await Effect.runPromise(
-      Effect.race(
-        Effect.promise(() => shutdownSignaled),
-        daemon.awaitShutdown,
-      ),
-    );
-  } catch (error) {
-    process.stderr.write(`Development environment failed: ${describeError(error)}\n`);
-    exitCode = 1;
-  } finally {
-    process.off("SIGINT", requestShutdown);
-    process.off("SIGTERM", requestShutdown);
-    if (projectProcess) {
-      try {
-        if (projectProcess.exitCode === null) {
-          projectProcess.kill("SIGINT");
+    yield* daemon.awaitShutdown;
+  }).pipe(
+    Effect.scoped,
+    Effect.match({
+      onFailure: (error) => {
+        if (typeof error === "object" && error !== null) {
+          const failureDiagnostics = Reflect.get(error, "diagnostics");
+          if (isNonEmptyDiagnostics(failureDiagnostics)) {
+            reportDiagnostics(diagnostics, failureDiagnostics);
+            return 1;
+          }
         }
-        await projectProcess.exited;
-      } catch (error) {
-        process.stderr.write(`Development project cleanup failed: ${describeError(error)}\n`);
-        exitCode = 1;
-      }
-    }
-    if (dashboard) {
-      try {
-        await dashboard.close();
-      } catch (error) {
-        process.stderr.write(`Dashboard cleanup failed: ${describeError(error)}\n`);
-        exitCode = 1;
-      }
-    }
-    if (daemonScope) {
-      await Effect.runPromise(Scope.close(daemonScope, Exit.void));
-    }
-    if (daemonCleanupFailed) {
-      exitCode = 1;
-    }
-    if (dataDirectory) {
-      try {
-        await rm(dataDirectory, { force: true, recursive: true });
-      } catch (error) {
-        process.stderr.write(`Development state cleanup failed: ${describeError(error)}\n`);
-        exitCode = 1;
-      }
-    }
-  }
-  return exitCode;
+        process.stderr.write(`Development environment failed: ${describeError(error)}\n`);
+        return 1;
+      },
+      onSuccess: () => (cleanupFailed ? 1 : 0),
+    }),
+  );
 }
 
-async function startDevelopmentProject(
+const startDashboard = Effect.fn("startDevelopmentDashboard")(function* (
+  port: number,
+): Effect.fn.Return<ViteDevServer, unknown> {
+  const dashboard = yield* Effect.tryPromise({
+    try: () =>
+      createServer({
+        clearScreen: false,
+        configFile: join(repositoryRoot, "apps", "dashboard-web", "vite.config.ts"),
+        root: join(repositoryRoot, "apps", "dashboard-web"),
+        server: { host: "127.0.0.1", port, strictPort: true },
+      }),
+    catch: (error) => error,
+  });
+  yield* Effect.tryPromise({ try: () => dashboard.listen(), catch: (error) => error });
+  return dashboard;
+});
+
+const startDevelopmentProject = Effect.fn("startDevelopmentProject")(function* (
   projectPath: string,
   runtimeDirectory: string,
-): Promise<Bun.Subprocess> {
+): Effect.fn.Return<Bun.Subprocess, unknown> {
   const environment = {
     ...stringEnvironment(process.env),
     STACKYARD_RUNTIME_DIR: runtimeDirectory,
   };
   const added = spawnCli(["add", projectPath], environment);
-  if ((await added.exited) !== 0) {
-    throw new Error("The development project could not be added.");
+  const exitCode = yield* Effect.tryPromise({ try: () => added.exited, catch: (error) => error });
+  if (exitCode !== 0) {
+    return yield* Effect.fail(new Error("The development project could not be added."));
   }
   return spawnCli(["run", projectPath], environment);
-}
+});
+
+const stopDevelopmentProject = Effect.fn("stopDevelopmentProject")(
+  (subprocess: Bun.Subprocess): Effect.Effect<void, unknown> =>
+    Effect.gen(function* () {
+      yield* Effect.try({
+        try: () => {
+          if (subprocess.exitCode === null) {
+            subprocess.kill("SIGINT");
+          }
+        },
+        catch: (error) => error,
+      });
+      yield* Effect.tryPromise({ try: () => subprocess.exited, catch: (error) => error });
+    }),
+);
 
 function spawnCli(
   args: readonly string[],

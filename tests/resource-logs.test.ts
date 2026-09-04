@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Effect, Fiber } from "effect";
 
 import { ResourceLogStore } from "../packages/control-plane/src/index.ts";
 import { success } from "../packages/diagnostics/src/index.ts";
@@ -6,7 +7,7 @@ import { success } from "../packages/diagnostics/src/index.ts";
 describe("resource log store", () => {
   test("assigns stable cursors and returns bounded snapshots", async () => {
     const feed = new ResourceLogStore().createFeed();
-    const changed = feed.waitForChange(0);
+    const changed = Effect.runPromise(feed.waitForChange(0));
 
     feed.write([
       { observedAt: 10, stream: "stdout", text: "ready" },
@@ -128,7 +129,7 @@ describe("resource log store", () => {
   test("wakes readers for terminal state without allocating an event queue", async () => {
     const feed = new ResourceLogStore().createFeed();
     const initial = feed.snapshot();
-    const changed = feed.waitForChange(initial.revision);
+    const changed = Effect.runPromise(feed.waitForChange(initial.revision));
 
     feed.complete(success(undefined));
     await changed;
@@ -138,18 +139,16 @@ describe("resource log store", () => {
       revision: initial.revision + 1,
       status: "complete",
     });
-    await feed.waitForChange(initial.revision);
+    await Effect.runPromise(feed.waitForChange(initial.revision));
     expect(() => feed.write([{ observedAt: 1, stream: "stdout", text: "late" }])).toThrow();
   });
 
   test("supports cancellation and observable removal", async () => {
     const feed = new ResourceLogStore().createFeed();
-    const cancellation = new AbortController();
-    const waiting = feed.waitForChange(feed.snapshot().revision, cancellation.signal);
-    cancellation.abort();
-    expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+    const waiting = Effect.runFork(feed.waitForChange(feed.snapshot().revision));
+    await Effect.runPromise(Fiber.interrupt(waiting));
 
-    const removed = feed.waitForChange(feed.snapshot().revision);
+    const removed = Effect.runPromise(feed.waitForChange(feed.snapshot().revision));
     feed.remove();
     await removed;
     expect(feed.snapshot()).toMatchObject({ entries: [], status: "removed" });

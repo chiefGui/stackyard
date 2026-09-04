@@ -13,7 +13,9 @@ import {
 import { runManagedDaemon } from "@stackyard/daemon/managed";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
-  loadProject as loadProjectDefinition,
+  loadProjectEffect,
+  makeBunProjectEvaluatorLayer,
+  type ProjectEvaluator,
   projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
@@ -21,14 +23,14 @@ import { BunRuntime } from "@effect/platform-bun";
 import { Effect } from "effect";
 
 import packageManifest from "../package.json" with { type: "json" };
-import { runCli } from "./cli.ts";
+import { runCli, type CliEntry } from "./cli.ts";
 import { createAddCommand } from "./add.ts";
 import { createDaemonStatusCommand } from "./daemon-status.ts";
 import { createDaemonStopCommand } from "./daemon-stop.ts";
 import { createDaemonCommand } from "./daemon.ts";
 import { createInspectCommand } from "./inspect.ts";
 import { createListCommand } from "./list.ts";
-import { DaemonProjectClient } from "./project-client.ts";
+import { makeDaemonProjectClientLayer, ProjectClient } from "./project-client.ts";
 import { createRemoveCommand } from "./remove.ts";
 import { createRunCommand } from "./run.ts";
 import { createStartCommand } from "./start.ts";
@@ -43,22 +45,21 @@ if (command === internalDaemonCommand) {
 }
 const diagnostics = createDiagnosticSink(diagnosticsPath);
 
-if (command === internalDaemonCommand) {
-  BunRuntime.runMain(
-    runDaemon().pipe(
-      Effect.tap((exitCode) =>
-        Effect.sync(() => {
-          process.exitCode = exitCode;
-        }),
-      ),
-      Effect.asVoid,
+BunRuntime.runMain(
+  main().pipe(
+    Effect.tap((exitCode) =>
+      Effect.sync(() => {
+        process.exitCode = exitCode;
+      }),
     ),
-  );
-} else {
-  process.exitCode = await main();
-}
+    Effect.asVoid,
+  ),
+);
 
-function main(): Promise<number> {
+function main(): Effect.Effect<number> {
+  if (command === internalDaemonCommand) {
+    return runDaemon();
+  }
   if (command === projectEvaluatorCommand) {
     return runProjectEvaluator(commandArguments[0] ?? "");
   }
@@ -76,22 +77,19 @@ function runDaemon(): Effect.Effect<number> {
   });
 }
 
-function runPublicCli(): Promise<number> {
+function runPublicCli(): Effect.Effect<number> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
   const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
-  const projectClient = new DaemonProjectClient(daemonOptions);
   const startCommand = createStartCommand({
     diagnostics,
-    find: () => findDaemon(),
+    find: findDaemon,
     runForeground: (onStarted) =>
-      runForegroundDaemon(
-        runManagedDaemon({
-          dashboardWebDirectory,
-          diagnostics,
-          evaluatorEntrypoint: cliEntrypoint,
-          onStarted,
-        }),
-      ),
+      runManagedDaemon({
+        dashboardWebDirectory,
+        diagnostics,
+        evaluatorEntrypoint: cliEntrypoint,
+        onStarted,
+      }),
     start: () => ensureDaemon(daemonOptions),
     writeOutput,
   });
@@ -100,78 +98,60 @@ function runPublicCli(): Promise<number> {
     createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
+  const commands: readonly CliEntry<ProjectClient | ProjectEvaluator>[] = [
+    createAddCommand({
+      currentDirectory: process.cwd(),
+      diagnostics,
+      writeOutput,
+    }),
+    daemonCommand,
+    createInspectCommand({
+      diagnostics,
+      loadProject,
+      writeError(output) {
+        process.stderr.write(output);
+      },
+      writeOutput,
+    }),
+    createListCommand({
+      diagnostics,
+      writeOutput,
+    }),
+    createRemoveCommand({
+      currentDirectory: process.cwd(),
+      diagnostics,
+      writeOutput,
+    }),
+    createRunCommand({
+      currentDirectory: process.cwd(),
+      daemonEntrypoint: cliEntrypoint,
+      dashboardWebDirectory,
+      diagnostics,
+      writeOutput,
+    }),
+    createStopCommand({
+      currentDirectory: process.cwd(),
+      diagnostics,
+      writeOutput,
+    }),
+  ];
   return runCli(cliArguments, {
-    commands: [
-      createAddCommand({
-        client: projectClient,
-        currentDirectory: process.cwd(),
-        diagnostics,
-        writeOutput,
-      }),
-      daemonCommand,
-      createInspectCommand({
-        diagnostics,
-        loadProject,
-        writeError(output) {
-          process.stderr.write(output);
-        },
-        writeOutput,
-      }),
-      createListCommand({
-        client: projectClient,
-        diagnostics,
-        writeOutput,
-      }),
-      createRemoveCommand({
-        client: projectClient,
-        currentDirectory: process.cwd(),
-        diagnostics,
-        writeOutput,
-      }),
-      createRunCommand({
-        currentDirectory: process.cwd(),
-        daemonEntrypoint: cliEntrypoint,
-        dashboardWebDirectory,
-        diagnostics,
-        writeOutput,
-      }),
-      createStopCommand({
-        client: projectClient,
-        currentDirectory: process.cwd(),
-        diagnostics,
-        writeOutput,
-      }),
-    ],
+    commands,
     diagnostics,
     version: packageManifest.version,
     writeOutput,
-  });
-}
-
-function runForegroundDaemon(program: Effect.Effect<number>): Promise<number> {
-  return new Promise((resolveExitCode) => {
-    BunRuntime.runMain(
-      program.pipe(
-        Effect.tap((exitCode) =>
-          Effect.sync(() => {
-            resolveExitCode(exitCode);
-          }),
-        ),
-        Effect.asVoid,
-      ),
-    );
-  });
+  }).pipe(
+    Effect.provide(makeDaemonProjectClientLayer(daemonOptions)),
+    Effect.provide(makeBunProjectEvaluatorLayer(cliEntrypoint)),
+  );
 }
 
 function loadProject(path: string | undefined) {
-  const options = {
-    currentDirectory: process.cwd(),
-    evaluatorEntrypoint: cliEntrypoint,
-  };
+  const options = { currentDirectory: process.cwd() };
   if (path) {
-    return loadProjectDefinition({ ...options, path });
+    return loadProjectEffect({ ...options, path });
   }
-  return loadProjectDefinition(options);
+  return loadProjectEffect(options);
 }
 
 function resolveDashboardWebDirectory(entrypoint: string): string {
