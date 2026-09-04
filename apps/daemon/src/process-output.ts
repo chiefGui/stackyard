@@ -1,6 +1,6 @@
 import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import type { ProcessLogLine, ProcessLogSink } from "@stackyard/control-plane";
-import { Effect, Result as EffectResult, Stream } from "effect";
+import { Clock, Effect, Result as EffectResult, Stream } from "effect";
 
 export const maxProcessLogLineBytes = 256 * 1024;
 
@@ -27,11 +27,12 @@ export const captureProcessLogs = Effect.fn("captureProcessLogs")(function* (
   sink: ProcessLogSink,
   options: ProcessLogCaptureOptions = {},
 ): Effect.fn.Return<void, Failure> {
+  const clock = yield* Clock.Clock;
   const maxLineBytes = options.maxLineBytes ?? maxProcessLogLineBytes;
   const capture = (
     stream: ReadableStream<Uint8Array>,
     name: "stderr" | "stdout",
-  ): Effect.Effect<void, string> => captureStream(stream, name, sink, maxLineBytes);
+  ): Effect.Effect<void, string> => captureStream(stream, name, sink, maxLineBytes, clock);
   return yield* Effect.all([capture(stdout, "stdout"), capture(stderr, "stderr")], {
     concurrency: "unbounded",
     mode: "result",
@@ -61,13 +62,14 @@ function captureStream(
   name: "stderr" | "stdout",
   sink: ProcessLogSink,
   maxLineBytes: number,
+  clock: Clock.Clock,
 ): Effect.Effect<void, string> {
   const framer = new BoundedLineFramer(maxLineBytes);
   const finish = Effect.try({
     try: () => {
       const finalLine = framer.finish();
       if (finalLine) {
-        publish([finalLine], name, sink);
+        publish([finalLine], name, sink, clock);
       }
     },
     catch: describeError,
@@ -79,7 +81,7 @@ function captureStream(
     Stream.runForEach((chunk) =>
       Effect.try({
         try: () => {
-          framer.push(chunk, (lines) => publish(lines, name, sink));
+          framer.push(chunk, (lines) => publish(lines, name, sink, clock));
         },
         catch: describeError,
       }),
@@ -93,11 +95,12 @@ function publish(
   lines: readonly FramedLine[],
   stream: "stderr" | "stdout",
   sink: ProcessLogSink,
+  clock: Clock.Clock,
 ): void {
   if (lines.length === 0) {
     return;
   }
-  const observedAt = Date.now();
+  const observedAt = clock.currentTimeMillisUnsafe();
   sink.write(
     lines.map((line): ProcessLogLine =>
       Object.freeze({
