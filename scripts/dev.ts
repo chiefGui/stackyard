@@ -1,9 +1,19 @@
 import { join, resolve } from "node:path";
 
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Context, Crypto, Effect, FileSystem, Layer, Path, PlatformError, Scope } from "effect";
+import {
+  Context,
+  Crypto,
+  Effect,
+  FileSystem,
+  Layer,
+  Path,
+  PlatformError,
+  Schema,
+  Scope,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer } from "vite";
 
 import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
 import { acquireDaemonLock, publishLocator } from "../apps/daemon/src/locator.ts";
@@ -26,22 +36,19 @@ const diagnostics: DiagnosticSink = {
   },
 };
 
+class DevelopmentFailure extends Schema.TaggedError<DevelopmentFailure>()(
+  "DevelopmentFailure",
+  {},
+) {}
+
 BunRuntime.runMain(
-  runDevelopment().pipe(
-    Effect.provide(NodeCanonicalPathLayer),
-    Effect.provide(BunServices.layer),
-    Effect.tap((exitCode) =>
-      Effect.sync(() => {
-        process.exitCode = exitCode;
-      }),
-    ),
-    Effect.asVoid,
-  ),
+  runDevelopment().pipe(Effect.provide(NodeCanonicalPathLayer), Effect.provide(BunServices.layer)),
+  { disableErrorReporting: true },
 );
 
 function runDevelopment(): Effect.Effect<
-  number,
-  never,
+  void,
+  DevelopmentFailure,
   | CanonicalPath
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
@@ -152,49 +159,51 @@ function runDevelopment(): Effect.Effect<
           }
         }),
     );
-    yield* Effect.acquireRelease(startDashboard(dashboardPort), (server) =>
-      Effect.tryPromise({ try: () => server.close(), catch: (error) => error }).pipe(
-        Effect.catch((error) => reportCleanupFailure("Dashboard cleanup failed", error)),
-      ),
-    );
+    yield* startDashboard(dashboardPort, reportCleanupFailure);
 
     process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
     return yield* daemon.awaitShutdown;
   }).pipe(
     Effect.scoped,
-    Effect.match({
-      onFailure: (error) => {
-        if (typeof error === "object" && error !== null) {
-          const failureDiagnostics = Reflect.get(error, "diagnostics");
-          if (isNonEmptyDiagnostics(failureDiagnostics)) {
-            reportDiagnostics(diagnostics, failureDiagnostics);
-            return 1;
+    Effect.matchEffect({
+      onFailure: (error) =>
+        Effect.sync(() => {
+          if (typeof error === "object" && error !== null) {
+            const failureDiagnostics = Reflect.get(error, "diagnostics");
+            if (isNonEmptyDiagnostics(failureDiagnostics)) {
+              reportDiagnostics(diagnostics, failureDiagnostics);
+              return;
+            }
           }
-        }
-        process.stderr.write(`Development environment failed: ${describeError(error)}\n`);
-        return 1;
-      },
-      onSuccess: () => (cleanupFailed ? 1 : 0),
+          process.stderr.write(`Development environment failed: ${describeError(error)}\n`);
+        }).pipe(Effect.andThen(Effect.fail(new DevelopmentFailure()))),
+      onSuccess: () => (cleanupFailed ? Effect.fail(new DevelopmentFailure()) : Effect.void),
     }),
   );
 }
 
 const startDashboard = Effect.fn("startDevelopmentDashboard")(function* (
   port: number,
-): Effect.fn.Return<ViteDevServer, Error> {
-  const dashboard = yield* Effect.tryPromise({
-    try: () =>
-      createServer({
-        clearScreen: false,
-        configFile: join(repositoryRoot, "apps", "dashboard-web", "vite.config.ts"),
-        root: join(repositoryRoot, "apps", "dashboard-web"),
-        server: { host: "127.0.0.1", port, strictPort: true },
-      }),
-    catch: asError,
-  });
+  reportCleanupFailure: (message: string, error: unknown) => Effect.Effect<void>,
+): Effect.fn.Return<void, Error, Scope.Scope> {
+  const dashboard = yield* Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () =>
+        createServer({
+          clearScreen: false,
+          configFile: join(repositoryRoot, "apps", "dashboard-web", "vite.config.ts"),
+          root: join(repositoryRoot, "apps", "dashboard-web"),
+          server: { host: "127.0.0.1", port, strictPort: true },
+        }),
+      catch: asError,
+    }),
+    (server) =>
+      Effect.tryPromise({ try: () => server.close(), catch: asError }).pipe(
+        Effect.catch((error) => reportCleanupFailure("Dashboard cleanup failed", error)),
+      ),
+  );
   yield* Effect.tryPromise({ try: () => dashboard.listen(), catch: asError });
-  return dashboard;
 });
 
 const startDevelopmentProject = Effect.fn("startDevelopmentProject")(function* (
