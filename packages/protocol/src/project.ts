@@ -17,6 +17,9 @@ const version = 1;
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ServiceStartupSchema = z.enum(["automatic", "manual"], {
+  error: "Service startup must be 'automatic' or 'manual'.",
+});
 
 type ProjectIssueContext = "record-key" | "value";
 
@@ -37,7 +40,7 @@ export interface EndpointValueExpression {
 
 export type EnvironmentValueSpec = string | EndpointValueExpression;
 
-export type ServiceStartup = "automatic" | "manual";
+export type ServiceStartup = z.infer<typeof ServiceStartupSchema>;
 
 export interface ProcessResourceSpec {
   readonly command: {
@@ -132,9 +135,7 @@ const ProcessResourceSchema = z.strictObject({
   endpoints: z.record(ResourceNameSchema, HttpEndpointSchema),
   env: z.record(EnvironmentNameSchema, EnvironmentValueSchema),
   kind: z.literal("process"),
-  startup: z.enum(["automatic", "manual"], {
-    error: "Service startup must be 'automatic' or 'manual'.",
-  }),
+  startup: ServiceStartupSchema,
 });
 
 const ResourcesSchema = z
@@ -177,6 +178,10 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   }
 
   return parseFailure;
+}
+
+export function isServiceStartup(input: unknown): input is ServiceStartup {
+  return ServiceStartupSchema.safeParse(input).success;
 }
 
 function validateProject(project: ProjectSpec): Failure | undefined {

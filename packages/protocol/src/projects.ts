@@ -10,7 +10,7 @@ import {
 import { deepFreeze } from "./freeze.ts";
 import { isLoopbackHttpUrl } from "./loopback-url.ts";
 import { protocolVersion } from "./version.ts";
-import type { ServiceStartup } from "./project.ts";
+import { isServiceStartup, type ServiceStartup } from "./project.ts";
 
 export type ProjectState =
   | "loading"
@@ -214,10 +214,6 @@ function isServiceState(value: unknown): value is ServiceState {
     value === "exited" ||
     value === "failed"
   );
-}
-
-function isServiceStartup(value: unknown): value is ServiceStartup {
-  return value === "automatic" || value === "manual";
 }
 
 function invalidProjects(subject: string): Result<never> {
