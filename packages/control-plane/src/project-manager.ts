@@ -126,6 +126,7 @@ interface ResourceRuntime {
   readonly endpoints: Map<string, AllocatedEndpoint>;
   readonly logs: ResourceLogFeed;
   readonly name: string;
+  readonly spec: ProcessResourceSpec;
   exit?: ProcessExit;
   exitCode?: number;
   handle?: ProcessHandle;
@@ -301,7 +302,19 @@ class ProjectManagerLive {
                 ),
               );
             }
-            const created = yield* createProject(input, this.#logs);
+            const services = servicesStartingWithProject(input.spec);
+            if (services.length === 0) {
+              return yield* Effect.fail(
+                failure(
+                  createDiagnostic({
+                    code: "SYD4009",
+                    help: "Set 'startWithProject' to true for at least one service, then run the project again.",
+                    message: `No services are configured to start with project '${input.spec.name}'.`,
+                  }),
+                ),
+              );
+            }
+            const created = yield* createProject(input, services, this.#logs);
             this.#activeRoots.set(input.root, created);
             this.#activeProjects.set(created.id, created);
             return created;
@@ -365,6 +378,7 @@ class ProjectManagerLive {
             ),
             ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
             name: resource.name,
+            startWithProject: resource.spec.startWithProject,
             state: resource.state,
           }),
         ),
@@ -378,7 +392,7 @@ class ProjectManagerLive {
       project: ProjectRuntime,
       input: StartProjectInput,
     ): Effect.fn.Return<ManagedProject, StartProjectFailure> {
-      const allocated = yield* this.#allocate(project, input.spec).pipe(toResultEffect);
+      const allocated = yield* this.#allocate(project).pipe(toResultEffect);
       if (!allocated.success) {
         return yield* this.#resolveStartFailure(project, allocated);
       }
@@ -409,19 +423,9 @@ class ProjectManagerLive {
   );
 
   #allocate = Effect.fn("ProjectManager.allocate")(
-    function* (
-      this: ProjectManagerLive,
-      project: ProjectRuntime,
-      spec: ProjectSpec,
-    ): Effect.fn.Return<void, Failure> {
+    function* (this: ProjectManagerLive, project: ProjectRuntime): Effect.fn.Return<void, Failure> {
       for (const resource of project.resources) {
-        const resourceSpec = spec.resources[resource.name];
-        if (!resourceSpec) {
-          return yield* Effect.die(
-            new Error("Runtime resource does not have a project specification."),
-          );
-        }
-        for (const [name, endpoint] of Object.entries(resourceSpec.endpoints).toSorted(
+        for (const [name, endpoint] of Object.entries(resource.spec.endpoints).toSorted(
           ([left], [right]) => compareNames(left, right),
         )) {
           yield* this.#ensureStarting(project);
@@ -453,22 +457,18 @@ class ProjectManagerLive {
   ): Result<readonly ProcessStart[]> {
     const starts: ProcessStart[] = [];
     for (const resource of project.resources) {
-      const spec = input.spec.resources[resource.name];
-      if (!spec) {
-        throw new Error("Runtime resource does not have a project specification.");
-      }
-      const environment = this.#resolveEnvironment(resource.name, spec, project, input);
+      const environment = this.#resolveEnvironment(resource.name, resource.spec, project, input);
       if (!environment.success) {
         resource.state = "failed";
         return environment;
       }
       starts.push({
-        args: spec.command.args,
+        args: resource.spec.command.args,
         env: environment.output,
-        executable: spec.command.executable,
+        executable: resource.spec.command.executable,
         logs: resource.logs,
         projectRoot: project.root,
-        workingDirectory: spec.cwd,
+        workingDirectory: resource.spec.cwd,
       });
     }
     return success(Object.freeze(starts));
@@ -916,6 +916,7 @@ class ProjectManagerLive {
 
 const createProject = Effect.fn("createProject")(function* (
   input: StartProjectInput,
+  services: readonly (readonly [name: string, spec: ProcessResourceSpec])[],
   logs: ResourceLogStore,
 ): Effect.fn.Return<ProjectRuntime> {
   return {
@@ -926,20 +927,27 @@ const createProject = Effect.fn("createProject")(function* (
     name: input.spec.name,
     naturalCleanup: undefined,
     revision: input.revision,
-    resources: Object.keys(input.spec.resources)
-      .toSorted(compareNames)
-      .map((name) => ({
-        endpoints: new Map(),
-        logs: logs.createFeed(),
-        name,
-        state: "starting",
-        stopRequested: false,
-      })),
+    resources: services.map(([name, spec]) => ({
+      endpoints: new Map(),
+      logs: logs.createFeed(),
+      name,
+      spec,
+      state: "starting",
+      stopRequested: false,
+    })),
     root: input.root,
     startSettled: yield* Deferred.make<void>(),
     stopSignal: yield* Deferred.make<void>(),
   };
 });
+
+function servicesStartingWithProject(
+  spec: ProjectSpec,
+): readonly (readonly [name: string, spec: ProcessResourceSpec])[] {
+  return Object.entries(spec.resources)
+    .filter(([, resource]) => resource.startWithProject)
+    .toSorted(([left], [right]) => compareNames(left, right));
+}
 
 function canceledFailure(): Failure {
   return failure(

@@ -39,9 +39,45 @@ describe("project definitions", () => {
         kind: "endpoint-url",
         resource: "api",
       });
+      expect(result.output.resources.api?.startWithProject).toBeTrue();
       expect(Object.isFrozen(result.output)).toBeTrue();
       expect(Object.isFrozen(result.output.resources.web?.env)).toBeTrue();
     }
+  });
+
+  test("lets a service opt out of starting with its project", () => {
+    const definition = defineProject({
+      name: "example",
+      resources: {
+        worker: service({
+          command: ["bun", "worker.ts"],
+          startWithProject: false,
+        }),
+      },
+    });
+
+    const result = readProjectDefinition(definition);
+    expect(result).toMatchObject({
+      output: { resources: { worker: { startWithProject: false } } },
+      success: true,
+    });
+  });
+
+  test("rejects invalid project-start behavior instead of enabling it", () => {
+    expectProjectError(
+      () =>
+        defineProject({
+          name: "example",
+          resources: {
+            worker: service({
+              command: ["bun", "worker.ts"],
+              // @ts-expect-error Exercise runtime validation beyond TypeScript callers.
+              startWithProject: null,
+            }),
+          },
+        }),
+      "SYD1013",
+    );
   });
 
   test("rejects references to services outside the project", () => {
@@ -62,6 +98,29 @@ describe("project definitions", () => {
           },
         }),
       "SYD1107",
+    );
+  });
+
+  test("rejects project-start services that depend on opted-out services", () => {
+    const api = service({
+      command: ["bun", "api.ts"],
+      endpoints: { http: endpoint.http({ env: "PORT" }) },
+      startWithProject: false,
+    });
+
+    expectProjectError(
+      () =>
+        defineProject({
+          name: "example",
+          resources: {
+            api,
+            web: service({
+              command: ["bun", "web.ts"],
+              env: { API_URL: api.endpoints.http.url },
+            }),
+          },
+        }),
+      "SYD1014",
     );
   });
 

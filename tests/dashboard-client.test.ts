@@ -27,6 +27,7 @@ test("daemon client requests and validates the durable project list", async () =
               {
                 endpoints: [{ name: "http", url: "http://127.0.0.1:4000" }],
                 name: "api",
+                startWithProject: true,
                 state: "running",
               },
             ],

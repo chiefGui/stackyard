@@ -10,5 +10,10 @@ export default defineProject({
         http: endpoint.http({ env: "PORT", preferredPort: 43_210 }),
       },
     }),
+    worker: service({
+      command: ["bun", "worker.ts"],
+      cwd: ".",
+      startWithProject: false,
+    }),
   },
 });

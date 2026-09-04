@@ -640,9 +640,10 @@ function stoppedProject(name: string, spec: ProjectSpec): Project {
     name,
     restartRequired: false,
     root: resolve(import.meta.dir, ".."),
-    services: Object.keys(spec.resources).map((serviceName) => ({
+    services: Object.entries(spec.resources).map(([serviceName, resource]) => ({
       endpoints: [],
       name: serviceName,
+      startWithProject: resource.startWithProject,
       state: "stopped",
     })),
     state: "stopped",
@@ -723,6 +724,7 @@ function projectSpec(): ProjectSpec {
         endpoints: {},
         env: {},
         kind: "process",
+        startWithProject: true,
       },
     },
   });
@@ -735,6 +737,7 @@ function twoResourceProjectSpec(): ProjectSpec {
     endpoints: {},
     env: {},
     kind: "process" as const,
+    startWithProject: true,
   };
   return validProjectSpec({
     name: "failure-fixture",

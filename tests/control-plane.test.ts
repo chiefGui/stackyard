@@ -97,6 +97,41 @@ describe("project manager", () => {
     });
   });
 
+  test("starts only services configured to start with the project", async () => {
+    const ports = new FakePorts();
+    const processes = new FakeProcesses();
+    const manager = await createManager(ports, processes);
+
+    const started = await expectStarted(
+      startProject(manager, "/project", projectSpecWithWebOptedOut()),
+    );
+
+    expect(processes.starts.map(({ executable }) => executable)).toEqual(["api-command"]);
+    expect(ports.preferredPorts).toEqual([4100]);
+    expect(
+      (await Effect.runPromise(manager.listActiveProjects)).projects[0]?.services,
+    ).toMatchObject([{ name: "api", startWithProject: true, state: "running" }]);
+    await Effect.runPromise(started.stop);
+  });
+
+  test("explains when no services start with the project", async () => {
+    const ports = new FakePorts();
+    const processes = new FakeProcesses();
+    const manager = await createManager(ports, processes);
+
+    const started = await outcome(
+      startProject(manager, "/project", projectSpecWithNoServicesStarting()),
+    );
+
+    expect(started).toMatchObject({
+      error: { diagnostics: [{ code: "SYD4009" }] },
+      ok: false,
+    });
+    expect(ports.leases).toEqual([]);
+    expect(processes.starts).toEqual([]);
+    expect((await Effect.runPromise(manager.listActiveProjects)).projects).toEqual([]);
+  });
+
   test("rolls back partial startup and allows a clean retry", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses(1);
@@ -328,6 +363,7 @@ describe("project catalog and orchestration", () => {
 
   test("keeps one durable project while definition and runtime state change", async () => {
     const state = createCatalogState();
+    state.definition = { kind: "valid", spec: projectSpecWithWebOptedOut() };
     const ports = new FakePorts();
     const processes = new FakeProcesses();
     const runtime = createControlPlaneRuntime(state, ports, processes);
@@ -346,8 +382,8 @@ describe("project catalog and orchestration", () => {
     expect(added).toMatchObject({
       id: "project-one",
       services: [
-        { name: "api", state: "stopped" },
-        { name: "web", state: "stopped" },
+        { name: "api", startWithProject: true, state: "stopped" },
+        { name: "web", startWithProject: false, state: "stopped" },
       ],
       state: "stopped",
     });
@@ -361,6 +397,10 @@ describe("project catalog and orchestration", () => {
     );
     expect((await Effect.runPromise(projects.list))[0]).toMatchObject({
       id: "project-one",
+      services: [
+        { name: "api", startWithProject: true, state: "running" },
+        { name: "web", startWithProject: false, state: "stopped" },
+      ],
       state: "running",
     });
 
@@ -372,9 +412,9 @@ describe("project catalog and orchestration", () => {
       id: "project-one",
       restartRequired: true,
       services: [
-        { name: "api", state: "running" },
-        { name: "web", state: "running" },
-        { name: "worker", state: "stopped" },
+        { name: "api", startWithProject: true, state: "running" },
+        { name: "web", startWithProject: true, state: "stopped" },
+        { name: "worker", startWithProject: true, state: "stopped" },
       ],
     });
 
@@ -588,6 +628,7 @@ function projectSpec(): ProjectSpec {
         },
         env: { PATH: "new" },
         kind: "process",
+        startWithProject: true,
       },
       web: {
         command: { args: [], executable: "web-command" },
@@ -601,6 +642,7 @@ function projectSpec(): ProjectSpec {
           API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
         },
         kind: "process",
+        startWithProject: true,
       },
     },
   });
@@ -622,8 +664,45 @@ function projectSpecWithWorker(): ProjectSpec {
         endpoints: {},
         env: {},
         kind: "process",
+        startWithProject: true,
       },
     },
+  });
+  if (!result.success) {
+    throw new Error("Test project specification is invalid.");
+  }
+  return result.output;
+}
+
+function projectSpecWithWebOptedOut(): ProjectSpec {
+  const current = projectSpec();
+  const web = current.resources.web;
+  if (!web) {
+    throw new Error("Expected the web service specification.");
+  }
+  const result = createProjectSpec({
+    name: current.name,
+    resources: {
+      ...current.resources,
+      web: { ...web, startWithProject: false },
+    },
+  });
+  if (!result.success) {
+    throw new Error("Test project specification is invalid.");
+  }
+  return result.output;
+}
+
+function projectSpecWithNoServicesStarting(): ProjectSpec {
+  const current = projectSpec();
+  const result = createProjectSpec({
+    name: current.name,
+    resources: Object.fromEntries(
+      Object.entries(current.resources).map(([name, resource]) => [
+        name,
+        { ...resource, startWithProject: false },
+      ]),
+    ),
   });
   if (!result.success) {
     throw new Error("Test project specification is invalid.");

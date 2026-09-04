@@ -43,7 +43,7 @@ export function createRunCommand(
       ),
     },
     meta: {
-      description: "Start a project and its dashboard",
+      description: "Run a project",
     },
     run({ args }) {
       return reportCommandFailure(runProject(args.path, dependencies), dependencies.diagnostics);

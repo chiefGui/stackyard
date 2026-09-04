@@ -617,7 +617,7 @@ function durableProject(): Project {
     name: "demo",
     restartRequired: false,
     root: resolve("C:/projects/demo"),
-    services: [{ endpoints: [], name: "api", state: "stopped" }],
+    services: [{ endpoints: [], name: "api", startWithProject: true, state: "stopped" }],
     state: "stopped",
   };
 }

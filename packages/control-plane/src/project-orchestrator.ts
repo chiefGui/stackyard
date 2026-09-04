@@ -4,6 +4,7 @@ import {
   failure,
   type Failure,
 } from "@stackyard/diagnostics";
+import type { ProjectSpec } from "@stackyard/protocol";
 import { Context, Effect, Layer, Semaphore } from "effect";
 
 import { definitionSpec, type CatalogProject, ProjectCatalog } from "./project-catalog.ts";
@@ -130,7 +131,7 @@ function projectView(project: CatalogProject, runtime: RuntimeProject | undefine
   const restartRequired = Boolean(
     runtime && project.definition.kind === "valid" && runtime.revision !== project.revision,
   );
-  const services = mergeServices(spec ? Object.keys(spec.resources) : [], runtime);
+  const services = mergeServices(spec?.resources, runtime);
   const issue =
     project.definition.kind === "invalid" || project.definition.kind === "missing"
       ? createDiagnosticReport(project.definition.diagnostics)
@@ -148,19 +149,31 @@ function projectView(project: CatalogProject, runtime: RuntimeProject | undefine
 }
 
 function mergeServices(
-  definedNames: readonly string[],
+  definedServices: ProjectSpec["resources"] | undefined,
   runtime: RuntimeProject | undefined,
 ): readonly Service[] {
   const runtimeServices = new Map(runtime?.services.map((service) => [service.name, service]));
-  const names = new Set([...definedNames, ...runtimeServices.keys()]);
+  const names = new Set([...Object.keys(definedServices ?? {}), ...runtimeServices.keys()]);
   return Object.freeze(
     [...names]
       .toSorted((left, right) => left.localeCompare(right, "en"))
       .map((name) => {
         const active = runtimeServices.get(name);
-        return active
-          ? Object.freeze(active)
-          : Object.freeze({ endpoints: Object.freeze([]), name, state: "stopped" as const });
+        const startWithProject =
+          definedServices?.[name]?.startWithProject ?? active?.startWithProject;
+        if (startWithProject === undefined) {
+          throw new Error("A service is missing its project startup policy.");
+        }
+        return Object.freeze(
+          active
+            ? { ...active, startWithProject }
+            : {
+                endpoints: Object.freeze([]),
+                name,
+                startWithProject,
+                state: "stopped" as const,
+              },
+        );
       }),
   );
 }

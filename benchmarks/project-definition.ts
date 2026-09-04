@@ -46,6 +46,7 @@ function createProjectSpec(resourceCount: number): ProjectSpec {
         REGION: "local",
       },
       kind: "process",
+      startWithProject: true,
     };
   }
 

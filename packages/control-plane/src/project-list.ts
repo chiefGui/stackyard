@@ -14,6 +14,7 @@ export interface Service {
   readonly endpoints: readonly RuntimeServiceEndpoint[];
   readonly exitCode?: number | undefined;
   readonly name: string;
+  readonly startWithProject: boolean;
   readonly state: ServiceState;
 }
 
@@ -38,6 +39,7 @@ export interface RuntimeService {
   readonly endpoints: readonly RuntimeServiceEndpoint[];
   readonly exitCode?: number | undefined;
   readonly name: string;
+  readonly startWithProject: boolean;
   readonly state: RuntimeServiceState;
 }
 

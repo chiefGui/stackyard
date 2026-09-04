@@ -46,6 +46,7 @@ export interface ProcessResourceSpec {
   readonly endpoints: Readonly<Record<string, EndpointSpec>>;
   readonly env: Readonly<Record<string, EnvironmentValueSpec>>;
   readonly kind: "process";
+  readonly startWithProject: boolean;
 }
 
 export interface ProjectSpec {
@@ -129,6 +130,9 @@ const ProcessResourceSchema = z.strictObject({
   endpoints: z.record(ResourceNameSchema, HttpEndpointSchema),
   env: z.record(EnvironmentNameSchema, EnvironmentValueSchema),
   kind: z.literal("process"),
+  startWithProject: z.boolean({
+    error: "Service property 'startWithProject' must be true or false.",
+  }),
 });
 
 const ResourcesSchema = z
@@ -154,7 +158,7 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   const result = ProjectSpecSchema.safeParse(input);
 
   if (result.success) {
-    const semanticFailure = validateEnvironmentOwnership(result.data);
+    const semanticFailure = validateProject(result.data);
     return semanticFailure ?? success(deepFreeze(result.data));
   }
 
@@ -173,9 +177,18 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   return parseFailure;
 }
 
-function validateEnvironmentOwnership(project: ProjectSpec): Failure | undefined {
+function validateProject(project: ProjectSpec): Failure | undefined {
   const diagnostics = new DiagnosticCollector();
 
+  validateEnvironmentOwnership(project, diagnostics);
+  validateStartupDependencies(project, diagnostics);
+  return diagnostics.toFailure();
+}
+
+function validateEnvironmentOwnership(
+  project: ProjectSpec,
+  diagnostics: DiagnosticCollector,
+): void {
   for (const [resourceName, resource] of Object.entries(project.resources).toSorted(
     ([left], [right]) => left.localeCompare(right, "en"),
   )) {
@@ -238,8 +251,35 @@ function validateEnvironmentOwnership(project: ProjectSpec): Failure | undefined
       explicitNames.set(key, name);
     }
   }
+}
 
-  return diagnostics.toFailure();
+function validateStartupDependencies(project: ProjectSpec, diagnostics: DiagnosticCollector): void {
+  for (const [resourceName, resource] of Object.entries(project.resources).toSorted(
+    ([left], [right]) => left.localeCompare(right, "en"),
+  )) {
+    if (!resource.startWithProject) {
+      continue;
+    }
+    for (const [name, value] of Object.entries(resource.env).toSorted(([left], [right]) =>
+      left.localeCompare(right, "en"),
+    )) {
+      if (typeof value === "string") {
+        continue;
+      }
+      const dependency = project.resources[value.resource];
+      if (dependency?.startWithProject !== false) {
+        continue;
+      }
+      diagnostics.report(
+        createDiagnostic({
+          code: "SYD1014",
+          help: `Let '${value.resource}' start with the project, or remove this endpoint reference.`,
+          message: `Service '${resourceName}' starts with the project but depends on service '${value.resource}', which does not.`,
+          path: ["resources", resourceName, "env", name],
+        }),
+      );
+    }
+  }
 }
 
 function validateVersion(input: unknown): Failure | undefined {
@@ -384,6 +424,13 @@ function classifyProjectIssue(
     return {
       code: "SYD1006",
       help: "Use an integer from 1 through 65535.",
+    };
+  }
+
+  if (field === "startWithProject") {
+    return {
+      code: "SYD1013",
+      help: "Use true to start the service with its project, or false to leave it stopped.",
     };
   }
 

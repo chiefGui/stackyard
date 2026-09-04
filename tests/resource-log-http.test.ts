@@ -176,6 +176,7 @@ function projectSpec() {
         endpoints: {},
         env: {},
         kind: "process",
+        startWithProject: true,
       },
     },
   });

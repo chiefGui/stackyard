@@ -110,6 +110,7 @@ test("the packed package works in an external Bun project", async () => {
           },
           env: {},
           kind: "process",
+          startWithProject: false,
         },
       },
       schemaVersion: 1,

@@ -17,6 +17,7 @@ const validSpec = {
       },
       env: {},
       kind: "process",
+      startWithProject: true,
     },
   },
   schemaVersion: 1,
@@ -123,6 +124,51 @@ describe("ProjectSpec", () => {
       "Working directory is not a portable project-relative path.",
     );
     expect(diagnostics[0]?.help).toContain("apps/api");
+  });
+
+  test("rejects invalid project-start behavior", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: { ...validSpec.resources.api, startWithProject: "sometimes" },
+      },
+    });
+
+    expect(diagnostics).toMatchObject([
+      {
+        code: "SYD1013",
+        message: "Service property 'startWithProject' must be true or false.",
+        path: ["resources", "api", "startWithProject"],
+      },
+    ]);
+  });
+
+  test("rejects project-start services that depend on opted-out services", () => {
+    const diagnostics = parseDiagnostics({
+      ...validSpec,
+      resources: {
+        api: { ...validSpec.resources.api, startWithProject: false },
+        web: {
+          command: { args: [], executable: "bun" },
+          cwd: "apps/web",
+          endpoints: {},
+          env: {
+            API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
+          },
+          kind: "process",
+          startWithProject: true,
+        },
+      },
+    });
+
+    expect(diagnostics).toMatchObject([
+      {
+        code: "SYD1014",
+        message:
+          "Service 'web' starts with the project but depends on service 'api', which does not.",
+        path: ["resources", "web", "env", "API_URL"],
+      },
+    ]);
   });
 
   test("preserves resource key validation details", () => {

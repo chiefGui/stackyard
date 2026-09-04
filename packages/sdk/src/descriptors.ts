@@ -39,6 +39,7 @@ export interface ServiceOptions<Endpoints extends EndpointInputRecord> {
   readonly cwd?: string;
   readonly endpoints?: Endpoints;
   readonly env?: Readonly<Record<string, EnvironmentInputValue>>;
+  readonly startWithProject?: boolean;
 }
 
 export type EndpointInputRecord = Readonly<Record<string, HttpEndpointDescriptor>>;
@@ -61,6 +62,7 @@ export function service<const Endpoints extends EndpointInputRecord = Record<nev
     cwd: options.cwd ?? ".",
     endpoints: { ...options.endpoints },
     env: { ...options.env },
+    startWithProject: options.startWithProject === undefined ? true : options.startWithProject,
   };
 
   const outputs = Object.fromEntries(
@@ -84,6 +86,7 @@ export interface ServiceState {
   readonly cwd: string;
   readonly endpoints: Readonly<Record<string, unknown>>;
   readonly env: Readonly<Record<string, unknown>>;
+  readonly startWithProject: boolean;
 }
 
 export interface RuntimeValueState {

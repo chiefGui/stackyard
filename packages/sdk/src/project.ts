@@ -192,6 +192,7 @@ function compileService(
     endpoints,
     env,
     kind: "process",
+    startWithProject: state.startWithProject,
   };
 }
 

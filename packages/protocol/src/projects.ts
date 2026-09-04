@@ -30,6 +30,7 @@ export interface Service {
   readonly endpoints: readonly ServiceEndpoint[];
   readonly exitCode?: number | undefined;
   readonly name: string;
+  readonly startWithProject: boolean;
   readonly state: ServiceState;
 }
 
@@ -132,9 +133,10 @@ function readProject(input: unknown): Project | undefined {
 function readService(input: unknown): Service | undefined {
   if (
     !isPlainObject(input) ||
-    !hasExactKeys(input, ["endpoints", "name", "state"], ["exitCode"]) ||
+    !hasExactKeys(input, ["endpoints", "name", "startWithProject", "state"], ["exitCode"]) ||
     !Array.isArray(input.endpoints) ||
     !isNonEmptyString(input.name) ||
+    typeof input.startWithProject !== "boolean" ||
     !isServiceState(input.state) ||
     (input.exitCode !== undefined &&
       (typeof input.exitCode !== "number" || !Number.isSafeInteger(input.exitCode)))
@@ -162,6 +164,7 @@ function readService(input: unknown): Service | undefined {
     endpoints,
     ...(typeof input.exitCode === "number" ? { exitCode: input.exitCode } : {}),
     name: input.name,
+    startWithProject: input.startWithProject,
     state: input.state,
   };
 }
