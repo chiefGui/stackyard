@@ -10,7 +10,7 @@ import {
 } from "@stackyard/diagnostics";
 import { CanonicalPath, discoverProject } from "@stackyard/project-loader";
 import { createStartProjectMessage, parseDaemonServerMessage } from "@stackyard/protocol";
-import { Deferred, Effect, FileSystem, Option, Path, Ref, Scope } from "effect";
+import { Deferred, Effect, FileSystem, Option, Path, Predicate, Ref, Scope } from "effect";
 import { Argument } from "effect/unstable/cli";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -275,7 +275,7 @@ function closeSocket(socket: WebSocket): void {
 }
 
 function socketFailureNote(error: Socket.SocketError, started: boolean): string {
-  if (error.reason._tag !== "SocketCloseError") {
+  if (!Predicate.isTagged("SocketCloseError")(error.reason)) {
     return "The control connection failed.";
   }
   return started
