@@ -65,7 +65,7 @@ const DaemonHealthSchema = Schema.Struct({
 
 export interface DaemonLock {
   readonly instanceId: string;
-  readonly release: Effect.Effect<void, unknown>;
+  readonly release: Effect.Effect<void, PlatformError.PlatformError>;
 }
 
 export interface EnsureDaemonOptions {
@@ -426,7 +426,7 @@ const waitForDaemonStop = Effect.fn("waitForDaemonStop")(function* (
   directory: string,
   locator: DaemonLocator,
   attempts: number,
-): Effect.fn.Return<boolean, unknown, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<boolean, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const current = yield* readLocator(directory);
     if ((current && current.instanceId !== locator.instanceId) || !isProcessAlive(locator.pid)) {
@@ -440,7 +440,11 @@ const waitForDaemonStop = Effect.fn("waitForDaemonStop")(function* (
 export const publishLocator = Effect.fn("publishLocator")(function* (
   directory: string,
   input: Omit<DaemonLocator, "protocolVersion" | "schemaVersion">,
-): Effect.fn.Return<DaemonLocator, unknown, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  DaemonLocator,
+  AggregateError | PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
   const fileSystem = yield* FileSystem.FileSystem;
   const paths = yield* Path.Path;
   const locator = Object.freeze({ ...input, protocolVersion, schemaVersion: version });
@@ -477,7 +481,7 @@ export const publishLocator = Effect.fn("publishLocator")(function* (
 export const removeLocator = Effect.fn("removeLocator")(function* (
   directory: string,
   instanceId: string,
-): Effect.fn.Return<void, unknown, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const current = yield* readLocator(directory);
@@ -488,7 +492,11 @@ export const removeLocator = Effect.fn("removeLocator")(function* (
 
 export const readLocator = Effect.fn("readLocator")(function* (
   directory: string,
-): Effect.fn.Return<DaemonLocator | undefined, unknown, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  DaemonLocator | undefined,
+  PlatformError.PlatformError,
+  FileSystem.FileSystem | Path.Path
+> {
   const path = yield* Path.Path;
   const read = yield* readJson(path.join(directory, locatorName)).pipe(
     Effect.match({
@@ -502,7 +510,10 @@ export const readLocator = Effect.fn("readLocator")(function* (
     })(read.value);
     return EffectResult.isSuccess(parsed) ? Object.freeze(parsed.success) : undefined;
   }
-  if (read.error instanceof SyntaxError || isMissing(read.error)) {
+  if (read.error instanceof SyntaxError) {
+    return undefined;
+  }
+  if (isMissing(read.error)) {
     return undefined;
   }
   return yield* Effect.fail(read.error);
@@ -564,7 +575,10 @@ const readJson = Effect.fn("readJson")((path: string) =>
       Effect.flatMap((text) =>
         Effect.try({
           try: () => JSON.parse(text) as unknown,
-          catch: (error) => error,
+          catch: (cause) =>
+            cause instanceof SyntaxError
+              ? cause
+              : new SyntaxError("Daemon state is not valid JSON.", { cause }),
         }),
       ),
     ),
@@ -670,7 +684,7 @@ const lockExists = Effect.fn("lockExists")((directory: string) =>
 const removeOwnedLock = Effect.fn("removeOwnedLock")(function* (
   directory: string,
   instanceId: string,
-): Effect.fn.Return<void, unknown, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const owner = yield* readLockOwner(directory);
   if (owner?.instanceId === instanceId && owner.pid === process.pid) {

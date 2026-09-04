@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Context, Crypto, Effect, FileSystem, Layer, Path, Scope } from "effect";
+import { Context, Crypto, Effect, FileSystem, Layer, Path, PlatformError, Scope } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createServer, type ViteDevServer } from "vite";
 
@@ -158,7 +158,7 @@ function runDevelopment(): Effect.Effect<
 
 const startDashboard = Effect.fn("startDevelopmentDashboard")(function* (
   port: number,
-): Effect.fn.Return<ViteDevServer, unknown> {
+): Effect.fn.Return<ViteDevServer, Error> {
   const dashboard = yield* Effect.tryPromise({
     try: () =>
       createServer({
@@ -167,9 +167,9 @@ const startDashboard = Effect.fn("startDevelopmentDashboard")(function* (
         root: join(repositoryRoot, "apps", "dashboard-web"),
         server: { host: "127.0.0.1", port, strictPort: true },
       }),
-    catch: (error) => error,
+    catch: asError,
   });
-  yield* Effect.tryPromise({ try: () => dashboard.listen(), catch: (error) => error });
+  yield* Effect.tryPromise({ try: () => dashboard.listen(), catch: asError });
   return dashboard;
 });
 
@@ -178,7 +178,7 @@ const startDevelopmentProject = Effect.fn("startDevelopmentProject")(function* (
   runtimeDirectory: string,
 ): Effect.fn.Return<
   ChildProcessSpawner.ChildProcessHandle,
-  unknown,
+  Error | PlatformError.PlatformError,
   ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
 > {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -194,7 +194,9 @@ const startDevelopmentProject = Effect.fn("startDevelopmentProject")(function* (
 });
 
 const stopDevelopmentProject = Effect.fn("stopDevelopmentProject")(
-  (subprocess: ChildProcessSpawner.ChildProcessHandle): Effect.Effect<void, unknown> =>
+  (
+    subprocess: ChildProcessSpawner.ChildProcessHandle,
+  ): Effect.Effect<void, PlatformError.PlatformError> =>
     Effect.gen(function* () {
       if (yield* subprocess.isRunning) {
         yield* subprocess.kill({ killSignal: "SIGINT" });
@@ -240,4 +242,8 @@ function readPort(name: string, fallback: number): number {
     throw new Error(`${name} must be a whole number from 1 to 65535.`);
   }
   return port;
+}
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error("Platform operation failed.", { cause });
 }
