@@ -1,6 +1,6 @@
 import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import type { ProcessLogLine, ProcessLogSink } from "@stackyard/control-plane";
-import { Effect, Result as EffectResult } from "effect";
+import { Effect, Result as EffectResult, Stream } from "effect";
 
 export const maxProcessLogLineBytes = 256 * 1024;
 
@@ -28,15 +28,10 @@ export const captureProcessLogs = Effect.fn("captureProcessLogs")(function* (
   options: ProcessLogCaptureOptions = {},
 ): Effect.fn.Return<void, Failure> {
   const maxLineBytes = options.maxLineBytes ?? maxProcessLogLineBytes;
-  const controller = new AbortController();
   const capture = (
     stream: ReadableStream<Uint8Array>,
     name: "stderr" | "stdout",
-  ): Effect.Effect<void, string> =>
-    Effect.tryPromise({
-      try: () => captureStream(stream, name, sink, maxLineBytes, controller.signal),
-      catch: describeError,
-    });
+  ): Effect.Effect<void, string> => captureStream(stream, name, sink, maxLineBytes);
   return yield* Effect.all([capture(stdout, "stdout"), capture(stderr, "stderr")], {
     concurrency: "unbounded",
     mode: "result",
@@ -58,44 +53,40 @@ export const captureProcessLogs = Effect.fn("captureProcessLogs")(function* (
             ),
           );
     }),
-    Effect.ensuring(Effect.sync(() => controller.abort())),
   );
 });
 
-async function captureStream(
+function captureStream(
   stream: ReadableStream<Uint8Array>,
   name: "stderr" | "stdout",
   sink: ProcessLogSink,
   maxLineBytes: number,
-  signal: AbortSignal | undefined,
-): Promise<void> {
-  const reader = stream.getReader();
+): Effect.Effect<void, string> {
   const framer = new BoundedLineFramer(maxLineBytes);
-  const cancel = (): void => {
-    void reader.cancel().catch(() => undefined);
-  };
-  if (signal?.aborted) {
-    cancel();
-  } else {
-    signal?.addEventListener("abort", cancel, { once: true });
-  }
-  try {
-    while (true) {
-      /* oxlint-disable-next-line eslint/no-await-in-loop -- A single stream must be drained in order. */
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
+  const finish = Effect.try({
+    try: () => {
+      const finalLine = framer.finish();
+      if (finalLine) {
+        publish([finalLine], name, sink);
       }
-      framer.push(chunk.value, (lines) => publish(lines, name, sink));
-    }
-    const finalLine = framer.finish();
-    if (finalLine) {
-      publish([finalLine], name, sink);
-    }
-  } finally {
-    signal?.removeEventListener("abort", cancel);
-    reader.releaseLock();
-  }
+    },
+    catch: describeError,
+  });
+  return Stream.fromReadableStream({
+    evaluate: () => stream,
+    onError: describeError,
+  }).pipe(
+    Stream.runForEach((chunk) =>
+      Effect.try({
+        try: () => {
+          framer.push(chunk, (lines) => publish(lines, name, sink));
+        },
+        catch: describeError,
+      }),
+    ),
+    Effect.tap(() => finish),
+    Effect.onInterrupt(() => finish),
+  );
 }
 
 function publish(
