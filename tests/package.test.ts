@@ -184,7 +184,7 @@ test("the packed package works in an external Bun project", async () => {
     ).toContain('<div id="root"></div>');
 
     runProcess.kill("SIGINT");
-    expect(await runProcess.exited).toBe(process.platform === "win32" ? 130 : 0);
+    expect(await runProcess.exited).toBe(130);
     expect(await runError).toBe("");
     expect(await runOutput).toContain("packed-run is running. Dashboard:");
     await waitFor(async () => {

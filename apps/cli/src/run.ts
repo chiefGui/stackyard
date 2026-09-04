@@ -89,7 +89,6 @@ function runSession(
     }
     let settled = false;
     let started = false;
-    let stopRequested = false;
     const timeout = setTimeout(() => {
       dependencies.diagnostics.report(
         createDiagnostic({
@@ -107,35 +106,11 @@ function runSession(
       }
       settled = true;
       clearTimeout(timeout);
-      process.off("SIGINT", stop);
-      process.off("SIGTERM", stop);
       closeSocket(socket);
       resume(Effect.succeed(exitCode));
     };
-    const stop = (): void => {
-      stopRequested = true;
-      clearTimeout(timeout);
-      if (socket.readyState === WebSocket.CONNECTING) {
-        finish(0);
-        return;
-      }
-      if (socket.readyState === WebSocket.OPEN) {
-        if (!sendSocketMessage(socket, createStopProjectMessage())) {
-          dependencies.diagnostics.report(
-            connectionDiagnostic("The stop request could not be sent."),
-          );
-          finish(1);
-        }
-      }
-    };
 
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
     socket.addEventListener("open", () => {
-      if (stopRequested) {
-        finish(0);
-        return;
-      }
       if (
         !sendSocketMessage(socket, createStartProjectMessage(root, serviceEnvironment(process.env)))
       ) {
@@ -195,8 +170,6 @@ function runSession(
     });
     return Effect.sync(() => {
       clearTimeout(timeout);
-      process.off("SIGINT", stop);
-      process.off("SIGTERM", stop);
       if (socket.readyState === WebSocket.OPEN) {
         sendSocketMessage(socket, createStopProjectMessage());
       }
