@@ -174,8 +174,19 @@ const saveProjectRecords = Effect.fn("FileProjectStore.save")(function* (
   if (written.success) {
     return undefined;
   }
-  yield* fileSystem.remove(temporaryPath, { force: true }).pipe(Effect.ignore);
-  return yield* Effect.fail(projectStorageFailure("write", path, written.error));
+  const removed = yield* fileSystem.remove(temporaryPath, { force: true }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
+  );
+  const error = removed.success
+    ? written.error
+    : new AggregateError(
+        [written.error, removed.error],
+        "The project catalog and its temporary file could not be written.",
+      );
+  return yield* Effect.fail(projectStorageFailure("write", path, error));
 });
 
 export function makeFileProjectDefinitionObserverLayer(

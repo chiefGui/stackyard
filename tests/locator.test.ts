@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BunServices } from "@effect/platform-bun";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 
-import { acquireDaemonLock } from "../apps/daemon/src/locator.ts";
+import { acquireDaemonLock, publishLocator } from "../apps/daemon/src/locator.ts";
 
 /* oxlint-disable eslint/no-await-in-loop -- Stress iterations intentionally acquire and release one shared lock in sequence. */
 
@@ -105,6 +105,27 @@ test("fails closed when a recovery owner died", async () => {
     expect(failed.diagnostics[0].code).toBe("SYD3006");
     expect(failed.diagnostics[0].help).toContain("remove its lock directories");
     expect(failed.diagnostics[0].notes[0]).toContain("daemon.lock.recovery");
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("failed locator publication removes its temporary file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "stackyard-locator-"));
+  await mkdir(join(directory, "daemon.json"));
+
+  try {
+    const published = await Effect.runPromiseExit(
+      publishLocator(directory, {
+        instanceId: "failed-publication",
+        pid: process.pid,
+        port: 3000,
+        token: "test-token",
+      }).pipe(Effect.provide(BunServices.layer)),
+    );
+
+    expect(Exit.isFailure(published)).toBeTrue();
+    expect(await readdir(directory)).toEqual(["daemon.json"]);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

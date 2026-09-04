@@ -438,10 +438,31 @@ export const publishLocator = Effect.fn("publishLocator")(function* (
   const locator = Object.freeze({ ...input, protocolVersion, schemaVersion: version });
   const path = paths.join(directory, locatorName);
   const temporaryPath = paths.join(directory, `${locatorName}.${input.instanceId}.tmp`);
-  yield* Effect.gen(function* () {
+  const published = yield* Effect.gen(function* () {
     yield* fileSystem.writeFileString(temporaryPath, JSON.stringify(locator), { mode: 0o600 });
     yield* fileSystem.rename(temporaryPath, path);
-  });
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
+  );
+  if (!published.success) {
+    const removed = yield* fileSystem.remove(temporaryPath, { force: true }).pipe(
+      Effect.match({
+        onFailure: (error) => ({ error, success: false as const }),
+        onSuccess: () => ({ success: true as const }),
+      }),
+    );
+    return yield* Effect.fail(
+      removed.success
+        ? published.error
+        : new AggregateError(
+            [published.error, removed.error],
+            "The daemon locator and its temporary file could not be written.",
+          ),
+    );
+  }
   return locator;
 });
 

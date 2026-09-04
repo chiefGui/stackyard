@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime } from "effect";
 
 import {
   makeFileProjectDefinitionObserverLayer,
@@ -52,6 +52,27 @@ test("the project store refuses corrupt persisted state", async () => {
     expect(failed.diagnostics[0].help).toContain("Removing it forgets every project");
     await runtime.dispose();
   } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("failed project catalog publication removes its temporary file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "stackyard-projects-write-"));
+  await mkdir(join(directory, "projects.json"));
+  const runtime = ManagedRuntime.make(
+    makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+  );
+
+  try {
+    const store = await runtime.runPromise(ProjectStore);
+    const saved = await Effect.runPromiseExit(
+      store.save([{ id: "project", root: join(directory, "project") }]),
+    );
+
+    expect(Exit.isFailure(saved)).toBeTrue();
+    expect(await readdir(directory)).toEqual(["projects.json"]);
+  } finally {
+    await runtime.dispose();
     await rm(directory, { force: true, recursive: true });
   }
 });
