@@ -110,7 +110,9 @@ const acquireDaemon = Effect.fn("acquireDaemon")(function* (
       return;
     }
     shuttingDown = true;
-    setTimeout(() => Deferred.doneUnsafe(shutdownRequested, Effect.void));
+    Effect.runFork(
+      Effect.yieldNow.pipe(Effect.andThen(Deferred.succeed(shutdownRequested, undefined))),
+    );
   };
 
   const server = yield* Effect.acquireRelease(
