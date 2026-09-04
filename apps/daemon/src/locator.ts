@@ -13,6 +13,7 @@ import {
   Schema,
 } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { resolveStackyardDirectories } from "./directories.ts";
 
@@ -101,10 +102,14 @@ export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
 ): Effect.fn.Return<
   DaemonLocator,
   Failure,
-  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
@@ -138,21 +143,24 @@ export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
   environment.STACKYARD_RUNTIME_DIR = directory;
   environment.STACKYARD_DASHBOARD_WEB_DIR = path.resolve(options.dashboardWebDirectory);
 
-  const spawned = yield* Effect.try({
-    try: () => {
-      const subprocess = Bun.spawn({
-        cmd: [process.execPath, options.daemonEntrypoint, internalDaemonCommand],
-        detached: true,
-        env: environment,
-        stderr: "ignore",
-        stdin: "ignore",
-        stdout: "ignore",
-        windowsHide: true,
-      });
-      subprocess.unref();
-    },
-    catch: (error) => error,
-  }).pipe(
+  const spawned = yield* Effect.scoped(
+    spawner
+      .spawn(
+        ChildProcess.make(process.execPath, [options.daemonEntrypoint, internalDaemonCommand], {
+          cwd: process.cwd(),
+          detached: true,
+          env: environment,
+          stderr: "ignore",
+          stdin: "ignore",
+          stdout: "ignore",
+          windowsHide: true,
+        }),
+      )
+      .pipe(
+        Effect.flatMap((subprocess) => subprocess.unref),
+        Effect.asVoid,
+      ),
+  ).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
       onSuccess: () => ({ success: true as const }),

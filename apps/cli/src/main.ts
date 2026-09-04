@@ -24,6 +24,7 @@ import {
 import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
 import { Crypto, Effect, FileSystem, Path } from "effect";
 import { HttpClient } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import packageManifest from "../package.json" with { type: "json" };
 import { runCli, type CliEntry } from "./cli.ts";
@@ -41,6 +42,7 @@ import { createStopCommand } from "./stop.ts";
 
 type DaemonCommandServices =
   | CanonicalPath
+  | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient

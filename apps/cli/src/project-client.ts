@@ -15,6 +15,7 @@ import {
 } from "@stackyard/protocol";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 export class ProjectClient extends Context.Service<
   ProjectClient,
@@ -37,18 +38,27 @@ export interface DaemonProjectClientOptions {
 
 export function makeDaemonProjectClientLayer(
   options: DaemonProjectClientOptions,
-): Layer.Layer<ProjectClient, never, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
+): Layer.Layer<
+  ProjectClient,
+  never,
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
+> {
   return Layer.effect(
     ProjectClient,
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
       const fileSystem = yield* FileSystem.FileSystem;
       const pathService = yield* Path.Path;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const daemon = yield* Effect.cached(
         ensureDaemon(options).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(HttpClient.HttpClient, client),
           Effect.provideService(Path.Path, pathService),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         ),
       );
 

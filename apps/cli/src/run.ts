@@ -17,6 +17,7 @@ import {
 import { Effect, FileSystem, Option, Path } from "effect";
 import { Argument } from "effect/unstable/cli";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 export interface RunCommandDependencies {
@@ -29,7 +30,13 @@ export interface RunCommandDependencies {
 
 export function createRunCommand(
   dependencies: RunCommandDependencies,
-): CliCommand<CanonicalPath | FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
+): CliCommand<
+  | CanonicalPath
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
+> {
   return defineCliCommand("run", "SYD2009", {
     args: {
       path: Argument.string("path").pipe(
@@ -53,7 +60,11 @@ const runProject = Effect.fn("runProject")(function* (
 ): Effect.fn.Return<
   number,
   Failure,
-  CanonicalPath | FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+  | CanonicalPath
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
 > {
   const discovered = yield* discoverProject(path, dependencies.currentDirectory);
   const canonicalPath = yield* CanonicalPath;

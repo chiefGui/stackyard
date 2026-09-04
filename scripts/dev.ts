@@ -1,7 +1,8 @@
 import { join, resolve } from "node:path";
 
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Context, Crypto, Effect, FileSystem, Layer, Path } from "effect";
+import { Context, Crypto, Effect, FileSystem, Layer, Path, Scope } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createServer, type ViteDevServer } from "vite";
 
 import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
@@ -39,7 +40,11 @@ BunRuntime.runMain(
 function runDevelopment(): Effect.Effect<
   number,
   never,
-  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  | CanonicalPath
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
 > {
   let cleanupFailed = false;
   const reportCleanupFailure = (message: string, error: unknown): Effect.Effect<void> =>
@@ -171,40 +176,38 @@ const startDashboard = Effect.fn("startDevelopmentDashboard")(function* (
 const startDevelopmentProject = Effect.fn("startDevelopmentProject")(function* (
   projectPath: string,
   runtimeDirectory: string,
-): Effect.fn.Return<Bun.Subprocess, unknown> {
+): Effect.fn.Return<
+  ChildProcessSpawner.ChildProcessHandle,
+  unknown,
+  ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+> {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = {
     ...stringEnvironment(process.env),
     STACKYARD_RUNTIME_DIR: runtimeDirectory,
   };
-  const added = spawnCli(["add", projectPath], environment);
-  const exitCode = yield* Effect.tryPromise({ try: () => added.exited, catch: (error) => error });
+  const exitCode = yield* spawner.exitCode(cliCommand(["add", projectPath], environment));
   if (exitCode !== 0) {
     return yield* Effect.fail(new Error("The development project could not be added."));
   }
-  return spawnCli(["run", projectPath], environment);
+  return yield* spawner.spawn(cliCommand(["run", projectPath], environment));
 });
 
 const stopDevelopmentProject = Effect.fn("stopDevelopmentProject")(
-  (subprocess: Bun.Subprocess): Effect.Effect<void, unknown> =>
+  (subprocess: ChildProcessSpawner.ChildProcessHandle): Effect.Effect<void, unknown> =>
     Effect.gen(function* () {
-      yield* Effect.try({
-        try: () => {
-          if (subprocess.exitCode === null) {
-            subprocess.kill("SIGINT");
-          }
-        },
-        catch: (error) => error,
-      });
-      yield* Effect.tryPromise({ try: () => subprocess.exited, catch: (error) => error });
+      if (yield* subprocess.isRunning) {
+        yield* subprocess.kill({ killSignal: "SIGINT" });
+      }
+      yield* subprocess.exitCode;
     }),
 );
 
-function spawnCli(
+function cliCommand(
   args: readonly string[],
   environment: Readonly<Record<string, string>>,
-): Bun.Subprocess {
-  return Bun.spawn({
-    cmd: [process.execPath, cliEntrypoint, ...args],
+): ChildProcess.Command {
+  return ChildProcess.make(process.execPath, [cliEntrypoint, ...args], {
     cwd: repositoryRoot,
     env: environment,
     stderr: "inherit",
