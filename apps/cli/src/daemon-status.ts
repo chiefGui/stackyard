@@ -1,19 +1,18 @@
 import { daemonUrl, type DaemonLocator } from "@stackyard/daemon/locator";
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
 import { Effect } from "effect";
-import { HttpClient } from "effect/unstable/http";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
 export interface DaemonStatusCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  find(): Effect.Effect<DaemonLocator | undefined, Failure, HttpClient.HttpClient | R>;
+  find(): Effect.Effect<DaemonLocator | undefined, Failure, R>;
   writeOutput(output: string): void;
 }
 
 export function createDaemonStatusCommand<R>(
   dependencies: DaemonStatusCommandDependencies<R>,
-): CliCommand<HttpClient.HttpClient | R> {
+): CliCommand<R> {
   return defineCliCommand(
     "status",
     "SYD2018",

@@ -1,4 +1,4 @@
-import { createDiagnostic, failure, type Failure } from "@stackyard/diagnostics";
+import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import { Effect, FileSystem, Path, Predicate, type PlatformError } from "effect";
 
 export interface ProjectLocation {
@@ -68,9 +68,7 @@ const statIfExists = Effect.fn("statIfExists")(
                   code: "SYD2006",
                   help: "Verify that the project path exists and is readable, then retry.",
                   message: "Project discovery failed.",
-                  ...(error instanceof Error && error.message.trim().length > 0
-                    ? { notes: [error.message] }
-                    : {}),
+                  notes: [describeError(error)],
                 }),
               ),
             ),

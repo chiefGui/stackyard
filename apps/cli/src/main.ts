@@ -37,6 +37,13 @@ import { createRunCommand } from "./run.ts";
 import { createStartCommand } from "./start.ts";
 import { createStopCommand } from "./stop.ts";
 
+type DaemonCommandServices =
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path;
+type PublicCliServices = DaemonCommandServices | ProjectClient | ProjectEvaluator;
+
 const cliEntrypoint = fileURLToPath(import.meta.url);
 const cliArguments = Bun.argv.slice(2);
 const [command, ...commandArguments] = cliArguments;
@@ -86,7 +93,7 @@ function runDaemon(): Effect.Effect<
 function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
   const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
-  const startCommand = createStartCommand({
+  const startCommand = createStartCommand<DaemonCommandServices>({
     diagnostics,
     find: findDaemon,
     runForeground: (onStarted) =>
@@ -104,14 +111,7 @@ function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices> {
     createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
-  const commands: readonly CliEntry<
-    | Crypto.Crypto
-    | FileSystem.FileSystem
-    | HttpClient.HttpClient
-    | Path.Path
-    | ProjectClient
-    | ProjectEvaluator
-  >[] = [
+  const commands: readonly CliEntry<PublicCliServices>[] = [
     createAddCommand({
       currentDirectory: process.cwd(),
       diagnostics,

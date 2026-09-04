@@ -61,7 +61,7 @@ const runProject = Effect.fn("runProject")(function* (
           code: "SYD2006",
           help: "Verify that the project directory exists and is readable, then retry.",
           message: "The project directory could not be resolved.",
-          notes: [error instanceof Error ? error.message : String(error)],
+          notes: [describeError(error)],
         }),
       ),
     ),

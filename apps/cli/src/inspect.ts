@@ -1,31 +1,21 @@
 import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
-import {
-  ProjectEvaluator,
-  type LoadedProject,
-  type ProjectLoadFailure,
-} from "@stackyard/project-loader";
-import { Effect, FileSystem, Option, Path } from "effect";
+import { type LoadedProject, type ProjectLoadFailure } from "@stackyard/project-loader";
+import { Effect, Option } from "effect";
 import { Argument, Flag } from "effect/unstable/cli";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
 import { writeProjectEvaluationOutput } from "./project-output.ts";
 
-export interface InspectCommandDependencies {
+export interface InspectCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  loadProject(
-    path: string | undefined,
-  ): Effect.Effect<
-    LoadedProject,
-    ProjectLoadFailure,
-    FileSystem.FileSystem | Path.Path | ProjectEvaluator
-  >;
+  loadProject(path: string | undefined): Effect.Effect<LoadedProject, ProjectLoadFailure, R>;
   writeError(output: string): void;
   writeOutput(output: string): void;
 }
 
-export function createInspectCommand(
-  dependencies: InspectCommandDependencies,
-): CliCommand<FileSystem.FileSystem | Path.Path | ProjectEvaluator> {
+export function createInspectCommand<R>(
+  dependencies: InspectCommandDependencies<R>,
+): CliCommand<R> {
   return defineCliCommand("inspect", "SYD2005", {
     args: {
       path: Argument.string("path").pipe(
@@ -48,11 +38,11 @@ export function createInspectCommand(
   });
 }
 
-const runInspect = Effect.fn("inspectProject")(function* (
+const runInspect = Effect.fn("inspectProject")(function* <R>(
   path: string | undefined,
   json: boolean,
-  dependencies: InspectCommandDependencies,
-): Effect.fn.Return<number, never, FileSystem.FileSystem | Path.Path | ProjectEvaluator> {
+  dependencies: InspectCommandDependencies<R>,
+): Effect.fn.Return<number, never, R> {
   const loaded = yield* dependencies.loadProject(path).pipe(
     Effect.match({
       onFailure: (project) => ({ loaded: false as const, project }),

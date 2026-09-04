@@ -4,7 +4,7 @@ import {
   type DiagnosticSink,
   type Failure,
 } from "@stackyard/diagnostics";
-import { Console, Context, Effect, Layer, Predicate, Result } from "effect";
+import { Console, Context, Effect, Layer, Predicate, Ref, Result } from "effect";
 import { CliConfig, CliError, Command, GlobalFlag } from "effect/unstable/cli";
 
 const cliName = "stackyard";
@@ -59,16 +59,14 @@ class CliExecution extends Context.Service<
 
 const CliExecutionLayer = Layer.effect(
   CliExecution,
-  Effect.sync(() => {
-    let exitCode = 0;
-    return CliExecution.of({
-      exitCode: Effect.sync(() => exitCode),
-      setExitCode: (value: number) =>
-        Effect.sync(() => {
-          exitCode = value;
-        }),
-    });
-  }),
+  Ref.make(0).pipe(
+    Effect.map((exitCode) =>
+      CliExecution.of({
+        exitCode: Ref.get(exitCode),
+        setExitCode: (value) => Ref.set(exitCode, value),
+      }),
+    ),
+  ),
 );
 
 export function reportCommandFailure<R>(
@@ -123,52 +121,50 @@ export function defineCliCommandGroup<R = never>(
   return { commands, definition: command, diagnosticCode, kind: "group", name, path };
 }
 
-export function runCli<R>(
+export const runCli = Effect.fn("runCli")(function* <R>(
   args: readonly string[],
   dependencies: CliDependencies<R>,
-): Effect.Effect<number, never, R | Command.Environment> {
-  return Effect.gen(function* () {
-    const output: string[] = [];
-    const capture: Console.Console = new Proxy(globalThis.console, {
-      get(target, property, receiver) {
-        if (property === "error" || property === "log") {
-          return (...values: readonly unknown[]) => output.push(`${formatConsoleValues(values)}\n`);
-        }
-        const value: unknown = Reflect.get(target, property, receiver);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const root = createRootCommand(dependencies.commands);
-    const execution = yield* CliExecution;
-    // Command.Any intentionally erases heterogeneous handler requirements; CliEntry retains R.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-    const program = Command.runWith(root, {
-      renderErrors: false,
-      version: dependencies.version,
-    })(normalizeArguments(args, dependencies.commands)) as Effect.Effect<
-      void,
-      CliError.CliError,
-      R | Command.Environment | CliExecution
-    >;
-    const result = yield* program.pipe(
-      Effect.provideService(Console.Console, capture),
-      Effect.provideService(CliConfig.CliConfig, {
-        builtIns: [GlobalFlag.Help, GlobalFlag.Version],
-      }),
-      Effect.result,
-    );
+): Effect.fn.Return<number, never, CliExecution | Command.Environment | R> {
+  const output: string[] = [];
+  const capture: Console.Console = new Proxy(globalThis.console, {
+    get(target, property, receiver) {
+      if (property === "error" || property === "log") {
+        return (...values: readonly unknown[]) => output.push(`${formatConsoleValues(values)}\n`);
+      }
+      const value: unknown = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const root = createRootCommand(dependencies.commands);
+  const execution = yield* CliExecution;
+  // Command.Any intentionally erases heterogeneous handler requirements; CliEntry retains R.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  const program = Command.runWith(root, {
+    renderErrors: false,
+    version: dependencies.version,
+  })(normalizeArguments(args, dependencies.commands)) as Effect.Effect<
+    void,
+    CliError.CliError,
+    R | Command.Environment | CliExecution
+  >;
+  const result = yield* program.pipe(
+    Effect.provideService(Console.Console, capture),
+    Effect.provideService(CliConfig.CliConfig, {
+      builtIns: [GlobalFlag.Help, GlobalFlag.Version],
+    }),
+    Effect.result,
+  );
 
-    if (Result.isFailure(result)) {
-      reportCliError(result.failure, dependencies);
-      return 1;
-    }
-    const renderedOutput = isRootVersionRequest(args) ? [`${dependencies.version}\n`] : output;
-    for (const value of renderedOutput) {
-      dependencies.writeOutput(value);
-    }
-    return yield* execution.exitCode;
-  }).pipe(Effect.provide(CliExecutionLayer));
-}
+  if (Result.isFailure(result)) {
+    reportCliError(result.failure, dependencies);
+    return 1;
+  }
+  const renderedOutput = isRootVersionRequest(args) ? [`${dependencies.version}\n`] : output;
+  for (const value of renderedOutput) {
+    dependencies.writeOutput(value);
+  }
+  return yield* execution.exitCode;
+}, Effect.provide(CliExecutionLayer));
 
 function isRootVersionRequest(args: readonly string[]): boolean {
   return args.length === 1 && (args[0] === "--version" || args[0] === "-v");

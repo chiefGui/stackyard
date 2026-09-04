@@ -2,21 +2,18 @@ import { daemonUrl, type DaemonLocator } from "@stackyard/daemon/locator";
 import { createDiagnostic, type DiagnosticSink, type Failure } from "@stackyard/diagnostics";
 import { Effect } from "effect";
 import { Flag } from "effect/unstable/cli";
-import { HttpClient } from "effect/unstable/http";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
 export interface StartCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  find(): Effect.Effect<DaemonLocator | undefined, Failure, HttpClient.HttpClient | R>;
+  find(): Effect.Effect<DaemonLocator | undefined, Failure, R>;
   runForeground(onStarted: (locator: DaemonLocator) => void): Effect.Effect<number, never, R>;
-  start(): Effect.Effect<DaemonLocator, Failure, HttpClient.HttpClient | R>;
+  start(): Effect.Effect<DaemonLocator, Failure, R>;
   writeOutput(output: string): void;
 }
 
-export function createStartCommand<R>(
-  dependencies: StartCommandDependencies<R>,
-): CliCommand<HttpClient.HttpClient | R> {
+export function createStartCommand<R>(dependencies: StartCommandDependencies<R>): CliCommand<R> {
   return defineCliCommand(
     "start",
     "SYD2016",
@@ -41,7 +38,7 @@ export function createStartCommand<R>(
 
 const startForeground = Effect.fn("startForeground")(function* <R>(
   dependencies: StartCommandDependencies<R>,
-): Effect.fn.Return<number, Failure, HttpClient.HttpClient | R> {
+): Effect.fn.Return<number, Failure, R> {
   const active = yield* dependencies.find();
   if (active) {
     dependencies.diagnostics.report(
@@ -76,7 +73,7 @@ const startForeground = Effect.fn("startForeground")(function* <R>(
 
 const startDetached = Effect.fn("startDetached")(function* <R>(
   dependencies: StartCommandDependencies<R>,
-): Effect.fn.Return<number, Failure, HttpClient.HttpClient | R> {
+): Effect.fn.Return<number, Failure, R> {
   const started = yield* dependencies.start();
   writeStarted(started, false, dependencies);
   return 0;
