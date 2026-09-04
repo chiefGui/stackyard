@@ -112,7 +112,7 @@ test("the CLI reports its version through either root flag", async () => {
 
   expect(await runCli(["--version"], dependencies)).toBe(0);
   expect(await runCli(["-v"], dependencies)).toBe(0);
-  expect(output).toEqual([`stackyard v${cliVersion}\n`, `stackyard v${cliVersion}\n`]);
+  expect(output).toEqual([`${cliVersion}\n`, `${cliVersion}\n`]);
 });
 
 test("root help identifies the running CLI", async () => {

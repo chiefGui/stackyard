@@ -132,8 +132,7 @@ export function runCli<R>(
     const capture: Console.Console = new Proxy(globalThis.console, {
       get(target, property, receiver) {
         if (property === "error" || property === "log") {
-          return (...values: readonly unknown[]) =>
-            output.push(`${formatConsoleValues(values)}\n`);
+          return (...values: readonly unknown[]) => output.push(`${formatConsoleValues(values)}\n`);
         }
         const value: unknown = Reflect.get(target, property, receiver);
         return typeof value === "function" ? value.bind(target) : value;
@@ -163,11 +162,16 @@ export function runCli<R>(
       reportCliError(result.failure, dependencies);
       return 1;
     }
-    for (const value of output) {
+    const renderedOutput = isRootVersionRequest(args) ? [`${dependencies.version}\n`] : output;
+    for (const value of renderedOutput) {
       dependencies.writeOutput(value);
     }
     return yield* execution.exitCode;
   }).pipe(Effect.provide(CliExecutionLayer));
+}
+
+function isRootVersionRequest(args: readonly string[]): boolean {
+  return args.length === 1 && (args[0] === "--version" || args[0] === "-v");
 }
 
 function createRootCommand<R>(commands: readonly CliEntry<R>[]): Command.Command.Any {

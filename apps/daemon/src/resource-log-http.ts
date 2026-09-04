@@ -105,7 +105,7 @@ export function createResourceLogResponse(options: ResourceLogResponseOptions): 
     (state) => nextResourceLogBatch(state, options),
   ).pipe(
     Stream.interruptWhen(aborted(options.signal)),
-    Stream.ensuring(Effect.sync(options.onClose)),
+    Stream.ensuring(Effect.sync(() => options.onClose())),
   );
 
   return new Response(Stream.toReadableStream(stream), {
