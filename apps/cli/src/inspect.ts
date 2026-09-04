@@ -4,7 +4,7 @@ import {
   type LoadedProject,
   type ProjectLoadFailure,
 } from "@stackyard/project-loader";
-import { Effect, Option } from "effect";
+import { Effect, FileSystem, Option, Path } from "effect";
 import { Argument, Flag } from "effect/unstable/cli";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
@@ -14,14 +14,18 @@ export interface InspectCommandDependencies {
   readonly diagnostics: DiagnosticSink;
   loadProject(
     path: string | undefined,
-  ): Effect.Effect<LoadedProject, ProjectLoadFailure, ProjectEvaluator>;
+  ): Effect.Effect<
+    LoadedProject,
+    ProjectLoadFailure,
+    FileSystem.FileSystem | Path.Path | ProjectEvaluator
+  >;
   writeError(output: string): void;
   writeOutput(output: string): void;
 }
 
 export function createInspectCommand(
   dependencies: InspectCommandDependencies,
-): CliCommand<ProjectEvaluator> {
+): CliCommand<FileSystem.FileSystem | Path.Path | ProjectEvaluator> {
   return defineCliCommand("inspect", "SYD2005", {
     args: {
       path: Argument.string("path").pipe(
@@ -48,7 +52,7 @@ const runInspect = Effect.fn("inspectProject")(function* (
   path: string | undefined,
   json: boolean,
   dependencies: InspectCommandDependencies,
-): Effect.fn.Return<number, never, ProjectEvaluator> {
+): Effect.fn.Return<number, never, FileSystem.FileSystem | Path.Path | ProjectEvaluator> {
   const loaded = yield* dependencies.loadProject(path).pipe(
     Effect.match({
       onFailure: (project) => ({ loaded: false as const, project }),

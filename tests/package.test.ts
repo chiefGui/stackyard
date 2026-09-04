@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { BunServices } from "@effect/platform-bun";
 
 import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
@@ -338,5 +339,7 @@ async function runCommand(
 }
 
 function readLocator(runtimeDirectory: string) {
-  return Effect.runPromise(readLocatorEffect(runtimeDirectory));
+  return Effect.runPromise(
+    readLocatorEffect(runtimeDirectory).pipe(Effect.provide(BunServices.layer)),
+  );
 }

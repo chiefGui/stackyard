@@ -1,6 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
 import {
   makeProjectCatalogLayer as makeControlPlaneProjectCatalogLayer,
@@ -27,7 +26,17 @@ import {
   makeBunProjectEvaluatorLayer,
   ProjectEvaluator,
 } from "@stackyard/project-loader";
-import { Effect, Layer, Result as EffectResult, Schema, Scope } from "effect";
+import {
+  Effect,
+  FileSystem,
+  Layer,
+  Path,
+  PlatformError,
+  Predicate,
+  Result as EffectResult,
+  Schema,
+  Scope,
+} from "effect";
 
 const projectStoreSchemaVersion = 1;
 const projectStoreFileName = "projects.json";
@@ -79,25 +88,30 @@ export function makeProjectCatalogLayer(options: ProjectCatalogLayerOptions) {
   );
 }
 
-export function makeFileProjectStoreLayer(directory: string): Layer.Layer<ProjectStore> {
-  const storageDirectory = resolve(directory);
-  const storagePath = join(storageDirectory, projectStoreFileName);
-  return Layer.succeed(
+export function makeFileProjectStoreLayer(
+  directory: string,
+): Layer.Layer<ProjectStore, never, FileSystem.FileSystem | Path.Path> {
+  return Layer.effect(
     ProjectStore,
-    ProjectStore.of({
-      load: loadProjectRecords(storagePath),
-      save: (projects) => saveProjectRecords(storageDirectory, storagePath, projects),
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const storageDirectory = path.resolve(directory);
+      const storagePath = path.join(storageDirectory, projectStoreFileName);
+      return ProjectStore.of({
+        load: loadProjectRecords(storagePath, fileSystem),
+        save: (projects) =>
+          saveProjectRecords(storageDirectory, storagePath, projects, fileSystem, path),
+      });
     }),
   );
 }
 
 const loadProjectRecords = Effect.fn("FileProjectStore.load")(function* (
   path: string,
+  fileSystem: FileSystem.FileSystem,
 ): Effect.fn.Return<readonly ProjectRecord[], Failure> {
-  const read = yield* Effect.tryPromise({
-    try: () => readFile(path, "utf8"),
-    catch: (error) => error,
-  }).pipe(
+  const read = yield* fileSystem.readFileString(path).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
       onSuccess: (text) => ({ success: true as const, text }),
@@ -126,8 +140,10 @@ const saveProjectRecords = Effect.fn("FileProjectStore.save")(function* (
   directory: string,
   path: string,
   projects: readonly ProjectRecord[],
+  fileSystem: FileSystem.FileSystem,
+  paths: Path.Path,
 ): Effect.fn.Return<void, Failure> {
-  const temporaryPath = join(
+  const temporaryPath = paths.join(
     directory,
     `${projectStoreFileName}.${process.pid}.${crypto.randomUUID()}.tmp`,
   );
@@ -137,16 +153,12 @@ const saveProjectRecords = Effect.fn("FileProjectStore.save")(function* (
       .toSorted((left, right) => left.root.localeCompare(right.root, "en")),
     schemaVersion: projectStoreSchemaVersion,
   };
-  const written = yield* Effect.tryPromise({
-    try: async () => {
-      await mkdir(directory, { mode: 0o700, recursive: true });
-      await writeFile(temporaryPath, `${JSON.stringify(value, undefined, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      await rename(temporaryPath, path);
-    },
-    catch: (error) => error,
+  const written = yield* Effect.gen(function* () {
+    yield* fileSystem.makeDirectory(directory, { mode: 0o700, recursive: true });
+    yield* fileSystem.writeFileString(temporaryPath, `${JSON.stringify(value, undefined, 2)}\n`, {
+      mode: 0o600,
+    });
+    yield* fileSystem.rename(temporaryPath, path);
   }).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
@@ -156,7 +168,7 @@ const saveProjectRecords = Effect.fn("FileProjectStore.save")(function* (
   if (written.success) {
     return undefined;
   }
-  yield* Effect.promise(() => rm(temporaryPath, { force: true }).catch(() => undefined));
+  yield* fileSystem.remove(temporaryPath, { force: true }).pipe(Effect.ignore);
   return yield* Effect.fail(projectStorageFailure("write", path, written.error));
 });
 
@@ -284,42 +296,66 @@ const ProjectIdGeneratorLayer: Layer.Layer<ProjectIdGenerator> = Layer.succeed(
   ProjectIdGenerator.of({ next: Effect.sync(() => crypto.randomUUID()) }),
 );
 
-const ProjectRootResolverLayer: Layer.Layer<ProjectRootResolver> = Layer.succeed(
+const ProjectRootResolverLayer: Layer.Layer<
   ProjectRootResolver,
-  ProjectRootResolver.of({
-    canonicalize: Effect.fn("ProjectRootResolver.canonicalize")(function* (path: string) {
-      const discovered = yield* discoverProject(path, process.cwd());
-      return yield* Effect.tryPromise({
-        try: () => realpath(discovered.root),
-        catch: (error) =>
-          failure(
-            createDiagnostic({
-              code: "SYD2006",
-              help: "Verify that the project path exists and is readable, then retry.",
-              message: "The project root could not be resolved.",
-              notes: [describeError(error)],
-            }),
+  never,
+  FileSystem.FileSystem | Path.Path
+> = Layer.effect(
+  ProjectRootResolver,
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    return ProjectRootResolver.of({
+      canonicalize: Effect.fn("ProjectRootResolver.canonicalize")(function* (path: string) {
+        const discovered = yield* discoverProject(path, process.cwd()).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, paths),
+        );
+        return yield* fileSystem.realPath(discovered.root).pipe(
+          Effect.mapError((error) =>
+            failure(
+              createDiagnostic({
+                code: "SYD2006",
+                help: "Verify that the project path exists and is readable, then retry.",
+                message: "The project root could not be resolved.",
+                notes: [describeError(error)],
+              }),
+            ),
           ),
-      });
-    }),
+        );
+      }),
+    });
   }),
 );
 
-const ProjectDefinitionLoaderLayer: Layer.Layer<ProjectDefinitionLoader, never, ProjectEvaluator> =
-  Layer.effect(
-    ProjectDefinitionLoader,
-    Effect.gen(function* () {
-      const evaluator = yield* ProjectEvaluator;
-      return ProjectDefinitionLoader.of({
-        load: (root) =>
-          loadProjectDefinition(root).pipe(Effect.provideService(ProjectEvaluator, evaluator)),
-      });
-    }),
-  );
+const ProjectDefinitionLoaderLayer: Layer.Layer<
+  ProjectDefinitionLoader,
+  never,
+  FileSystem.FileSystem | Path.Path | ProjectEvaluator
+> = Layer.effect(
+  ProjectDefinitionLoader,
+  Effect.gen(function* () {
+    const evaluator = yield* ProjectEvaluator;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return ProjectDefinitionLoader.of({
+      load: (root) =>
+        loadProjectDefinition(root).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ProjectEvaluator, evaluator),
+        ),
+    });
+  }),
+);
 
 const loadProjectDefinition = Effect.fn("ProjectDefinitionLoader.load")(function* (
   root: string,
-): Effect.fn.Return<ProjectDefinitionLoad, never, ProjectEvaluator> {
+): Effect.fn.Return<
+  ProjectDefinitionLoad,
+  never,
+  FileSystem.FileSystem | Path.Path | ProjectEvaluator
+> {
   const loaded = yield* loadProjectEffect({ currentDirectory: root, path: root }).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
@@ -374,6 +410,9 @@ function watchFailure(root: string, error: unknown): Diagnostic {
 }
 
 function isMissing(error: unknown): boolean {
+  if (error instanceof PlatformError.PlatformError) {
+    return Predicate.isTagged(error.reason, "NotFound");
+  }
   return (
     error instanceof Error &&
     "code" in error &&

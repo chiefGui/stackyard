@@ -1,9 +1,17 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-
 import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import { protocolVersion } from "@stackyard/protocol";
-import { Cause, Effect, Exit, Option, Result as EffectResult, Schema } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  FileSystem,
+  Option,
+  Path,
+  PlatformError,
+  Predicate,
+  Result as EffectResult,
+  Schema,
+} from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { resolveStackyardDirectories } from "./directories.ts";
@@ -77,7 +85,11 @@ export function daemonUrl(locator: Pick<DaemonLocator, "port">): string {
 
 export const findDaemon = Effect.fn("findDaemon")(function* (
   options: FindDaemonOptions = {},
-): Effect.fn.Return<DaemonLocator | undefined, Failure, HttpClient.HttpClient> {
+): Effect.fn.Return<
+  DaemonLocator | undefined,
+  Failure,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
@@ -86,33 +98,45 @@ export const findDaemon = Effect.fn("findDaemon")(function* (
 
 export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
   options: EnsureDaemonOptions,
-): Effect.fn.Return<DaemonLocator, Failure, HttpClient.HttpClient> {
+): Effect.fn.Return<
+  DaemonLocator,
+  Failure,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
   const directory = directories.runtime;
-  yield* Effect.tryPromise({
-    try: () => mkdir(directory, { mode: 0o700, recursive: true }),
-    catch: (error) =>
-      daemonUnavailable(`The runtime directory could not be created: ${describeError(error)}`),
-  });
+  yield* fileSystem
+    .makeDirectory(directory, { mode: 0o700, recursive: true })
+    .pipe(
+      Effect.mapError((error) =>
+        daemonUnavailable(`The runtime directory could not be created: ${describeError(error)}`),
+      ),
+    );
 
   const active = yield* findDaemonInDirectory(directory);
   if (active) {
     return active;
   }
 
-  const diagnosticsPath = join(directory, diagnosticsName);
-  yield* Effect.tryPromise({
-    try: () => writeFile(diagnosticsPath, "", { encoding: "utf8", mode: 0o600 }),
-    catch: (error) =>
-      daemonUnavailable(`The daemon diagnostic log could not be created: ${describeError(error)}`),
-  });
+  const diagnosticsPath = path.join(directory, diagnosticsName);
+  yield* fileSystem
+    .writeFileString(diagnosticsPath, "", { mode: 0o600 })
+    .pipe(
+      Effect.mapError((error) =>
+        daemonUnavailable(
+          `The daemon diagnostic log could not be created: ${describeError(error)}`,
+        ),
+      ),
+    );
   const environment = stringEnvironment(process.env);
   environment.STACKYARD_DATA_DIR = directories.data;
   environment.STACKYARD_DIAGNOSTICS_PATH = diagnosticsPath;
   environment.STACKYARD_RUNTIME_DIR = directory;
-  environment.STACKYARD_DASHBOARD_WEB_DIR = resolve(options.dashboardWebDirectory);
+  environment.STACKYARD_DASHBOARD_WEB_DIR = path.resolve(options.dashboardWebDirectory);
 
   const spawned = yield* Effect.try({
     try: () => {
@@ -152,7 +176,11 @@ export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
 
 export const stopDaemon = Effect.fn("stopDaemon")(function* (
   options: FindDaemonOptions = {},
-): Effect.fn.Return<StopDaemonStatus, Failure, HttpClient.HttpClient> {
+): Effect.fn.Return<
+  StopDaemonStatus,
+  Failure,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
@@ -190,7 +218,11 @@ export const stopDaemon = Effect.fn("stopDaemon")(function* (
 
 const findDaemonInDirectory = Effect.fn("findDaemonInDirectory")(function* (
   directory: string,
-): Effect.fn.Return<DaemonLocator | undefined, Failure, HttpClient.HttpClient> {
+): Effect.fn.Return<
+  DaemonLocator | undefined,
+  Failure,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
   const current = yield* readLocator(directory).pipe(
     Effect.mapError((error) =>
       daemonUnavailable(`The daemon runtime state could not be inspected: ${describeError(error)}`),
@@ -222,24 +254,30 @@ const findDaemonInDirectory = Effect.fn("findDaemonInDirectory")(function* (
 export const acquireDaemonLock = Effect.fn("acquireDaemonLock")(function* (
   directory: string,
   instanceId: string,
-): Effect.fn.Return<DaemonLock | undefined, Failure> {
-  yield* Effect.tryPromise({
-    try: () => mkdir(directory, { mode: 0o700, recursive: true }),
-    catch: lockFailure,
-  });
-  return yield* tryAcquireLock(join(directory, lockName), instanceId, 100);
+): Effect.fn.Return<DaemonLock | undefined, Failure, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fileSystem
+    .makeDirectory(directory, { mode: 0o700, recursive: true })
+    .pipe(Effect.mapError(lockFailure));
+  return yield* tryAcquireLock(path.join(directory, lockName), instanceId, 100);
 });
 
 const tryAcquireLock = Effect.fn("tryAcquireLock")(function* (
   lockDirectory: string,
   instanceId: string,
   attemptsRemaining: number,
-): Effect.fn.Return<DaemonLock | undefined, Failure> {
+): Effect.fn.Return<DaemonLock | undefined, Failure, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const published = yield* publishLockDirectory(lockDirectory, instanceId);
   if (published) {
     return {
       instanceId,
-      release: removeOwnedLock(lockDirectory, instanceId),
+      release: removeOwnedLock(lockDirectory, instanceId).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      ),
     };
   }
 
@@ -263,7 +301,8 @@ const recoverStaleLock = Effect.fn("recoverStaleLock")(function* (
   lockDirectory: string,
   instanceId: string,
   attemptsRemaining: number,
-): Effect.fn.Return<DaemonLock | undefined, Failure> {
+): Effect.fn.Return<DaemonLock | undefined, Failure, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
   const recoveryDirectory = `${lockDirectory}.recovery`;
   const recovery = yield* publishLockDirectory(recoveryDirectory, instanceId);
   if (!recovery) {
@@ -293,10 +332,9 @@ const recoverStaleLock = Effect.fn("recoverStaleLock")(function* (
       if (isProcessAlive(current.pid)) {
         return undefined;
       }
-      yield* Effect.tryPromise({
-        try: () => rm(lockDirectory, { force: true, recursive: true }),
-        catch: lockFailure,
-      });
+      yield* fileSystem
+        .remove(lockDirectory, { force: true, recursive: true })
+        .pipe(Effect.mapError(lockFailure));
       return yield* tryAcquireLock(lockDirectory, instanceId, 1);
     }),
   );
@@ -319,18 +357,16 @@ const recoverStaleLock = Effect.fn("recoverStaleLock")(function* (
 const publishLockDirectory = Effect.fn("publishLockDirectory")(function* (
   directory: string,
   instanceId: string,
-): Effect.fn.Return<boolean, Failure> {
+): Effect.fn.Return<boolean, Failure, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const candidate = `${directory}.candidate.${instanceId}`;
-  const prepared = yield* Effect.tryPromise({
-    try: async () => {
-      await mkdir(candidate);
-      const owner: LockOwner = { instanceId, pid: process.pid };
-      await writeFile(join(candidate, "owner.json"), JSON.stringify(owner), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-    },
-    catch: (error) => error,
+  const prepared = yield* Effect.gen(function* () {
+    yield* fileSystem.makeDirectory(candidate);
+    const owner: LockOwner = { instanceId, pid: process.pid };
+    yield* fileSystem.writeFileString(path.join(candidate, "owner.json"), JSON.stringify(owner), {
+      mode: 0o600,
+    });
   }).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
@@ -342,10 +378,7 @@ const publishLockDirectory = Effect.fn("publishLockDirectory")(function* (
     return yield* Effect.fail(lockFailure(removed ?? prepared.error));
   }
 
-  const renamed = yield* Effect.tryPromise({
-    try: () => rename(candidate, directory),
-    catch: (error) => error,
-  }).pipe(
+  const renamed = yield* fileSystem.rename(candidate, directory).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
       onSuccess: () => ({ success: true as const }),
@@ -364,7 +397,11 @@ const publishLockDirectory = Effect.fn("publishLockDirectory")(function* (
 const waitForDaemon = Effect.fn("waitForDaemon")(function* (
   directory: string,
   attempts: number,
-): Effect.fn.Return<DaemonLocator | undefined, never, HttpClient.HttpClient> {
+): Effect.fn.Return<
+  DaemonLocator | undefined,
+  never,
+  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     yield* Effect.sleep("50 millis");
     const locator = yield* readLocator(directory).pipe(
@@ -381,7 +418,7 @@ const waitForDaemonStop = Effect.fn("waitForDaemonStop")(function* (
   directory: string,
   locator: DaemonLocator,
   attempts: number,
-): Effect.fn.Return<boolean, unknown> {
+): Effect.fn.Return<boolean, unknown, FileSystem.FileSystem | Path.Path> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const current = yield* readLocator(directory);
     if ((current && current.instanceId !== locator.instanceId) || !isProcessAlive(locator.pid)) {
@@ -395,16 +432,15 @@ const waitForDaemonStop = Effect.fn("waitForDaemonStop")(function* (
 export const publishLocator = Effect.fn("publishLocator")(function* (
   directory: string,
   input: Omit<DaemonLocator, "protocolVersion" | "schemaVersion">,
-): Effect.fn.Return<DaemonLocator, unknown> {
+): Effect.fn.Return<DaemonLocator, unknown, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const paths = yield* Path.Path;
   const locator = Object.freeze({ ...input, protocolVersion, schemaVersion: version });
-  const path = join(directory, locatorName);
-  const temporaryPath = join(directory, `${locatorName}.${input.instanceId}.tmp`);
-  yield* Effect.tryPromise({
-    try: async () => {
-      await writeFile(temporaryPath, JSON.stringify(locator), { encoding: "utf8", mode: 0o600 });
-      await rename(temporaryPath, path);
-    },
-    catch: (error) => error,
+  const path = paths.join(directory, locatorName);
+  const temporaryPath = paths.join(directory, `${locatorName}.${input.instanceId}.tmp`);
+  yield* Effect.gen(function* () {
+    yield* fileSystem.writeFileString(temporaryPath, JSON.stringify(locator), { mode: 0o600 });
+    yield* fileSystem.rename(temporaryPath, path);
   });
   return locator;
 });
@@ -412,23 +448,20 @@ export const publishLocator = Effect.fn("publishLocator")(function* (
 export const removeLocator = Effect.fn("removeLocator")(function* (
   directory: string,
   instanceId: string,
-): Effect.fn.Return<void, unknown> {
+): Effect.fn.Return<void, unknown, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const current = yield* readLocator(directory);
   if (current?.instanceId === instanceId) {
-    yield* Effect.tryPromise({
-      try: () => rm(join(directory, locatorName), { force: true }),
-      catch: (error) => error,
-    });
+    yield* fileSystem.remove(path.join(directory, locatorName), { force: true });
   }
 });
 
 export const readLocator = Effect.fn("readLocator")(function* (
   directory: string,
-): Effect.fn.Return<DaemonLocator | undefined, unknown> {
-  const read = yield* Effect.tryPromise({
-    try: async () => JSON.parse(await readFile(join(directory, locatorName), "utf8")) as unknown,
-    catch: (error) => error,
-  }).pipe(
+): Effect.fn.Return<DaemonLocator | undefined, unknown, FileSystem.FileSystem | Path.Path> {
+  const path = yield* Path.Path;
+  const read = yield* readJson(path.join(directory, locatorName)).pipe(
     Effect.match({
       onFailure: (error) => ({ error, success: false as const }),
       onSuccess: (value) => ({ success: true as const, value }),
@@ -440,11 +473,7 @@ export const readLocator = Effect.fn("readLocator")(function* (
     })(read.value);
     return EffectResult.isSuccess(parsed) ? Object.freeze(parsed.success) : undefined;
   }
-  if (
-    read.error instanceof SyntaxError ||
-    (isFileSystemError(read.error) &&
-      (read.error.code === "ENOENT" || read.error.code === "ENOTDIR"))
-  ) {
+  if (read.error instanceof SyntaxError || isMissing(read.error)) {
     return undefined;
   }
   return yield* Effect.fail(read.error);
@@ -471,12 +500,12 @@ const isReachable = Effect.fn("isReachable")(function* (
 const readLocatorProcess = Effect.fn("readLocatorProcess")(function* (
   directory: string,
 ): Effect.fn.Return<
-  { readonly pid: number; readonly protocolVersion: number | undefined } | undefined
+  { readonly pid: number; readonly protocolVersion: number | undefined } | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path
 > {
-  return yield* Effect.tryPromise({
-    try: async () => JSON.parse(await readFile(join(directory, locatorName), "utf8")) as unknown,
-    catch: () => undefined,
-  }).pipe(
+  const path = yield* Path.Path;
+  return yield* readJson(path.join(directory, locatorName)).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
     Effect.map((value) => {
       const parsed = Schema.decodeUnknownResult(LocatorProcessSchema)(value);
@@ -487,12 +516,9 @@ const readLocatorProcess = Effect.fn("readLocatorProcess")(function* (
   );
 });
 
-const readLockOwner = Effect.fn("readLockOwner")((lockDirectory: string) =>
-  Effect.tryPromise({
-    try: async () =>
-      JSON.parse(await readFile(join(lockDirectory, "owner.json"), "utf8")) as unknown,
-    catch: () => undefined,
-  }).pipe(
+const readLockOwner = Effect.fn("readLockOwner")(function* (lockDirectory: string) {
+  const path = yield* Path.Path;
+  return yield* readJson(path.join(lockDirectory, "owner.json")).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
     Effect.map((value): LockOwner | undefined => {
       const parsed = Schema.decodeUnknownResult(LockOwnerSchema, {
@@ -500,6 +526,19 @@ const readLockOwner = Effect.fn("readLockOwner")((lockDirectory: string) =>
       })(value);
       return EffectResult.isSuccess(parsed) ? parsed.success : undefined;
     }),
+  );
+});
+
+const readJson = Effect.fn("readJson")((path: string) =>
+  FileSystem.FileSystem.use((fileSystem) =>
+    fileSystem.readFileString(path).pipe(
+      Effect.flatMap((text) =>
+        Effect.try({
+          try: () => JSON.parse(text) as unknown,
+          catch: (error) => error,
+        }),
+      ),
+    ),
   ),
 );
 
@@ -550,10 +589,9 @@ const daemonFailureNote = Effect.fn("daemonFailureNote")(function* (
   directory: string,
   summary: string,
 ) {
-  return yield* Effect.tryPromise({
-    try: () => readFile(join(directory, diagnosticsName), "utf8"),
-    catch: () => undefined,
-  }).pipe(
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* fileSystem.readFileString(path.join(directory, diagnosticsName)).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
     Effect.map((value) => {
       const details = value?.trim();
@@ -574,6 +612,16 @@ function lockFailure(error: unknown): Failure {
 }
 
 function isAlreadyExists(error: unknown): boolean {
+  if (error instanceof PlatformError.PlatformError) {
+    if (
+      Predicate.isTagged(error.reason, "AlreadyExists") ||
+      Predicate.isTagged(error.reason, "Busy") ||
+      Predicate.isTagged(error.reason, "PermissionDenied")
+    ) {
+      return true;
+    }
+    error = "cause" in error.reason ? error.reason.cause : error;
+  }
   if (!isFileSystemError(error)) {
     return false;
   }
@@ -581,15 +629,10 @@ function isAlreadyExists(error: unknown): boolean {
 }
 
 const lockExists = Effect.fn("lockExists")((directory: string) =>
-  Effect.tryPromise({
-    try: () => stat(directory),
-    catch: (error) => error,
-  }).pipe(
+  FileSystem.FileSystem.use((fileSystem) => fileSystem.stat(directory)).pipe(
     Effect.matchEffect({
       onFailure: (error) =>
-        isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
-          ? Effect.succeed(false)
-          : Effect.fail(lockFailure(error)),
+        isMissing(error) ? Effect.succeed(false) : Effect.fail(lockFailure(error)),
       onSuccess: () => Effect.succeed(true),
     }),
   ),
@@ -598,24 +641,31 @@ const lockExists = Effect.fn("lockExists")((directory: string) =>
 const removeOwnedLock = Effect.fn("removeOwnedLock")(function* (
   directory: string,
   instanceId: string,
-): Effect.fn.Return<void, unknown> {
+): Effect.fn.Return<void, unknown, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
   const owner = yield* readLockOwner(directory);
   if (owner?.instanceId === instanceId && owner.pid === process.pid) {
-    yield* Effect.tryPromise({
-      try: () => rm(directory, { force: true, recursive: true }),
-      catch: (error) => error,
-    });
+    yield* fileSystem.remove(directory, { force: true, recursive: true });
   }
 });
 
 const removePath = Effect.fn("removePath")((path: string) =>
-  Effect.tryPromise({
-    try: () => rm(path, { force: true, recursive: true }),
-    catch: (error) => error,
-  }).pipe(
+  FileSystem.FileSystem.use((fileSystem) =>
+    fileSystem.remove(path, { force: true, recursive: true }),
+  ).pipe(
     Effect.match({
       onFailure: (error) => error,
       onSuccess: () => undefined,
     }),
   ),
 );
+
+function isMissing(error: unknown): boolean {
+  if (error instanceof PlatformError.PlatformError) {
+    if (Predicate.isTagged(error.reason, "NotFound")) {
+      return true;
+    }
+    error = "cause" in error.reason ? error.reason.cause : error;
+  }
+  return isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}

@@ -20,7 +20,7 @@ import {
   runProjectEvaluator,
 } from "@stackyard/project-loader";
 import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
-import { Effect } from "effect";
+import { Effect, FileSystem, Path } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
 import packageManifest from "../package.json" with { type: "json" };
@@ -48,6 +48,7 @@ const diagnostics = createDiagnosticSink(diagnosticsPath);
 
 BunRuntime.runMain(
   main().pipe(
+    Effect.provide(BunServices.layer),
     Effect.tap((exitCode) =>
       Effect.sync(() => {
         process.exitCode = exitCode;
@@ -57,7 +58,7 @@ BunRuntime.runMain(
   ),
 );
 
-function main(): Effect.Effect<number> {
+function main(): Effect.Effect<number, never, BunServices.BunServices> {
   if (command === internalDaemonCommand) {
     return runDaemon();
   }
@@ -67,7 +68,7 @@ function main(): Effect.Effect<number> {
   return runPublicCli();
 }
 
-function runDaemon(): Effect.Effect<number> {
+function runDaemon(): Effect.Effect<number, never, FileSystem.FileSystem | Path.Path> {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
     configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
@@ -78,7 +79,7 @@ function runDaemon(): Effect.Effect<number> {
   });
 }
 
-function runPublicCli(): Effect.Effect<number> {
+function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
   const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
   const startCommand = createStartCommand({
@@ -99,7 +100,9 @@ function runPublicCli(): Effect.Effect<number> {
     createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
-  const commands: readonly CliEntry<ProjectClient | ProjectEvaluator | HttpClient.HttpClient>[] = [
+  const commands: readonly CliEntry<
+    FileSystem.FileSystem | HttpClient.HttpClient | Path.Path | ProjectClient | ProjectEvaluator
+  >[] = [
     createAddCommand({
       currentDirectory: process.cwd(),
       diagnostics,
@@ -142,7 +145,6 @@ function runPublicCli(): Effect.Effect<number> {
     version: packageManifest.version,
     writeOutput,
   }).pipe(
-    Effect.provide(BunServices.layer),
     Effect.provide(makeDaemonProjectClientLayer(daemonOptions)),
     Effect.provide(BunHttpClient.layer),
     Effect.provide(makeBunProjectEvaluatorLayer(cliEntrypoint)),

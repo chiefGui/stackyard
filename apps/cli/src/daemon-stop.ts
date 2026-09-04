@@ -5,15 +5,15 @@ import { HttpClient } from "effect/unstable/http";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface DaemonStopCommandDependencies {
+export interface DaemonStopCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  stop(): Effect.Effect<StopDaemonStatus, Failure, HttpClient.HttpClient>;
+  stop(): Effect.Effect<StopDaemonStatus, Failure, HttpClient.HttpClient | R>;
   writeOutput(output: string): void;
 }
 
-export function createDaemonStopCommand(
-  dependencies: DaemonStopCommandDependencies,
-): CliCommand<HttpClient.HttpClient> {
+export function createDaemonStopCommand<R>(
+  dependencies: DaemonStopCommandDependencies<R>,
+): CliCommand<HttpClient.HttpClient | R> {
   return defineCliCommand(
     "stop",
     "SYD2017",

@@ -1,9 +1,5 @@
-import type { Stats } from "node:fs";
-import { stat } from "node:fs/promises";
-import { dirname, join, parse, resolve } from "node:path";
-
 import { createDiagnostic, failure, type Failure } from "@stackyard/diagnostics";
-import { Effect } from "effect";
+import { Effect, FileSystem, Path, Predicate, type PlatformError } from "effect";
 
 export interface ProjectLocation {
   readonly entrypoint: string;
@@ -13,23 +9,25 @@ export interface ProjectLocation {
 export const discoverProject = Effect.fn("discoverProject")(function* (
   input: string | undefined,
   currentDirectory: string,
-): Effect.fn.Return<ProjectLocation, Failure> {
+): Effect.fn.Return<ProjectLocation, Failure, FileSystem.FileSystem | Path.Path> {
+  const path = yield* Path.Path;
   return yield* input
-    ? discoverExplicitProject(resolve(currentDirectory, input))
-    : discoverFromAncestors(resolve(currentDirectory));
+    ? discoverExplicitProject(path.resolve(currentDirectory, input))
+    : discoverFromAncestors(path.resolve(currentDirectory));
 });
 
 const discoverFromAncestors = Effect.fn("discoverFromAncestors")(function* (
   startingDirectory: string,
 ) {
+  const path = yield* Path.Path;
   let directory = startingDirectory;
   while (true) {
     const location = yield* locationFromDirectory(directory);
     if (location) {
       return location;
     }
-    const parent = dirname(directory);
-    if (parent === directory || directory === parse(directory).root) {
+    const parent = path.dirname(directory);
+    if (parent === directory || directory === path.parse(directory).root) {
       return yield* Effect.fail(notFound(startingDirectory));
     }
     directory = parent;
@@ -37,11 +35,12 @@ const discoverFromAncestors = Effect.fn("discoverFromAncestors")(function* (
 });
 
 const discoverExplicitProject = Effect.fn("discoverExplicitProject")(function* (path: string) {
+  const paths = yield* Path.Path;
   const pathStat = yield* statIfExists(path);
-  if (pathStat?.isFile()) {
-    return { entrypoint: path, root: dirname(dirname(path)) };
+  if (pathStat?.type === "File") {
+    return { entrypoint: path, root: paths.dirname(paths.dirname(path)) };
   }
-  if (pathStat?.isDirectory()) {
+  if (pathStat?.type === "Directory") {
     const location = yield* locationFromDirectory(path);
     if (location) {
       return location;
@@ -51,19 +50,17 @@ const discoverExplicitProject = Effect.fn("discoverExplicitProject")(function* (
 });
 
 const locationFromDirectory = Effect.fn("locationFromDirectory")(function* (root: string) {
-  const entrypoint = join(root, "stackyard", "main.ts");
+  const path = yield* Path.Path;
+  const entrypoint = path.join(root, "stackyard", "main.ts");
   const entrypointStat = yield* statIfExists(entrypoint);
-  return entrypointStat?.isFile() ? { entrypoint, root } : undefined;
+  return entrypointStat?.type === "File" ? { entrypoint, root } : undefined;
 });
 
 const statIfExists = Effect.fn("statIfExists")(
-  (path: string): Effect.Effect<Stats | undefined, Failure> =>
-    Effect.tryPromise({
-      try: () => stat(path),
-      catch: (error) => error,
-    }).pipe(
+  (path: string): Effect.Effect<FileSystem.File.Info | undefined, Failure, FileSystem.FileSystem> =>
+    FileSystem.FileSystem.use((fileSystem) => fileSystem.stat(path)).pipe(
       Effect.catch((error) =>
-        isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
+        isMissing(error)
           ? Effect.succeed(undefined)
           : Effect.fail(
               failure(
@@ -81,8 +78,8 @@ const statIfExists = Effect.fn("statIfExists")(
     ),
 );
 
-function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
+function isMissing(error: PlatformError.PlatformError): boolean {
+  return Predicate.isTagged(error.reason, "NotFound");
 }
 
 function notFound(path: string): Failure {

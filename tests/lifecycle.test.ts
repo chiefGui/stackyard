@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { BunServices } from "@effect/platform-bun";
 
 import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
@@ -244,5 +245,7 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function readLocator(runtimeDirectory: string) {
-  return Effect.runPromise(readLocatorEffect(runtimeDirectory));
+  return Effect.runPromise(
+    readLocatorEffect(runtimeDirectory).pipe(Effect.provide(BunServices.layer)),
+  );
 }

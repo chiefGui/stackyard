@@ -1,5 +1,3 @@
-import { realpath } from "node:fs/promises";
-
 import { daemonUrl, ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
@@ -16,7 +14,7 @@ import {
   createStopProjectMessage,
   parseDaemonServerMessage,
 } from "@stackyard/protocol";
-import { Effect, Option } from "effect";
+import { Effect, FileSystem, Option, Path } from "effect";
 import { Argument } from "effect/unstable/cli";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
@@ -31,7 +29,7 @@ export interface RunCommandDependencies {
 
 export function createRunCommand(
   dependencies: RunCommandDependencies,
-): CliCommand<HttpClient.HttpClient> {
+): CliCommand<FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
   return defineCliCommand("run", "SYD2009", {
     args: {
       path: Argument.string("path").pipe(
@@ -53,11 +51,11 @@ export function createRunCommand(
 const runProject = Effect.fn("runProject")(function* (
   path: string | undefined,
   dependencies: RunCommandDependencies,
-): Effect.fn.Return<number, Failure, HttpClient.HttpClient> {
+): Effect.fn.Return<number, Failure, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
   const discovered = yield* discoverProject(path, dependencies.currentDirectory);
-  const root = yield* Effect.tryPromise({
-    try: () => realpath(discovered.root),
-    catch: (error) =>
+  const fileSystem = yield* FileSystem.FileSystem;
+  const root = yield* fileSystem.realPath(discovered.root).pipe(
+    Effect.mapError((error) =>
       failure(
         createDiagnostic({
           code: "SYD2006",
@@ -66,7 +64,8 @@ const runProject = Effect.fn("runProject")(function* (
           notes: [error instanceof Error ? error.message : String(error)],
         }),
       ),
-  });
+    ),
+  );
 
   const daemon = yield* ensureDaemon({
     daemonEntrypoint: dependencies.daemonEntrypoint,

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { join, resolve } from "node:path";
+import { BunServices } from "@effect/platform-bun";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -61,7 +62,7 @@ test("project loading is independent of the evaluator implementation", async () 
     loadProjectEffect({
       currentDirectory: projectRoot,
       path: projectRoot,
-    }).pipe(Effect.provide(evaluator), Effect.flip),
+    }).pipe(Effect.provide(BunServices.layer), Effect.provide(evaluator), Effect.flip),
   );
 
   expect(output.diagnostics[0]?.message).toBe("The supplied project evaluator was used.");

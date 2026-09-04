@@ -13,7 +13,7 @@ import {
   type Project,
   type ProjectList,
 } from "@stackyard/protocol";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
 
 export class ProjectClient extends Context.Service<
@@ -37,13 +37,19 @@ export interface DaemonProjectClientOptions {
 
 export function makeDaemonProjectClientLayer(
   options: DaemonProjectClientOptions,
-): Layer.Layer<ProjectClient, never, HttpClient.HttpClient> {
+): Layer.Layer<ProjectClient, never, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
   return Layer.effect(
     ProjectClient,
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const pathService = yield* Path.Path;
       const daemon = yield* Effect.cached(
-        ensureDaemon(options).pipe(Effect.provideService(HttpClient.HttpClient, client)),
+        ensureDaemon(options).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.provideService(Path.Path, pathService),
+        ),
       );
 
       const send = (
@@ -89,7 +95,9 @@ export function makeDaemonProjectClientLayer(
         remove: (target) => requestProject("api/v1/projects", "DELETE", { target }),
         stop: (target) =>
           findDaemon().pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(HttpClient.HttpClient, client),
+            Effect.provideService(Path.Path, pathService),
             Effect.flatMap((locator) =>
               locator
                 ? send(locator, "api/v1/projects/stop", "POST", { target }).pipe(

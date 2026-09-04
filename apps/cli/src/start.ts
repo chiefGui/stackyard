@@ -6,17 +6,17 @@ import { HttpClient } from "effect/unstable/http";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface StartCommandDependencies {
+export interface StartCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  find(): Effect.Effect<DaemonLocator | undefined, Failure, HttpClient.HttpClient>;
-  runForeground(onStarted: (locator: DaemonLocator) => void): Effect.Effect<number>;
-  start(): Effect.Effect<DaemonLocator, Failure, HttpClient.HttpClient>;
+  find(): Effect.Effect<DaemonLocator | undefined, Failure, HttpClient.HttpClient | R>;
+  runForeground(onStarted: (locator: DaemonLocator) => void): Effect.Effect<number, never, R>;
+  start(): Effect.Effect<DaemonLocator, Failure, HttpClient.HttpClient | R>;
   writeOutput(output: string): void;
 }
 
-export function createStartCommand(
-  dependencies: StartCommandDependencies,
-): CliCommand<HttpClient.HttpClient> {
+export function createStartCommand<R>(
+  dependencies: StartCommandDependencies<R>,
+): CliCommand<HttpClient.HttpClient | R> {
   return defineCliCommand(
     "start",
     "SYD2016",
@@ -39,9 +39,9 @@ export function createStartCommand(
   );
 }
 
-const startForeground = Effect.fn("startForeground")(function* (
-  dependencies: StartCommandDependencies,
-): Effect.fn.Return<number, Failure, HttpClient.HttpClient> {
+const startForeground = Effect.fn("startForeground")(function* <R>(
+  dependencies: StartCommandDependencies<R>,
+): Effect.fn.Return<number, Failure, HttpClient.HttpClient | R> {
   const active = yield* dependencies.find();
   if (active) {
     dependencies.diagnostics.report(
@@ -74,18 +74,18 @@ const startForeground = Effect.fn("startForeground")(function* (
   return 1;
 });
 
-const startDetached = Effect.fn("startDetached")(function* (
-  dependencies: StartCommandDependencies,
-): Effect.fn.Return<number, Failure, HttpClient.HttpClient> {
+const startDetached = Effect.fn("startDetached")(function* <R>(
+  dependencies: StartCommandDependencies<R>,
+): Effect.fn.Return<number, Failure, HttpClient.HttpClient | R> {
   const started = yield* dependencies.start();
   writeStarted(started, false, dependencies);
   return 0;
 });
 
-function writeStarted(
+function writeStarted<R>(
   locator: DaemonLocator,
   foreground: boolean,
-  dependencies: StartCommandDependencies,
+  dependencies: StartCommandDependencies<R>,
 ): void {
   dependencies.writeOutput(`Stackyard is running at ${daemonUrl(locator)}\n`);
   if (foreground) {
