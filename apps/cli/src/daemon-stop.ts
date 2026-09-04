@@ -1,16 +1,19 @@
 import type { StopDaemonStatus } from "@stackyard/daemon/locator";
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
 import { Effect } from "effect";
+import { HttpClient } from "effect/unstable/http";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
 export interface DaemonStopCommandDependencies {
   readonly diagnostics: DiagnosticSink;
-  stop(): Effect.Effect<StopDaemonStatus, Failure>;
+  stop(): Effect.Effect<StopDaemonStatus, Failure, HttpClient.HttpClient>;
   writeOutput(output: string): void;
 }
 
-export function createDaemonStopCommand(dependencies: DaemonStopCommandDependencies): CliCommand {
+export function createDaemonStopCommand(
+  dependencies: DaemonStopCommandDependencies,
+): CliCommand<HttpClient.HttpClient> {
   return defineCliCommand(
     "stop",
     "SYD2017",

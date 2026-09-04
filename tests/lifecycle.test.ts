@@ -27,7 +27,7 @@ test("daemon and project lifecycles stay explicit and idempotent", async () => {
     const bare = await runCli([], temporaryRoot, environment);
     expect(bare.exitCode).toBe(0);
     expect(bare.stderr).toBe("");
-    expect(bare.stdout).toContain("USAGE stackyard");
+    expect(bare.stdout).toContain("USAGE\n  stackyard");
     expect(await readLocator(runtimeDirectory)).toBeUndefined();
 
     const initiallyStopped = await runCli(["daemon", "status"], temporaryRoot, environment);

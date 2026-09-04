@@ -19,8 +19,9 @@ import {
   projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
-import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect } from "effect";
+import { HttpClient } from "effect/unstable/http";
 
 import packageManifest from "../package.json" with { type: "json" };
 import { runCli, type CliEntry } from "./cli.ts";
@@ -98,7 +99,7 @@ function runPublicCli(): Effect.Effect<number> {
     createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
-  const commands: readonly CliEntry<ProjectClient | ProjectEvaluator>[] = [
+  const commands: readonly CliEntry<ProjectClient | ProjectEvaluator | HttpClient.HttpClient>[] = [
     createAddCommand({
       currentDirectory: process.cwd(),
       diagnostics,
@@ -143,6 +144,7 @@ function runPublicCli(): Effect.Effect<number> {
   }).pipe(
     Effect.provide(BunServices.layer),
     Effect.provide(makeDaemonProjectClientLayer(daemonOptions)),
+    Effect.provide(BunHttpClient.layer),
     Effect.provide(makeBunProjectEvaluatorLayer(cliEntrypoint)),
   );
 }

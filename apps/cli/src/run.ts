@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { daemonUrl, ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
+  describeError,
   failure,
   reportDiagnostics,
   type Diagnostic,
@@ -17,6 +18,7 @@ import {
 } from "@stackyard/protocol";
 import { Effect, Option } from "effect";
 import { Argument } from "effect/unstable/cli";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 export interface RunCommandDependencies {
@@ -27,7 +29,9 @@ export interface RunCommandDependencies {
   writeOutput(output: string): void;
 }
 
-export function createRunCommand(dependencies: RunCommandDependencies): CliCommand {
+export function createRunCommand(
+  dependencies: RunCommandDependencies,
+): CliCommand<HttpClient.HttpClient> {
   return defineCliCommand("run", "SYD2009", {
     args: {
       path: Argument.string("path").pipe(
@@ -49,7 +53,7 @@ export function createRunCommand(dependencies: RunCommandDependencies): CliComma
 const runProject = Effect.fn("runProject")(function* (
   path: string | undefined,
   dependencies: RunCommandDependencies,
-): Effect.fn.Return<number, Failure> {
+): Effect.fn.Return<number, Failure, HttpClient.HttpClient> {
   const discovered = yield* discoverProject(path, dependencies.currentDirectory);
   const root = yield* Effect.tryPromise({
     try: () => realpath(discovered.root),
@@ -72,6 +76,17 @@ const runProject = Effect.fn("runProject")(function* (
 });
 
 function runSession(
+  locator: DaemonLocator,
+  root: string,
+  dependencies: RunCommandDependencies,
+): Effect.Effect<number, never, HttpClient.HttpClient> {
+  return HttpClient.HttpClient.use((client) =>
+    runSessionWithClient(client, locator, root, dependencies),
+  );
+}
+
+function runSessionWithClient(
+  client: HttpClient.HttpClient,
   locator: DaemonLocator,
   root: string,
   dependencies: RunCommandDependencies,
@@ -179,7 +194,7 @@ function runSession(
       settled = true;
       clearTimeout(timeout);
       if (projectId) {
-        yield* stopAttachedProject(locator, projectId).pipe(
+        yield* stopAttachedProject(client, locator, projectId).pipe(
           Effect.catch((failed) =>
             Effect.sync(() => reportDiagnostics(dependencies.diagnostics, failed.diagnostics)),
           ),
@@ -192,42 +207,37 @@ function runSession(
   });
 }
 
-const stopAttachedProject = Effect.fn("stopAttachedProject")(
-  (locator: DaemonLocator, projectId: string): Effect.Effect<void, Failure> =>
-    Effect.tryPromise({
-      try: (signal) =>
-        fetch(new URL("api/v1/projects/stop", daemonUrl(locator)), {
-          body: JSON.stringify({ target: projectId }),
-          headers: {
-            authorization: `Bearer ${locator.token}`,
-            "content-type": "application/json",
-          },
-          method: "POST",
-          signal,
-        }),
-      catch: (error) =>
-        failure(
-          connectionDiagnostic(
-            `The project stop request failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        ),
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: "10 seconds",
-        orElse: () =>
-          Effect.fail(failure(connectionDiagnostic("The project stop request timed out."))),
-      }),
-      Effect.flatMap((response) =>
-        response.ok
-          ? Effect.void
-          : Effect.fail(
-              failure(
-                connectionDiagnostic(`The project stop request returned HTTP ${response.status}.`),
-              ),
-            ),
-      ),
+const stopAttachedProject = Effect.fn("stopAttachedProject")(function* (
+  client: HttpClient.HttpClient,
+  locator: DaemonLocator,
+  projectId: string,
+): Effect.fn.Return<void, Failure> {
+  const request = yield* HttpClientRequest.post(
+    new URL("api/v1/projects/stop", daemonUrl(locator)),
+  ).pipe(
+    HttpClientRequest.setHeader("authorization", `Bearer ${locator.token}`),
+    HttpClientRequest.bodyJson({ target: projectId }),
+    Effect.mapError((error) =>
+      failure(connectionDiagnostic(`The project stop request failed: ${describeError(error)}`)),
     ),
-);
+  );
+  const response = yield* client.execute(request).pipe(
+    Effect.mapError((error) =>
+      failure(connectionDiagnostic(`The project stop request failed: ${describeError(error)}`)),
+    ),
+    Effect.timeoutOrElse({
+      duration: "10 seconds",
+      orElse: () =>
+        Effect.fail(failure(connectionDiagnostic("The project stop request timed out."))),
+    }),
+  );
+  if (response.status < 200 || response.status >= 300) {
+    return yield* Effect.fail(
+      failure(connectionDiagnostic(`The project stop request returned HTTP ${response.status}.`)),
+    );
+  }
+  return yield* Effect.void;
+});
 
 function sendSocketMessage(socket: WebSocket, message: unknown): boolean {
   try {

@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 
 import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import { protocolVersion } from "@stackyard/protocol";
-import { Cause, Effect, Exit, Result as EffectResult, Schema } from "effect";
+import { Cause, Effect, Exit, Option, Result as EffectResult, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { resolveStackyardDirectories } from "./directories.ts";
 
@@ -47,6 +48,11 @@ const LockOwnerSchema = Schema.Struct({
   instanceId: Schema.NonEmptyString,
   pid: positiveInteger,
 });
+const DaemonHealthSchema = Schema.Struct({
+  instanceId: Schema.NonEmptyString,
+  protocolVersion: Schema.Literal(protocolVersion),
+  status: Schema.Literal("ok"),
+});
 
 export interface DaemonLock {
   readonly instanceId: string;
@@ -71,7 +77,7 @@ export function daemonUrl(locator: Pick<DaemonLocator, "port">): string {
 
 export const findDaemon = Effect.fn("findDaemon")(function* (
   options: FindDaemonOptions = {},
-): Effect.fn.Return<DaemonLocator | undefined, Failure> {
+): Effect.fn.Return<DaemonLocator | undefined, Failure, HttpClient.HttpClient> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
@@ -80,7 +86,7 @@ export const findDaemon = Effect.fn("findDaemon")(function* (
 
 export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
   options: EnsureDaemonOptions,
-): Effect.fn.Return<DaemonLocator, Failure> {
+): Effect.fn.Return<DaemonLocator, Failure, HttpClient.HttpClient> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
@@ -146,7 +152,7 @@ export const ensureDaemon = Effect.fn("ensureDaemon")(function* (
 
 export const stopDaemon = Effect.fn("stopDaemon")(function* (
   options: FindDaemonOptions = {},
-): Effect.fn.Return<StopDaemonStatus, Failure> {
+): Effect.fn.Return<StopDaemonStatus, Failure, HttpClient.HttpClient> {
   const directories = resolveStackyardDirectories(
     options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {},
   );
@@ -155,15 +161,18 @@ export const stopDaemon = Effect.fn("stopDaemon")(function* (
     return "not-running";
   }
 
-  const response = yield* Effect.tryPromise({
-    try: () =>
-      fetch(new URL("api/v1/shutdown", daemonUrl(locator)), {
-        headers: { authorization: `Bearer ${locator.token}` },
-        method: "POST",
-        signal: AbortSignal.timeout(5_000),
-      }),
-    catch: (error) => daemonStopFailure(describeError(error)),
-  });
+  const client = yield* HttpClient.HttpClient;
+  const response = yield* HttpClientRequest.post(
+    new URL("api/v1/shutdown", daemonUrl(locator)),
+  ).pipe(
+    HttpClientRequest.bearerToken(locator.token),
+    client.execute,
+    Effect.mapError((error) => daemonStopFailure(describeError(error))),
+    Effect.timeoutOrElse({
+      duration: "5 seconds",
+      orElse: () => Effect.fail(daemonStopFailure("The shutdown request timed out.")),
+    }),
+  );
   if (response.status !== 202) {
     return yield* Effect.fail(daemonStopFailure(`The daemon returned HTTP ${response.status}.`));
   }
@@ -181,7 +190,7 @@ export const stopDaemon = Effect.fn("stopDaemon")(function* (
 
 const findDaemonInDirectory = Effect.fn("findDaemonInDirectory")(function* (
   directory: string,
-): Effect.fn.Return<DaemonLocator | undefined, Failure> {
+): Effect.fn.Return<DaemonLocator | undefined, Failure, HttpClient.HttpClient> {
   const current = yield* readLocator(directory).pipe(
     Effect.mapError((error) =>
       daemonUnavailable(`The daemon runtime state could not be inspected: ${describeError(error)}`),
@@ -355,7 +364,7 @@ const publishLockDirectory = Effect.fn("publishLockDirectory")(function* (
 const waitForDaemon = Effect.fn("waitForDaemon")(function* (
   directory: string,
   attempts: number,
-): Effect.fn.Return<DaemonLocator | undefined> {
+): Effect.fn.Return<DaemonLocator | undefined, never, HttpClient.HttpClient> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     yield* Effect.sleep("50 millis");
     const locator = yield* readLocator(directory).pipe(
@@ -441,25 +450,23 @@ export const readLocator = Effect.fn("readLocator")(function* (
   return yield* Effect.fail(read.error);
 });
 
-const isReachable = Effect.fn("isReachable")((locator: DaemonLocator) =>
-  Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(new URL("health", daemonUrl(locator)), {
-        signal: AbortSignal.timeout(500),
-      });
-      const body: unknown = await response.json();
-      return (
-        response.ok &&
-        typeof body === "object" &&
-        body !== null &&
-        Reflect.get(body, "instanceId") === locator.instanceId &&
-        Reflect.get(body, "protocolVersion") === protocolVersion &&
-        Reflect.get(body, "status") === "ok"
-      );
-    },
-    catch: () => false,
-  }).pipe(Effect.catch(() => Effect.succeed(false))),
-);
+const isReachable = Effect.fn("isReachable")(function* (
+  locator: DaemonLocator,
+): Effect.fn.Return<boolean, never, HttpClient.HttpClient> {
+  const client = yield* HttpClient.HttpClient;
+  return yield* client.get(new URL("health", daemonUrl(locator))).pipe(
+    Effect.flatMap((response) =>
+      response.status >= 200 && response.status < 300
+        ? response.json
+        : Effect.fail(new Error(`Health check returned HTTP ${response.status}.`)),
+    ),
+    Effect.flatMap(Schema.decodeUnknownEffect(DaemonHealthSchema)),
+    Effect.map(({ instanceId }) => instanceId === locator.instanceId),
+    Effect.timeoutOption("500 millis"),
+    Effect.map(Option.getOrElse(() => false)),
+    Effect.catch(() => Effect.succeed(false)),
+  );
+});
 
 const readLocatorProcess = Effect.fn("readLocatorProcess")(function* (
   directory: string,
