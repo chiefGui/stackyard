@@ -2,4 +2,4 @@
 "stackyard": patch
 ---
 
-refactor: make platform cleanup and failures consistent
+fix: keep project identity stable across windows path aliases
