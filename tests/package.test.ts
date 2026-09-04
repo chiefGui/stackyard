@@ -71,7 +71,11 @@ test("the packed package works in an external Bun project", async () => {
       [process.execPath, "x", "stackyard", "--version"],
       consumerDirectory,
     );
-    expect(version).toEqual({ exitCode: 0, stderr: "", stdout: `${manifest.version}\n` });
+    expect(version).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: `stackyard v${manifest.version}\n`,
+    });
 
     const typecheck = await runCommand(
       [process.execPath, "x", "tsc", "--noEmit"],

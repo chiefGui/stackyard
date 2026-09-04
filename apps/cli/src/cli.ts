@@ -17,7 +17,6 @@ export interface CliCommand<R = never> {
   readonly kind: "command";
   readonly name: string;
   readonly path: string;
-  readonly positionalLimit: number;
   readonly [CliServicesTypeId]?: R;
 }
 
@@ -39,7 +38,6 @@ export interface CliCommandDefinition<Config extends Command.Command.Config, R =
   run(context: {
     readonly args: Command.Command.Config.Infer<Config>;
   }): Effect.Effect<number, never, R>;
-  readonly positionalLimit?: number;
 }
 
 export interface CliDependencies<R = never> {
@@ -103,7 +101,6 @@ export function defineCliCommand<const Config extends Command.Command.Config, R 
     kind: "command",
     name,
     path,
-    positionalLimit: definition.positionalLimit ?? 0,
   };
 }
 
@@ -159,16 +156,11 @@ export const runCli = Effect.fn("runCli")(function* <R>(
     reportCliError(result.failure, dependencies);
     return 1;
   }
-  const renderedOutput = isRootVersionRequest(args) ? [`${dependencies.version}\n`] : output;
-  for (const value of renderedOutput) {
+  for (const value of output) {
     dependencies.writeOutput(value);
   }
   return yield* execution.exitCode;
 }, Effect.provide(CliExecutionLayer));
-
-function isRootVersionRequest(args: readonly string[]): boolean {
-  return args.length === 1 && (args[0] === "--version" || args[0] === "-v");
-}
 
 function createRootCommand<R>(commands: readonly CliEntry<R>[]): Command.Command.Any {
   return Command.make(cliName).pipe(
@@ -216,7 +208,7 @@ function reportCliError<R>(error: CliError.CliError, dependencies: CliDependenci
     createDiagnostic({
       code: diagnosticCode,
       help,
-      message: cliErrorMessage(issue, target),
+      message: cliErrorMessage(issue),
     }),
   );
 }
@@ -237,30 +229,14 @@ function resolveEntry<R>(
   return current;
 }
 
-function cliErrorMessage(
-  error: CliError.NonShowHelpErrors,
-  command: CliCommand<unknown> | undefined,
-): string {
+function cliErrorMessage(error: CliError.NonShowHelpErrors): string {
   if (Predicate.isTagged("UnrecognizedOption")(error)) {
     return `Unknown option '${error.option}'.`;
   }
   if (Predicate.isTagged("UnknownSubcommand")(error)) {
     return `Unknown command '${error.subcommand}'.`;
   }
-  if (Predicate.isTagged("UnexpectedArgument")(error) && command) {
-    return describePositionalLimit(command.path, command.positionalLimit);
-  }
   return error.message;
-}
-
-function describePositionalLimit(commandName: string, limit: number): string {
-  if (limit === 0) {
-    return `Command '${commandName}' does not accept positional arguments.`;
-  }
-  if (limit === 1) {
-    return `Command '${commandName}' accepts at most one positional argument.`;
-  }
-  return `Command '${commandName}' accepts at most ${limit} positional arguments.`;
 }
 
 function formatConsoleValues(values: readonly unknown[]): string {

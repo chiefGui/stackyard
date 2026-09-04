@@ -23,7 +23,6 @@ export function createRemoveCommand(
       ),
     },
     meta: { description: "Remove a project from Stackyard" },
-    positionalLimit: 1,
     run({ args }) {
       return reportCommandFailure(
         removeProject(args.project, dependencies),

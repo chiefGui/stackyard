@@ -31,7 +31,6 @@ export function createInspectCommand<R>(
     meta: {
       description: "Evaluate and print a project definition",
     },
-    positionalLimit: 1,
     run({ args }) {
       return runInspect(args.path, args.json ?? false, dependencies);
     },

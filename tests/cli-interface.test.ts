@@ -116,7 +116,7 @@ test("the CLI reports its version through either root flag", async () => {
 
   expect(await runCli(["--version"], dependencies)).toBe(0);
   expect(await runCli(["-v"], dependencies)).toBe(0);
-  expect(output).toEqual([`${cliVersion}\n`, `${cliVersion}\n`]);
+  expect(output).toEqual([`stackyard v${cliVersion}\n`, `stackyard v${cliVersion}\n`]);
 });
 
 test("root help identifies the running CLI", async () => {
@@ -257,9 +257,7 @@ test("invalid inspect arguments report the accepted syntax", async () => {
 
   reportedDiagnostics.length = 0;
   expect(await runCli(["inspect", "one", "two"], cliDependencies)).toBe(1);
-  expect(reportedDiagnostics[0]?.message).toBe(
-    "Command 'inspect' accepts at most one positional argument.",
-  );
+  expect(reportedDiagnostics[0]?.message).toBe('Unexpected positional argument: "two"');
 });
 
 test("inspect reports when captured project output was truncated", async () => {

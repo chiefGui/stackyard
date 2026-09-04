@@ -25,7 +25,6 @@ export function createStopCommand(
       ),
     },
     meta: { description: "Stop a project" },
-    positionalLimit: 1,
     run({ args }) {
       return reportCommandFailure(
         stopProject(args.project, dependencies),

@@ -23,7 +23,6 @@ export function createAddCommand(
       ),
     },
     meta: { description: "Add a project to Stackyard" },
-    positionalLimit: 1,
     run({ args }) {
       return reportCommandFailure(addProject(args.path, dependencies), dependencies.diagnostics);
     },
