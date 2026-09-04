@@ -6,7 +6,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createServer, type ViteDevServer } from "vite";
 
 import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
-import { publishLocator } from "../apps/daemon/src/locator.ts";
+import { acquireDaemonLock, publishLocator } from "../apps/daemon/src/locator.ts";
 import {
   describeError,
   formatDiagnostic,
@@ -18,6 +18,8 @@ import { CanonicalPath, NodeCanonicalPathLayer } from "../packages/project-loade
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const cliEntrypoint = join(repositoryRoot, "apps", "cli", "src", "main.ts");
+const developmentLockDirectory = join(repositoryRoot, ".stackyard", "development-lock");
+const developmentStateDirectory = join(repositoryRoot, ".stackyard", "development");
 const diagnostics: DiagnosticSink = {
   report(diagnostic) {
     process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
@@ -65,8 +67,28 @@ function runDevelopment(): Effect.Effect<
       try: () => readPort("STACKYARD_DASHBOARD_PORT", 5173),
       catch: (error) => error,
     });
-    const dataDirectory = yield* Effect.acquireRelease(
-      fileSystem.makeTempDirectory({ prefix: "stackyard-development-" }),
+    const instanceId = yield* crypto.randomUUIDv4;
+    const acquiredLock = yield* acquireDaemonLock(developmentLockDirectory, instanceId);
+    if (!acquiredLock) {
+      return yield* Effect.fail(
+        new Error("Another Stackyard development environment is already running."),
+      );
+    }
+    yield* Effect.acquireRelease(Effect.succeed(acquiredLock), (lock) =>
+      lock.release.pipe(
+        Effect.andThen(
+          fileSystem.remove(developmentLockDirectory, { force: true, recursive: true }),
+        ),
+        Effect.catch((error) => reportCleanupFailure("Development lock cleanup failed", error)),
+      ),
+    );
+    const stateDirectory = yield* Effect.acquireRelease(
+      fileSystem
+        .remove(developmentStateDirectory, { force: true, recursive: true })
+        .pipe(
+          Effect.andThen(fileSystem.makeDirectory(developmentStateDirectory, { recursive: true })),
+          Effect.as(developmentStateDirectory),
+        ),
       (directory) =>
         fileSystem
           .remove(directory, { force: true, recursive: true })
@@ -76,7 +98,8 @@ function runDevelopment(): Effect.Effect<
             ),
           ),
     );
-    const instanceId = yield* crypto.randomUUIDv4;
+    const dataDirectory = join(stateDirectory, "data");
+    const runtimeDirectory = join(stateDirectory, "run");
     const daemonContext = yield* Layer.build(
       makeDaemonLayer(
         {
@@ -96,14 +119,15 @@ function runDevelopment(): Effect.Effect<
     const daemon = Context.get(daemonContext, Daemon);
 
     if (projectPath) {
-      yield* publishLocator(dataDirectory, {
+      yield* fileSystem.makeDirectory(runtimeDirectory, { recursive: true });
+      yield* publishLocator(runtimeDirectory, {
         instanceId: daemon.instanceId,
         pid: process.pid,
         port: daemon.port,
         token: daemon.token,
       });
       yield* Effect.acquireRelease(
-        startDevelopmentProject(projectPath, dataDirectory),
+        startDevelopmentProject(projectPath, runtimeDirectory),
         (subprocess) =>
           stopDevelopmentProject(subprocess).pipe(
             Effect.catch((error) =>
@@ -136,7 +160,7 @@ function runDevelopment(): Effect.Effect<
 
     process.stdout.write(`API:       ${daemon.url}\n`);
     process.stdout.write(`Dashboard: http://127.0.0.1:${dashboardPort}/\n`);
-    yield* daemon.awaitShutdown;
+    return yield* daemon.awaitShutdown;
   }).pipe(
     Effect.scoped,
     Effect.match({
