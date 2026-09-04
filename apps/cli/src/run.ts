@@ -9,15 +9,12 @@ import {
   type Failure,
 } from "@stackyard/diagnostics";
 import { CanonicalPath, discoverProject } from "@stackyard/project-loader";
-import {
-  createStartProjectMessage,
-  createStopProjectMessage,
-  parseDaemonServerMessage,
-} from "@stackyard/protocol";
-import { Effect, FileSystem, Option, Path } from "effect";
+import { createStartProjectMessage, parseDaemonServerMessage } from "@stackyard/protocol";
+import { Deferred, Effect, FileSystem, Option, Path, Ref, Scope } from "effect";
 import { Argument } from "effect/unstable/cli";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { Socket } from "effect/unstable/socket";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 export interface RunCommandDependencies {
@@ -94,131 +91,146 @@ function runSession(
   dependencies: RunCommandDependencies,
 ): Effect.Effect<number, never, HttpClient.HttpClient> {
   return HttpClient.HttpClient.use((client) =>
-    runSessionWithClient(client, locator, root, dependencies),
+    runSessionWithClient(client, locator, root, dependencies).pipe(Effect.scoped),
   );
 }
 
-function runSessionWithClient(
+interface SessionOutcome {
+  readonly diagnostics: readonly Diagnostic[];
+  readonly exitCode: number;
+}
+
+const runSessionWithClient = Effect.fn("runSessionWithClient")(function* (
   client: HttpClient.HttpClient,
   locator: DaemonLocator,
   root: string,
   dependencies: RunCommandDependencies,
-): Effect.Effect<number> {
-  return Effect.callback<number>((resume) => {
-    let socket: WebSocket;
-    try {
-      const controlUrl = new URL("api/v1/control", daemonUrl(locator));
-      controlUrl.protocol = "ws:";
-      socket = new WebSocket(controlUrl, {
-        headers: { authorization: `Bearer ${locator.token}` },
-      });
-    } catch {
-      dependencies.diagnostics.report(connectionDiagnostic("The control connection failed."));
-      resume(Effect.succeed(1));
-      return Effect.void;
+): Effect.fn.Return<number, never, Scope.Scope> {
+  const controlUrl = new URL("api/v1/control", daemonUrl(locator));
+  controlUrl.protocol = "ws:";
+  const socket = yield* Socket.fromWebSocket(
+    Effect.acquireRelease(
+      Effect.try({
+        try: () =>
+          new WebSocket(controlUrl, {
+            headers: { authorization: `Bearer ${locator.token}` },
+          }),
+        catch: (cause) =>
+          new Socket.SocketError({
+            reason: new Socket.SocketOpenError({ cause, kind: "Unknown" }),
+          }),
+      }),
+      (webSocket) => Effect.sync(() => closeSocket(webSocket)),
+    ),
+    { openTimeout: "10 seconds" },
+  );
+  const write = yield* socket.writer;
+  const completed = yield* Deferred.make<SessionOutcome>();
+  const projectId = yield* Ref.make<string | undefined>(undefined);
+  const started = yield* Deferred.make<void>();
+  const wasStarted = yield* Ref.make(false);
+  const complete = (outcome: SessionOutcome) => Deferred.succeed(completed, outcome);
+  const failConnection = (note: string) =>
+    complete({ diagnostics: [connectionDiagnostic(note)], exitCode: 1 });
+
+  const handleMessage = Effect.fn("runSession.handleMessage")(function* (payload: string) {
+    const decoded = yield* Effect.try({
+      try: () => JSON.parse(payload) as unknown,
+      catch: () => undefined,
+    }).pipe(Effect.option);
+    if (Option.isNone(decoded)) {
+      yield* failConnection("The daemon sent malformed data.");
+      return;
     }
-    let projectId: string | undefined;
-    let settled = false;
-    let started = false;
-    const timeout = setTimeout(() => {
-      dependencies.diagnostics.report(
-        createDiagnostic({
-          code: "SYD2011",
-          help: "Check the service commands and Stackyard daemon, then retry.",
-          message: "The daemon did not start the project within ten seconds.",
-        }),
+
+    const message = parseDaemonServerMessage(decoded.value);
+    if (!message.success) {
+      yield* complete({ diagnostics: message.diagnostics, exitCode: 1 });
+      return;
+    }
+
+    if (message.output.kind === "started") {
+      const projectName = message.output.projectName;
+      yield* Ref.set(projectId, message.output.projectId);
+      yield* Ref.set(wasStarted, true);
+      yield* Deferred.succeed(started, undefined);
+      yield* Effect.sync(() =>
+        dependencies.writeOutput(`${projectName} is running. Dashboard: ${daemonUrl(locator)}\n`),
       );
-      finish(1);
-    }, 10_000);
-
-    const finish = (exitCode: number): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      closeSocket(socket);
-      resume(Effect.succeed(exitCode));
-    };
-
-    socket.addEventListener("open", () => {
-      if (
-        !sendSocketMessage(socket, createStartProjectMessage(root, serviceEnvironment(process.env)))
-      ) {
-        dependencies.diagnostics.report(
-          connectionDiagnostic("The start request could not be sent."),
-        );
-        finish(1);
-      }
-    });
-    socket.addEventListener("message", (event) => {
-      let value: unknown;
-      try {
-        value = JSON.parse(String(event.data));
-      } catch {
-        dependencies.diagnostics.report(connectionDiagnostic("The daemon sent malformed data."));
-        finish(1);
-        return;
-      }
-
-      const message = parseDaemonServerMessage(value);
-      if (!message.success) {
-        reportDiagnostics(dependencies.diagnostics, message.diagnostics);
-        finish(1);
-        return;
-      }
-
-      if (message.output.kind === "started") {
-        projectId = message.output.projectId;
-        started = true;
-        clearTimeout(timeout);
-        dependencies.writeOutput(
-          `${message.output.projectName} is running. Dashboard: ${daemonUrl(locator)}\n`,
-        );
-      } else if (message.output.kind === "failed") {
-        reportDiagnostics(dependencies.diagnostics, message.output.report.diagnostics);
-        finish(1);
-      } else if (message.output.kind === "completed") {
-        finish(message.output.exitCode);
-      } else {
-        finish(0);
-      }
-    });
-    socket.addEventListener("error", () => {
-      if (!settled) {
-        dependencies.diagnostics.report(connectionDiagnostic("The control connection failed."));
-        finish(1);
-      }
-    });
-    socket.addEventListener("close", () => {
-      if (!settled) {
-        let note = "The daemon closed the connection before starting the project.";
-        if (started) {
-          note = "The daemon connection closed while the project was running.";
-        }
-        dependencies.diagnostics.report(connectionDiagnostic(note));
-        finish(1);
-      }
-    });
-    return Effect.gen(function* () {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      if (projectId) {
-        yield* stopAttachedProject(client, locator, projectId).pipe(
-          Effect.catch((failed) =>
-            Effect.sync(() => reportDiagnostics(dependencies.diagnostics, failed.diagnostics)),
-          ),
-        );
-      } else if (socket.readyState === WebSocket.OPEN) {
-        sendSocketMessage(socket, createStopProjectMessage());
-      }
-      closeSocket(socket);
-    });
+      return;
+    }
+    if (message.output.kind === "failed") {
+      yield* complete({ diagnostics: message.output.report.diagnostics, exitCode: 1 });
+      return;
+    }
+    if (message.output.kind === "completed") {
+      yield* complete({ diagnostics: [], exitCode: message.output.exitCode });
+      return;
+    }
+    yield* complete({ diagnostics: [], exitCode: 0 });
   });
-}
+
+  yield* socket
+    .runString(handleMessage, {
+      onOpen: write(
+        JSON.stringify(createStartProjectMessage(root, serviceEnvironment(process.env))),
+      ).pipe(
+        Effect.catch(() => failConnection("The start request could not be sent.")),
+        Effect.asVoid,
+      ),
+    })
+    .pipe(
+      Effect.catch((error) =>
+        Ref.get(wasStarted).pipe(
+          Effect.flatMap((active) => failConnection(socketFailureNote(error, active))),
+        ),
+      ),
+      Effect.forkScoped,
+    );
+
+  const startup = yield* Deferred.await(started).pipe(
+    Effect.as({ kind: "started" } as const),
+    Effect.raceFirst(
+      Deferred.await(completed).pipe(
+        Effect.map((outcome) => ({ kind: "completed", outcome }) as const),
+      ),
+    ),
+    Effect.timeoutOption("10 seconds"),
+  );
+  const outcome = yield* Option.match(startup, {
+    onNone: () =>
+      Effect.succeed<SessionOutcome>({
+        diagnostics: [
+          createDiagnostic({
+            code: "SYD2011",
+            help: "Check the service commands and Stackyard daemon, then retry.",
+            message: "The daemon did not start the project within ten seconds.",
+          }),
+        ],
+        exitCode: 1,
+      }),
+    onSome: (state) =>
+      state.kind === "completed" ? Effect.succeed(state.outcome) : Deferred.await(completed),
+  }).pipe(
+    Effect.onInterrupt(() =>
+      Ref.get(projectId).pipe(
+        Effect.flatMap((id) =>
+          id
+            ? stopAttachedProject(client, locator, id).pipe(
+                Effect.catch((failed) =>
+                  Effect.sync(() =>
+                    reportDiagnostics(dependencies.diagnostics, failed.diagnostics),
+                  ),
+                ),
+              )
+            : Effect.void,
+        ),
+      ),
+    ),
+  );
+  yield* Effect.sync(() => reportDiagnostics(dependencies.diagnostics, outcome.diagnostics));
+  return outcome.exitCode;
+});
 
 const stopAttachedProject = Effect.fn("stopAttachedProject")(function* (
   client: HttpClient.HttpClient,
@@ -252,15 +264,6 @@ const stopAttachedProject = Effect.fn("stopAttachedProject")(function* (
   return yield* Effect.void;
 });
 
-function sendSocketMessage(socket: WebSocket, message: unknown): boolean {
-  try {
-    socket.send(JSON.stringify(message));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function closeSocket(socket: WebSocket): void {
   try {
     if (socket.readyState < WebSocket.CLOSING) {
@@ -269,6 +272,15 @@ function closeSocket(socket: WebSocket): void {
   } catch {
     // The peer may have closed the socket between the state check and close.
   }
+}
+
+function socketFailureNote(error: Socket.SocketError, started: boolean): string {
+  if (error.reason._tag !== "SocketCloseError") {
+    return "The control connection failed.";
+  }
+  return started
+    ? "The daemon connection closed while the project was running."
+    : "The daemon closed the connection before starting the project.";
 }
 
 function serviceEnvironment(environment: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
