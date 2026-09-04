@@ -1,17 +1,18 @@
-import { Effect, FileSystem, Path } from "effect";
+import { CanonicalPath } from "@stackyard/project-loader";
+import { Effect, Path } from "effect";
 
 export const normalizeProjectTarget = Effect.fn("normalizeProjectTarget")(function* (
   target: string,
   currentDirectory: string,
-): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
-  const fileSystem = yield* FileSystem.FileSystem;
+): Effect.fn.Return<string, never, CanonicalPath | Path.Path> {
+  const canonicalPath = yield* CanonicalPath;
   const path = yield* Path.Path;
   if (!isPathTarget(target, path)) {
     return target;
   }
 
   const absolute = path.resolve(currentDirectory, target);
-  return yield* fileSystem.realPath(absolute).pipe(Effect.orElseSucceed(() => absolute));
+  return yield* canonicalPath.resolve(absolute).pipe(Effect.orElseSucceed(() => absolute));
 });
 
 function isPathTarget(target: string, path: Path.Path): boolean {

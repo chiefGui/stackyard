@@ -1,4 +1,5 @@
 import { failure, reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
+import { CanonicalPath } from "@stackyard/project-loader";
 import { Crypto, Effect, FileSystem, Path } from "effect";
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
@@ -23,7 +24,11 @@ export interface ManagedDaemonOptions {
 
 export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
   options: ManagedDaemonOptions,
-): Effect.fn.Return<number, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  number,
+  never,
+  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> {
   let cleanupFailed = false;
   const reportCleanupFailure: ReportCleanupFailure = (diagnostic) =>
     Effect.sync(() => {

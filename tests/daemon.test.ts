@@ -42,6 +42,7 @@ import {
   type Project,
   type ProjectSpec,
 } from "../packages/protocol/src/index.ts";
+import { NodeCanonicalPathLayer } from "../packages/project-loader/src/index.ts";
 
 const diagnostics: DiagnosticSink = { report() {} };
 const discardLogs = Object.freeze({ write(_entries: readonly ProcessLogLine[]) {} });
@@ -106,7 +107,7 @@ describe("daemon lifecycle", () => {
                 Effect.sync(() => {
                   cleanupFailure = diagnostic;
                 }),
-            ).pipe(Layer.provide(BunServices.layer)),
+            ).pipe(Layer.provide(Layer.merge(BunServices.layer, NodeCanonicalPathLayer))),
           ),
         ),
       );
@@ -138,7 +139,7 @@ describe("daemon lifecycle", () => {
             controller.abort();
           },
           runtimeDirectory,
-        }).pipe(Effect.provide(BunServices.layer)),
+        }).pipe(Effect.provide(NodeCanonicalPathLayer), Effect.provide(BunServices.layer)),
         { signal: controller.signal },
       );
 
@@ -171,7 +172,7 @@ describe("daemon lifecycle", () => {
             throw new Error("Expected startup callback failure.");
           },
           runtimeDirectory,
-        }).pipe(Effect.provide(BunServices.layer)),
+        }).pipe(Effect.provide(NodeCanonicalPathLayer), Effect.provide(BunServices.layer)),
       );
 
       expect(exitCode).toBe(1);

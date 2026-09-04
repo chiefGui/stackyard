@@ -13,6 +13,7 @@ import {
   reportDiagnostics,
   type DiagnosticSink,
 } from "../packages/diagnostics/src/index.ts";
+import { CanonicalPath, NodeCanonicalPathLayer } from "../packages/project-loader/src/index.ts";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const cliEntrypoint = join(repositoryRoot, "apps", "cli", "src", "main.ts");
@@ -24,6 +25,7 @@ const diagnostics: DiagnosticSink = {
 
 BunRuntime.runMain(
   runDevelopment().pipe(
+    Effect.provide(NodeCanonicalPathLayer),
     Effect.provide(BunServices.layer),
     Effect.tap((exitCode) =>
       Effect.sync(() => {
@@ -37,7 +39,7 @@ BunRuntime.runMain(
 function runDevelopment(): Effect.Effect<
   number,
   never,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path
 > {
   let cleanupFailed = false;
   const reportCleanupFailure = (message: string, error: unknown): Effect.Effect<void> =>

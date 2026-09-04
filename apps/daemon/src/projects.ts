@@ -21,6 +21,7 @@ import {
   type Result,
 } from "@stackyard/diagnostics";
 import {
+  CanonicalPath,
   discoverProject,
   loadProjectEffect,
   makeBunProjectEvaluatorLayer,
@@ -318,19 +319,20 @@ const ProjectIdGeneratorLayer: Layer.Layer<ProjectIdGenerator, never, Crypto.Cry
 const ProjectRootResolverLayer: Layer.Layer<
   ProjectRootResolver,
   never,
-  FileSystem.FileSystem | Path.Path
+  CanonicalPath | FileSystem.FileSystem | Path.Path
 > = Layer.effect(
   ProjectRootResolver,
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
+    const canonicalPath = yield* CanonicalPath;
     return ProjectRootResolver.of({
       canonicalize: Effect.fn("ProjectRootResolver.canonicalize")(function* (path: string) {
         const discovered = yield* discoverProject(path, process.cwd()).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, paths),
         );
-        return yield* fileSystem.realPath(discovered.root).pipe(
+        return yield* canonicalPath.resolve(discovered.root).pipe(
           Effect.mapError((error) =>
             failure(
               createDiagnostic({

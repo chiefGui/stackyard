@@ -22,7 +22,11 @@ import { createRemoveCommand } from "../apps/cli/src/remove.ts";
 import { createStartCommand } from "../apps/cli/src/start.ts";
 import { createStopCommand } from "../apps/cli/src/stop.ts";
 import { createDiagnostic, failure, type Diagnostic } from "../packages/diagnostics/src/index.ts";
-import { ProjectEvaluator } from "../packages/project-loader/src/index.ts";
+import {
+  CanonicalPath,
+  NodeCanonicalPathLayer,
+  ProjectEvaluator,
+} from "../packages/project-loader/src/index.ts";
 import { createProjectList, type Project } from "../packages/protocol/src/index.ts";
 import { Effect, Layer } from "effect";
 
@@ -546,6 +550,7 @@ test("stop does not start Stackyard when the daemon is not running", async () =>
 function runCli(args: readonly string[], dependencies: TestCliDependencies): Promise<number> {
   return Effect.runPromise(
     runCliEffect(args, dependencies).pipe(
+      Effect.provide(NodeCanonicalPathLayer),
       Effect.provide(BunServices.layer),
       Effect.provide(
         Layer.merge(
@@ -569,12 +574,12 @@ function executePlainCommand(command: CliCommand, args: readonly string[] = []):
       diagnostics: { report() {} },
       version: cliVersion,
       writeOutput() {},
-    }).pipe(Effect.provide(BunServices.layer)),
+    }).pipe(Effect.provide(NodeCanonicalPathLayer), Effect.provide(BunServices.layer)),
   );
 }
 
 function executeProjectCommand(
-  command: CliCommand<ProjectClient>,
+  command: CliCommand<BunServices.BunServices | CanonicalPath | ProjectClient>,
   args: readonly string[],
   client: ProjectClient["Service"],
 ): Promise<number> {
@@ -584,7 +589,11 @@ function executeProjectCommand(
       diagnostics: { report() {} },
       version: cliVersion,
       writeOutput() {},
-    }).pipe(Effect.provide(BunServices.layer), Effect.provideService(ProjectClient, client)),
+    }).pipe(
+      Effect.provide(NodeCanonicalPathLayer),
+      Effect.provide(BunServices.layer),
+      Effect.provideService(ProjectClient, client),
+    ),
   );
 }
 

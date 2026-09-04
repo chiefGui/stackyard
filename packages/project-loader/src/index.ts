@@ -1,3 +1,4 @@
+export { CanonicalPath, CanonicalPathError, NodeCanonicalPathLayer } from "./canonical-path.ts";
 export type { ProjectLocation } from "./discovery.ts";
 export { discoverProject } from "./discovery.ts";
 export { makeBunProjectEvaluatorLayer } from "./bun-project-evaluator.ts";

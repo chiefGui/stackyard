@@ -13,8 +13,10 @@ import {
 import { runManagedDaemon } from "@stackyard/daemon/managed";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
+  CanonicalPath,
   loadProjectEffect,
   makeBunProjectEvaluatorLayer,
+  NodeCanonicalPathLayer,
   type ProjectEvaluator,
   projectEvaluatorCommand,
   runProjectEvaluator,
@@ -38,6 +40,7 @@ import { createStartCommand } from "./start.ts";
 import { createStopCommand } from "./stop.ts";
 
 type DaemonCommandServices =
+  | CanonicalPath
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -55,6 +58,7 @@ const diagnostics = createDiagnosticSink(diagnosticsPath);
 
 BunRuntime.runMain(
   main().pipe(
+    Effect.provide(NodeCanonicalPathLayer),
     Effect.provide(BunServices.layer),
     Effect.tap((exitCode) =>
       Effect.sync(() => {
@@ -65,7 +69,7 @@ BunRuntime.runMain(
   ),
 );
 
-function main(): Effect.Effect<number, never, BunServices.BunServices> {
+function main(): Effect.Effect<number, never, BunServices.BunServices | CanonicalPath> {
   if (command === internalDaemonCommand) {
     return runDaemon();
   }
@@ -78,7 +82,7 @@ function main(): Effect.Effect<number, never, BunServices.BunServices> {
 function runDaemon(): Effect.Effect<
   number,
   never,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path
 > {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
@@ -90,7 +94,7 @@ function runDaemon(): Effect.Effect<
   });
 }
 
-function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices> {
+function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices | CanonicalPath> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
   const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
   const startCommand = createStartCommand<DaemonCommandServices>({

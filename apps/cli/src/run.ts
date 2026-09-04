@@ -8,7 +8,7 @@ import {
   type DiagnosticSink,
   type Failure,
 } from "@stackyard/diagnostics";
-import { discoverProject } from "@stackyard/project-loader";
+import { CanonicalPath, discoverProject } from "@stackyard/project-loader";
 import {
   createStartProjectMessage,
   createStopProjectMessage,
@@ -29,7 +29,7 @@ export interface RunCommandDependencies {
 
 export function createRunCommand(
   dependencies: RunCommandDependencies,
-): CliCommand<FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
+): CliCommand<CanonicalPath | FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
   return defineCliCommand("run", "SYD2009", {
     args: {
       path: Argument.string("path").pipe(
@@ -51,10 +51,14 @@ export function createRunCommand(
 const runProject = Effect.fn("runProject")(function* (
   path: string | undefined,
   dependencies: RunCommandDependencies,
-): Effect.fn.Return<number, Failure, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path> {
+): Effect.fn.Return<
+  number,
+  Failure,
+  CanonicalPath | FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+> {
   const discovered = yield* discoverProject(path, dependencies.currentDirectory);
-  const fileSystem = yield* FileSystem.FileSystem;
-  const root = yield* fileSystem.realPath(discovered.root).pipe(
+  const canonicalPath = yield* CanonicalPath;
+  const root = yield* canonicalPath.resolve(discovered.root).pipe(
     Effect.mapError((error) =>
       failure(
         createDiagnostic({

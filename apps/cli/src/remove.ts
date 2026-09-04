@@ -1,5 +1,6 @@
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
-import { Effect, FileSystem, Path } from "effect";
+import { CanonicalPath } from "@stackyard/project-loader";
+import { Effect, Path } from "effect";
 import { Argument } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
@@ -14,7 +15,7 @@ export interface RemoveCommandDependencies {
 
 export function createRemoveCommand(
   dependencies: RemoveCommandDependencies,
-): CliCommand<FileSystem.FileSystem | Path.Path | ProjectClient> {
+): CliCommand<CanonicalPath | Path.Path | ProjectClient> {
   return defineCliCommand("remove", "SYD2014", {
     args: {
       project: Argument.string("project").pipe(
@@ -35,7 +36,7 @@ export function createRemoveCommand(
 const removeProject = Effect.fn("removeProject")(function* (
   target: string,
   dependencies: RemoveCommandDependencies,
-): Effect.fn.Return<number, Failure, FileSystem.FileSystem | Path.Path | ProjectClient> {
+): Effect.fn.Return<number, Failure, CanonicalPath | Path.Path | ProjectClient> {
   const client = yield* ProjectClient;
   const normalizedTarget = yield* normalizeProjectTarget(target, dependencies.currentDirectory);
   const removed = yield* client.remove(normalizedTarget);

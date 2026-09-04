@@ -6,6 +6,7 @@ import {
   type DiagnosticSink,
   type Failure,
 } from "@stackyard/diagnostics";
+import { CanonicalPath } from "@stackyard/project-loader";
 import {
   Context,
   Crypto,
@@ -54,7 +55,7 @@ export type ReportCleanupFailure = (diagnostic: Diagnostic) => Effect.Effect<voi
 export function makeDaemonLayer(
   options: DaemonOptions,
   reportCleanupFailure: ReportCleanupFailure,
-): Layer.Layer<Daemon, Failure, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
+): Layer.Layer<Daemon, Failure, CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
   return Layer.effect(Daemon, acquireDaemon(options, reportCleanupFailure));
 }
 
@@ -64,9 +65,10 @@ const acquireDaemon = Effect.fn("acquireDaemon")(function* (
 ): Effect.fn.Return<
   RunningDaemon,
   Failure,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
+  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
 > {
   const crypto = yield* Crypto.Crypto;
+  const canonicalPath = yield* CanonicalPath;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const manager = makeProjectManagerLayer({ diagnostics: options.diagnostics }).pipe(
@@ -82,6 +84,7 @@ const acquireDaemon = Effect.fn("acquireDaemon")(function* (
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(Crypto.Crypto, crypto),
+        Layer.succeed(CanonicalPath, canonicalPath),
         Layer.succeed(FileSystem.FileSystem, fileSystem),
         Layer.succeed(Path.Path, path),
       ),

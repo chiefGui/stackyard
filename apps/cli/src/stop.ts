@@ -1,5 +1,5 @@
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
-import { discoverProject } from "@stackyard/project-loader";
+import { CanonicalPath, discoverProject } from "@stackyard/project-loader";
 import { Effect, FileSystem, Option, Path } from "effect";
 import { Argument } from "effect/unstable/cli";
 
@@ -15,7 +15,7 @@ export interface StopCommandDependencies {
 
 export function createStopCommand(
   dependencies: StopCommandDependencies,
-): CliCommand<FileSystem.FileSystem | Path.Path | ProjectClient> {
+): CliCommand<CanonicalPath | FileSystem.FileSystem | Path.Path | ProjectClient> {
   return defineCliCommand("stop", "SYD2020", {
     args: {
       project: Argument.string("project").pipe(
@@ -38,7 +38,11 @@ export function createStopCommand(
 const stopProject = Effect.fn("stopProject")(function* (
   project: string | undefined,
   dependencies: StopCommandDependencies,
-): Effect.fn.Return<number, Failure, FileSystem.FileSystem | Path.Path | ProjectClient> {
+): Effect.fn.Return<
+  number,
+  Failure,
+  CanonicalPath | FileSystem.FileSystem | Path.Path | ProjectClient
+> {
   let target = project;
   if (!target) {
     const discovered = yield* discoverProject(undefined, dependencies.currentDirectory);
