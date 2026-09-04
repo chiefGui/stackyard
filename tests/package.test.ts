@@ -3,8 +3,9 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-import { readLocator } from "../apps/daemon/src/locator.ts";
+import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
+import { Effect } from "effect";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const packageRoot = join(repositoryRoot, "apps/cli");
@@ -334,4 +335,8 @@ async function runCommand(
   const [stderr, stdout] = await Promise.all([stderrPromise, stdoutPromise]);
 
   return { exitCode, stderr, stdout };
+}
+
+function readLocator(runtimeDirectory: string) {
+  return Effect.runPromise(readLocatorEffect(runtimeDirectory));
 }

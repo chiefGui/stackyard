@@ -3,8 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { readLocator } from "../apps/daemon/src/locator.ts";
+import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
+import { Effect } from "effect";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
@@ -259,4 +260,8 @@ function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, strin
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   );
+}
+
+function readLocator(runtimeDirectory: string) {
+  return Effect.runPromise(readLocatorEffect(runtimeDirectory));
 }

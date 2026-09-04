@@ -8,7 +8,7 @@
 - Treat performance, correctness, and maintainability as hard constraints. Avoid unnecessary or unbounded work. Measure non-obvious trade-offs.
 - Fix root causes. Do not ship workarounds, silent fallbacks, or competing sources of truth.
 - Every state needs a way in, a way out, and a way to inspect it. Close requires reopen. Irreversibility requires an explicit product decision.
-- Keep complexity at adapter boundaries. Domain logic and orchestration stay transport- and framework-agnostic; UI renders state and emits intent.
+- Keep pure domain logic transport- and framework-agnostic. Implement application orchestration with Effect, isolate platform-specific behavior behind services and Layers, and keep UI limited to rendering state and emitting intent.
 
 ## Learning more about Effect
 

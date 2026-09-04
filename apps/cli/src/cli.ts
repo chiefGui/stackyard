@@ -1,6 +1,11 @@
 import { stripVTControlCharacters } from "node:util";
 
-import { createDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
+import {
+  createDiagnostic,
+  reportDiagnostics,
+  type DiagnosticSink,
+  type Failure,
+} from "@stackyard/diagnostics";
 import {
   defineCommand,
   renderUsage,
@@ -11,71 +16,72 @@ import {
   type CommandMeta,
   type SubCommandsDef,
 } from "citty";
+import { Effect } from "effect";
 
 const cliName = "stackyard";
 
-export interface CliCommand {
+export interface CliCommand<R = never> {
   readonly diagnosticCode: string;
   readonly definition: SubCommandsDef[string];
   readonly kind: "command";
   readonly name: string;
   readonly path: string;
-  execute(args: readonly string[]): Promise<number>;
-  renderHelp(): Promise<string>;
+  execute(args: readonly string[]): Effect.Effect<number, unknown, R>;
+  renderHelp(): Effect.Effect<string>;
 }
 
-export interface CliCommandGroup {
-  readonly commands: readonly CliEntry[];
+export interface CliCommandGroup<R = never> {
+  readonly commands: readonly CliEntry<R>[];
   readonly definition: SubCommandsDef[string];
   readonly diagnosticCode: string;
   readonly kind: "group";
   readonly name: string;
   readonly path: string;
-  renderHelp(): Promise<string>;
+  renderHelp(): Effect.Effect<string>;
 }
 
-export type CliEntry = CliCommand | CliCommandGroup;
+export type CliEntry<R = never> = CliCommand<R> | CliCommandGroup<R>;
 
-export type CliCommandDefinition<T extends ArgsDef> = Omit<
+export type CliCommandDefinition<T extends ArgsDef, R = never> = Omit<
   CommandDef<T>,
   "args" | "meta" | "run"
 > & {
   readonly args?: T;
   readonly meta: Omit<CommandMeta, "name">;
-  run(context: CommandContext<T>): number | Promise<number>;
+  run(context: CommandContext<T>): Effect.Effect<number, never, R>;
 };
 
-export interface CliDependencies {
-  readonly commands: readonly CliEntry[];
+export interface CliDependencies<R = never> {
+  readonly commands: readonly CliEntry<R>[];
   readonly diagnostics: DiagnosticSink;
   readonly version: string;
   writeOutput(output: string): void;
 }
 
-export function defineCliCommand<const T extends ArgsDef>(
+export function reportCommandFailure<R>(
+  effect: Effect.Effect<number, Failure, R>,
+  diagnostics: DiagnosticSink,
+): Effect.Effect<number, never, R> {
+  return effect.pipe(
+    Effect.catch((failed) =>
+      Effect.sync(() => {
+        reportDiagnostics(diagnostics, failed.diagnostics);
+        return 1;
+      }),
+    ),
+  );
+}
+
+export function defineCliCommand<const T extends ArgsDef, R = never>(
   name: string,
   diagnosticCode: string,
-  definition: CliCommandDefinition<T>,
+  definition: CliCommandDefinition<T, R>,
   path = name,
-): CliCommand {
+): CliCommand<R> {
   const command = defineCommand({
     ...definition,
     meta: { ...definition.meta, name: `${cliName} ${path}` },
-  });
-  const validatedCommand = defineCommand({
-    ...command,
-    async setup(context) {
-      const invalidArgument = validateParsedArguments(
-        context.args,
-        context.rawArgs,
-        definition.args ?? {},
-        path,
-      );
-      if (invalidArgument) {
-        throw new InvalidArgumentsError(invalidArgument);
-      }
-      await command.setup?.(context);
-    },
+    run: () => 0,
   });
 
   return {
@@ -84,26 +90,54 @@ export function defineCliCommand<const T extends ArgsDef>(
     kind: "command",
     name,
     path,
-    async execute(args) {
-      const execution = await runCommand(validatedCommand, { rawArgs: [...args] });
-      if (typeof execution.result !== "number") {
-        throw new TypeError("A CLI command did not return an exit code.");
-      }
-      return execution.result;
+    execute(args) {
+      return Effect.suspend(() => {
+        const executionState: { program?: Effect.Effect<number, never, R> } = {};
+        const executableCommand = defineCommand({
+          ...command,
+          run(context) {
+            executionState.program = definition.run(context);
+            return 0;
+          },
+          async setup(context) {
+            const invalidArgument = validateParsedArguments(
+              context.args,
+              context.rawArgs,
+              definition.args ?? {},
+              path,
+            );
+            if (invalidArgument) {
+              throw new InvalidArgumentsError(invalidArgument);
+            }
+            await command.setup?.(context);
+          },
+        });
+        return Effect.tryPromise({
+          try: () => runCommand(executableCommand, { rawArgs: [...args] }),
+          catch: (error) => error,
+        }).pipe(
+          Effect.flatMap((execution) => {
+            const effect = executionState.program;
+            return effect && typeof execution.result === "number"
+              ? effect
+              : Effect.die(new TypeError("A CLI command did not return an exit code."));
+          }),
+        );
+      });
     },
     renderHelp() {
-      return renderUsage(command);
+      return Effect.promise(() => renderUsage(command));
     },
   };
 }
 
-export function defineCliCommandGroup(
+export function defineCliCommandGroup<R = never>(
   name: string,
   diagnosticCode: string,
   meta: Omit<CommandMeta, "name">,
-  commands: readonly CliEntry[],
+  commands: readonly CliEntry<R>[],
   path = name,
-): CliCommandGroup {
+): CliCommandGroup<R> {
   const command = defineCommand({
     meta: { ...meta, name: `${cliName} ${path}` },
     subCommands: createSubCommands(commands),
@@ -115,25 +149,25 @@ export function defineCliCommandGroup(
     kind: "group",
     name,
     path,
-    renderHelp: () => renderUsage(command),
+    renderHelp: () => Effect.promise(() => renderUsage(command)),
   };
 }
 
-export async function runCli(
+export const runCli = Effect.fn("runCli")(function* <R>(
   args: readonly string[],
-  dependencies: CliDependencies,
-): Promise<number> {
+  dependencies: CliDependencies<R>,
+): Effect.fn.Return<number, never, R> {
   const [commandName, ...commandArguments] = args;
   if (commandName && args.length === 1 && isVersionFlag(commandName)) {
     dependencies.writeOutput(`${dependencies.version}\n`);
     return 0;
   }
   if (!commandName) {
-    await writeRootHelp(dependencies);
+    yield* writeRootHelp(dependencies);
     return 0;
   }
   if (commandName === "help" || isHelpFlag(commandName)) {
-    await writeRootHelp(dependencies);
+    yield* writeRootHelp(dependencies);
     return 0;
   }
 
@@ -141,65 +175,72 @@ export async function runCli(
   if (!entry) {
     return reportUnknownCommand(commandName, undefined, dependencies);
   }
-  return dispatch(entry, commandArguments, dependencies);
-}
+  return yield* dispatch(entry, commandArguments, dependencies);
+});
 
-async function dispatch(
-  entry: CliEntry,
+const dispatch = Effect.fn("dispatchCliCommand")(function* <R>(
+  entry: CliEntry<R>,
   args: readonly string[],
-  dependencies: CliDependencies,
-): Promise<number> {
+  dependencies: CliDependencies<R>,
+): Effect.fn.Return<number, never, R> {
   if (entry.kind === "command") {
     if (args.some(isHelpFlag)) {
-      await writeEntryHelp(entry, dependencies);
+      yield* writeEntryHelp(entry, dependencies);
       return 0;
     }
-    return executeCommand(entry, args, dependencies);
+    return yield* executeCommand(entry, args, dependencies);
   }
 
   const [childName, ...childArguments] = args;
   if (!childName || childName === "help" || isHelpFlag(childName)) {
-    await writeEntryHelp(entry, dependencies);
+    yield* writeEntryHelp(entry, dependencies);
     return 0;
   }
   const child = findEntry(childName, entry.commands);
   if (!child) {
     return reportUnknownCommand(childName, entry, dependencies);
   }
-  return dispatch(child, childArguments, dependencies);
-}
+  return yield* dispatch(child, childArguments, dependencies);
+});
 
-async function executeCommand(
-  command: CliCommand,
+function executeCommand<R>(
+  command: CliCommand<R>,
   args: readonly string[],
-  dependencies: CliDependencies,
-): Promise<number> {
-  try {
-    return await command.execute(args);
-  } catch (error) {
-    if (error instanceof InvalidArgumentsError) {
-      reportInvalidArguments(error.message, command, dependencies);
-      return 1;
-    }
-    if (isCittyArgumentError(error)) {
-      reportInvalidArguments(stripVTControlCharacters(error.message), command, dependencies);
-      return 1;
-    }
-    throw error;
-  }
-}
-
-async function writeRootHelp(dependencies: CliDependencies): Promise<void> {
-  dependencies.writeOutput(
-    `${await renderUsage(createRootCommand(dependencies.commands, dependencies.version))}\n`,
+  dependencies: CliDependencies<R>,
+): Effect.Effect<number, never, R> {
+  return command.execute(args).pipe(
+    Effect.catch((error) => {
+      if (error instanceof InvalidArgumentsError) {
+        reportInvalidArguments(error.message, command, dependencies);
+        return Effect.succeed(1);
+      }
+      if (isCittyArgumentError(error)) {
+        reportInvalidArguments(stripVTControlCharacters(error.message), command, dependencies);
+        return Effect.succeed(1);
+      }
+      return Effect.die(error);
+    }),
   );
 }
 
-async function writeEntryHelp(entry: CliEntry, dependencies: CliDependencies): Promise<void> {
-  dependencies.writeOutput(`${await entry.renderHelp()}\n`);
-}
+const writeRootHelp = Effect.fn("writeRootHelp")(function* <R>(dependencies: CliDependencies<R>) {
+  const usage = yield* Effect.promise(() =>
+    renderUsage(createRootCommand(dependencies.commands, dependencies.version)),
+  );
+  dependencies.writeOutput(`${usage}\n`);
+});
 
-function createRootCommand(commands: CliDependencies["commands"], version: string): CommandDef {
+const writeEntryHelp = Effect.fn("writeEntryHelp")(function* <R>(
+  entry: CliEntry<R>,
+  dependencies: CliDependencies<R>,
+) {
+  dependencies.writeOutput(`${yield* entry.renderHelp()}\n`);
+});
+
+function createRootCommand<R>(
+  commands: CliDependencies<R>["commands"],
+  version: string,
+): CommandDef {
   return defineCommand({
     meta: {
       description: "Manage local development projects",
@@ -210,7 +251,7 @@ function createRootCommand(commands: CliDependencies["commands"], version: strin
   });
 }
 
-function createSubCommands(commands: readonly CliEntry[]): SubCommandsDef {
+function createSubCommands<R>(commands: readonly CliEntry<R>[]): SubCommandsDef {
   const subCommands: SubCommandsDef = {};
   for (const entry of commands) {
     subCommands[entry.name] = entry.definition;
@@ -218,7 +259,7 @@ function createSubCommands(commands: readonly CliEntry[]): SubCommandsDef {
   return subCommands;
 }
 
-function findEntry(name: string, entries: readonly CliEntry[]): CliEntry | undefined {
+function findEntry<R>(name: string, entries: readonly CliEntry<R>[]): CliEntry<R> | undefined {
   for (const entry of entries) {
     if (entry.name === name) {
       return entry;
@@ -325,8 +366,8 @@ function isCittyArgumentError(error: unknown): error is Error & { readonly code:
 
 function reportUnknownCommand(
   commandName: string,
-  parent: CliCommandGroup | undefined,
-  dependencies: CliDependencies,
+  parent: CliCommandGroup<unknown> | undefined,
+  dependencies: CliDependencies<unknown>,
 ): number {
   dependencies.diagnostics.report(
     createDiagnostic({
@@ -342,8 +383,8 @@ function reportUnknownCommand(
 
 function reportInvalidArguments(
   message: string,
-  command: CliCommand,
-  dependencies: CliDependencies,
+  command: CliCommand<unknown>,
+  dependencies: CliDependencies<unknown>,
 ): void {
   dependencies.diagnostics.report(
     createDiagnostic({

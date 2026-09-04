@@ -1,17 +1,11 @@
-import {
-  createDiagnostic,
-  describeError,
-  failure,
-  success,
-  type Result,
-} from "@stackyard/diagnostics";
+import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import type { ProcessLogLine, ProcessLogSink } from "@stackyard/control-plane";
+import { Effect, Result as EffectResult } from "effect";
 
 export const maxProcessLogLineBytes = 256 * 1024;
 
 export interface ProcessLogCaptureOptions {
   readonly maxLineBytes?: number;
-  readonly signal?: AbortSignal;
 }
 
 interface FramedLine {
@@ -27,31 +21,46 @@ interface DecodedBytes {
 const decoder = new TextDecoder();
 const publishBatchSize = 256;
 
-export async function captureProcessLogs(
+export const captureProcessLogs = Effect.fn("captureProcessLogs")(function* (
   stdout: ReadableStream<Uint8Array>,
   stderr: ReadableStream<Uint8Array>,
   sink: ProcessLogSink,
   options: ProcessLogCaptureOptions = {},
-): Promise<Result<void>> {
+): Effect.fn.Return<void, Failure> {
   const maxLineBytes = options.maxLineBytes ?? maxProcessLogLineBytes;
-  const captured = await Promise.allSettled([
-    captureStream(stdout, "stdout", sink, maxLineBytes, options.signal),
-    captureStream(stderr, "stderr", sink, maxLineBytes, options.signal),
-  ]);
-  const errors = captured.flatMap((result) =>
-    result.status === "rejected" ? [describeError(result.reason)] : [],
-  );
-  return errors.length === 0
-    ? success(undefined)
-    : failure(
-        createDiagnostic({
-          code: "SYD4008",
-          help: "Restart the service. If the problem persists, check its output streams.",
-          message: "Service output could not be captured.",
-          notes: errors,
-        }),
+  const controller = new AbortController();
+  const capture = (
+    stream: ReadableStream<Uint8Array>,
+    name: "stderr" | "stdout",
+  ): Effect.Effect<void, string> =>
+    Effect.tryPromise({
+      try: () => captureStream(stream, name, sink, maxLineBytes, controller.signal),
+      catch: describeError,
+    });
+  return yield* Effect.all([capture(stdout, "stdout"), capture(stderr, "stderr")], {
+    concurrency: "unbounded",
+    mode: "result",
+  }).pipe(
+    Effect.flatMap((captured) => {
+      const errors = captured.flatMap((result) =>
+        EffectResult.isFailure(result) ? [result.failure] : [],
       );
-}
+      return errors.length === 0
+        ? Effect.void
+        : Effect.fail(
+            failure(
+              createDiagnostic({
+                code: "SYD4008",
+                help: "Restart the service. If the problem persists, check its output streams.",
+                message: "Service output could not be captured.",
+                notes: errors,
+              }),
+            ),
+          );
+    }),
+    Effect.ensuring(Effect.sync(() => controller.abort())),
+  );
+});
 
 async function captureStream(
   stream: ReadableStream<Uint8Array>,

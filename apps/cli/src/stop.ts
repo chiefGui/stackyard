@@ -1,18 +1,20 @@
-import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
+import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
 import { discoverProject } from "@stackyard/project-loader";
+import { Effect } from "effect";
 
-import { defineCliCommand, type CliCommand } from "./cli.ts";
-import type { ProjectClient } from "./project-client.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
+import { ProjectClient } from "./project-client.ts";
 import { normalizeProjectTarget } from "./project-target.ts";
 
 export interface StopCommandDependencies {
-  readonly client: ProjectClient;
   readonly currentDirectory: string;
   readonly diagnostics: DiagnosticSink;
   writeOutput(output: string): void;
 }
 
-export function createStopCommand(dependencies: StopCommandDependencies): CliCommand {
+export function createStopCommand(
+  dependencies: StopCommandDependencies,
+): CliCommand<ProjectClient> {
   return defineCliCommand("stop", "SYD2020", {
     args: {
       project: {
@@ -22,29 +24,31 @@ export function createStopCommand(dependencies: StopCommandDependencies): CliCom
       },
     },
     meta: { description: "Stop a project" },
-    async run({ args }) {
-      let target = args.project;
-      if (!target) {
-        const discovered = await discoverProject(undefined, dependencies.currentDirectory);
-        if (!discovered.success) {
-          reportDiagnostics(dependencies.diagnostics, discovered.diagnostics);
-          return 1;
-        }
-        target = discovered.output.root;
-      }
-      const stopped = await dependencies.client.stop(
-        await normalizeProjectTarget(target, dependencies.currentDirectory),
+    run({ args }) {
+      return reportCommandFailure(
+        stopProject(args.project, dependencies),
+        dependencies.diagnostics,
       );
-      if (!stopped.success) {
-        reportDiagnostics(dependencies.diagnostics, stopped.diagnostics);
-        return 1;
-      }
-      dependencies.writeOutput(
-        stopped.output.kind === "daemon-not-running"
-          ? "No project is running because Stackyard is not running.\n"
-          : `Project '${stopped.output.project.name}' is stopped.\n`,
-      );
-      return 0;
     },
   });
 }
+
+const stopProject = Effect.fn("stopProject")(function* (
+  project: string | undefined,
+  dependencies: StopCommandDependencies,
+): Effect.fn.Return<number, Failure, ProjectClient> {
+  let target = project;
+  if (!target) {
+    const discovered = yield* discoverProject(undefined, dependencies.currentDirectory);
+    target = discovered.root;
+  }
+  const client = yield* ProjectClient;
+  const normalizedTarget = yield* normalizeProjectTarget(target, dependencies.currentDirectory);
+  const stopped = yield* client.stop(normalizedTarget);
+  dependencies.writeOutput(
+    stopped.kind === "daemon-not-running"
+      ? "No project is running because Stackyard is not running.\n"
+      : `Project '${stopped.project.name}' is stopped.\n`,
+  );
+  return 0;
+});

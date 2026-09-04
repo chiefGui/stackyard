@@ -1,21 +1,21 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
+import { Effect } from "effect";
 
-export async function normalizeProjectTarget(
+export const normalizeProjectTarget = Effect.fn("normalizeProjectTarget")(function* (
   target: string,
   currentDirectory: string,
-): Promise<string> {
+): Effect.fn.Return<string> {
   if (!isPathTarget(target)) {
     return target;
   }
 
   const absolute = resolve(currentDirectory, target);
-  try {
-    return await realpath(absolute);
-  } catch {
-    return absolute;
-  }
-}
+  return yield* Effect.tryPromise({
+    try: () => realpath(absolute),
+    catch: () => absolute,
+  }).pipe(Effect.catch((fallback) => Effect.succeed(fallback)));
+});
 
 function isPathTarget(target: string): boolean {
   return (

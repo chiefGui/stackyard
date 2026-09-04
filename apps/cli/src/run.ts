@@ -3,9 +3,11 @@ import { realpath } from "node:fs/promises";
 import { daemonUrl, ensureDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
+  failure,
   reportDiagnostics,
   type Diagnostic,
   type DiagnosticSink,
+  type Failure,
 } from "@stackyard/diagnostics";
 import { discoverProject } from "@stackyard/project-loader";
 import {
@@ -13,8 +15,9 @@ import {
   createStopProjectMessage,
   parseDaemonServerMessage,
 } from "@stackyard/protocol";
+import { Effect } from "effect";
 
-import { defineCliCommand, type CliCommand } from "./cli.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 export interface RunCommandDependencies {
   readonly currentDirectory: string;
   readonly daemonEntrypoint: string;
@@ -36,54 +39,42 @@ export function createRunCommand(dependencies: RunCommandDependencies): CliComma
       description: "Start a project and its dashboard",
     },
     run({ args }) {
-      return runProject(args.path, dependencies);
+      return reportCommandFailure(runProject(args.path, dependencies), dependencies.diagnostics);
     },
   });
 }
 
-async function runProject(
+const runProject = Effect.fn("runProject")(function* (
   path: string | undefined,
   dependencies: RunCommandDependencies,
-): Promise<number> {
-  const discovered = await discoverProject(path, dependencies.currentDirectory);
-  if (!discovered.success) {
-    reportDiagnostics(dependencies.diagnostics, discovered.diagnostics);
-    return 1;
-  }
+): Effect.fn.Return<number, Failure> {
+  const discovered = yield* discoverProject(path, dependencies.currentDirectory);
+  const root = yield* Effect.tryPromise({
+    try: () => realpath(discovered.root),
+    catch: (error) =>
+      failure(
+        createDiagnostic({
+          code: "SYD2006",
+          help: "Verify that the project directory exists and is readable, then retry.",
+          message: "The project directory could not be resolved.",
+          notes: [error instanceof Error ? error.message : String(error)],
+        }),
+      ),
+  });
 
-  let root: string;
-  try {
-    root = await realpath(discovered.output.root);
-  } catch (error) {
-    dependencies.diagnostics.report(
-      createDiagnostic({
-        code: "SYD2006",
-        help: "Verify that the project directory exists and is readable, then retry.",
-        message: "The project directory could not be resolved.",
-        notes: [error instanceof Error ? error.message : String(error)],
-      }),
-    );
-    return 1;
-  }
-
-  const daemon = await ensureDaemon({
+  const daemon = yield* ensureDaemon({
     daemonEntrypoint: dependencies.daemonEntrypoint,
     dashboardWebDirectory: dependencies.dashboardWebDirectory,
   });
-  if (!daemon.success) {
-    reportDiagnostics(dependencies.diagnostics, daemon.diagnostics);
-    return 1;
-  }
-
-  return runSession(daemon.output, root, dependencies);
-}
+  return yield* runSession(daemon, root, dependencies);
+});
 
 function runSession(
   locator: DaemonLocator,
   root: string,
   dependencies: RunCommandDependencies,
-): Promise<number> {
-  return new Promise((resolve) => {
+): Effect.Effect<number> {
+  return Effect.callback<number>((resume) => {
     let socket: WebSocket;
     try {
       const controlUrl = new URL("api/v1/control", daemonUrl(locator));
@@ -93,8 +84,8 @@ function runSession(
       });
     } catch {
       dependencies.diagnostics.report(connectionDiagnostic("The control connection failed."));
-      resolve(1);
-      return;
+      resume(Effect.succeed(1));
+      return Effect.void;
     }
     let settled = false;
     let started = false;
@@ -118,10 +109,8 @@ function runSession(
       clearTimeout(timeout);
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
-      if (socket.readyState < WebSocket.CLOSING) {
-        socket.close();
-      }
-      resolve(exitCode);
+      closeSocket(socket);
+      resume(Effect.succeed(exitCode));
     };
     const stop = (): void => {
       stopRequested = true;
@@ -131,7 +120,12 @@ function runSession(
         return;
       }
       if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(createStopProjectMessage()));
+        if (!sendSocketMessage(socket, createStopProjectMessage())) {
+          dependencies.diagnostics.report(
+            connectionDiagnostic("The stop request could not be sent."),
+          );
+          finish(1);
+        }
       }
     };
 
@@ -142,7 +136,14 @@ function runSession(
         finish(0);
         return;
       }
-      socket.send(JSON.stringify(createStartProjectMessage(root, serviceEnvironment(process.env))));
+      if (
+        !sendSocketMessage(socket, createStartProjectMessage(root, serviceEnvironment(process.env)))
+      ) {
+        dependencies.diagnostics.report(
+          connectionDiagnostic("The start request could not be sent."),
+        );
+        finish(1);
+      }
     });
     socket.addEventListener("message", (event) => {
       let value: unknown;
@@ -192,7 +193,35 @@ function runSession(
         finish(1);
       }
     });
+    return Effect.sync(() => {
+      clearTimeout(timeout);
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+      if (socket.readyState === WebSocket.OPEN) {
+        sendSocketMessage(socket, createStopProjectMessage());
+      }
+      closeSocket(socket);
+    });
   });
+}
+
+function sendSocketMessage(socket: WebSocket, message: unknown): boolean {
+  try {
+    socket.send(JSON.stringify(message));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function closeSocket(socket: WebSocket): void {
+  try {
+    if (socket.readyState < WebSocket.CLOSING) {
+      socket.close();
+    }
+  } catch {
+    // The peer may have closed the socket between the state check and close.
+  }
 }
 
 function serviceEnvironment(environment: NodeJS.ProcessEnv): Readonly<Record<string, string>> {

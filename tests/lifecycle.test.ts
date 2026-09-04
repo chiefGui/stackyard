@@ -3,8 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { readLocator } from "../apps/daemon/src/locator.ts";
+import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
+import { Effect } from "effect";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const cliEntrypoint = join(repositoryRoot, "apps/cli/src/main.ts");
@@ -240,4 +241,8 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function readLocator(runtimeDirectory: string) {
+  return Effect.runPromise(readLocatorEffect(runtimeDirectory));
 }
