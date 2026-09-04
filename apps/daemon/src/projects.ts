@@ -27,6 +27,7 @@ import {
   ProjectEvaluator,
 } from "@stackyard/project-loader";
 import {
+  Crypto,
   Effect,
   FileSystem,
   Layer,
@@ -90,10 +91,11 @@ export function makeProjectCatalogLayer(options: ProjectCatalogLayerOptions) {
 
 export function makeFileProjectStoreLayer(
   directory: string,
-): Layer.Layer<ProjectStore, never, FileSystem.FileSystem | Path.Path> {
+): Layer.Layer<ProjectStore, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
   return Layer.effect(
     ProjectStore,
     Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const storageDirectory = path.resolve(directory);
@@ -101,7 +103,7 @@ export function makeFileProjectStoreLayer(
       return ProjectStore.of({
         load: loadProjectRecords(storagePath, fileSystem),
         save: (projects) =>
-          saveProjectRecords(storageDirectory, storagePath, projects, fileSystem, path),
+          saveProjectRecords(storageDirectory, storagePath, projects, crypto, fileSystem, path),
       });
     }),
   );
@@ -140,12 +142,16 @@ const saveProjectRecords = Effect.fn("FileProjectStore.save")(function* (
   directory: string,
   path: string,
   projects: readonly ProjectRecord[],
+  crypto: Crypto.Crypto,
   fileSystem: FileSystem.FileSystem,
   paths: Path.Path,
 ): Effect.fn.Return<void, Failure> {
+  const identifier = yield* crypto.randomUUIDv4.pipe(
+    Effect.mapError((error) => projectStorageFailure("write", path, error)),
+  );
   const temporaryPath = paths.join(
     directory,
-    `${projectStoreFileName}.${process.pid}.${crypto.randomUUID()}.tmp`,
+    `${projectStoreFileName}.${process.pid}.${identifier}.tmp`,
   );
   const value = {
     projects: projects
@@ -291,9 +297,11 @@ class FileObservation {
   }
 }
 
-const ProjectIdGeneratorLayer: Layer.Layer<ProjectIdGenerator> = Layer.succeed(
+const ProjectIdGeneratorLayer: Layer.Layer<ProjectIdGenerator, never, Crypto.Crypto> = Layer.effect(
   ProjectIdGenerator,
-  ProjectIdGenerator.of({ next: Effect.sync(() => crypto.randomUUID()) }),
+  Crypto.Crypto.use((crypto) =>
+    Effect.succeed(ProjectIdGenerator.of({ next: crypto.randomUUIDv4.pipe(Effect.orDie) })),
+  ),
 );
 
 const ProjectRootResolverLayer: Layer.Layer<

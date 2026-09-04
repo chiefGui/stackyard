@@ -1,5 +1,5 @@
 import { failure, reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
-import { Effect, FileSystem, Path } from "effect";
+import { Crypto, Effect, FileSystem, Path } from "effect";
 
 import { createDashboardWebHandler } from "./dashboard-web.ts";
 import {
@@ -23,7 +23,7 @@ export interface ManagedDaemonOptions {
 
 export const runManagedDaemon = Effect.fn("runManagedDaemon")(function* (
   options: ManagedDaemonOptions,
-): Effect.fn.Return<number, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<number, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
   let cleanupFailed = false;
   const reportCleanupFailure: ReportCleanupFailure = (diagnostic) =>
     Effect.sync(() => {
@@ -48,11 +48,18 @@ const manageDaemon = Effect.fn("manageDaemon")(function* (
   options: ManagedDaemonOptions,
   reportCleanupFailure: ReportCleanupFailure,
 ) {
+  const crypto = yield* Crypto.Crypto;
   const directories = resolveStackyardDirectories({
     ...(options.dataDirectory ? { dataOverride: options.dataDirectory } : {}),
     ...(options.runtimeDirectory ? { runtimeOverride: options.runtimeDirectory } : {}),
   });
-  const instanceId = crypto.randomUUID();
+  const instanceId = yield* crypto.randomUUIDv4.pipe(
+    Effect.mapError((error) =>
+      failure(
+        createDaemonLifecycleDiagnostic("The daemon could not create its instance ID.", error),
+      ),
+    ),
+  );
   const acquiredLock = yield* acquireDaemonLock(directories.runtime, instanceId);
   if (!acquiredLock) {
     return yield* Effect.void;

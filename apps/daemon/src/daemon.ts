@@ -6,7 +6,17 @@ import {
   type DiagnosticSink,
   type Failure,
 } from "@stackyard/diagnostics";
-import { Context, Deferred, Effect, FileSystem, Layer, ManagedRuntime, Path, Scope } from "effect";
+import {
+  Context,
+  Crypto,
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  ManagedRuntime,
+  Path,
+  Scope,
+} from "effect";
 
 import { BunPortAllocatorLayer } from "./ports.ts";
 import { makeBunProcessHostLayer } from "./processes.ts";
@@ -44,14 +54,19 @@ export type ReportCleanupFailure = (diagnostic: Diagnostic) => Effect.Effect<voi
 export function makeDaemonLayer(
   options: DaemonOptions,
   reportCleanupFailure: ReportCleanupFailure,
-): Layer.Layer<Daemon, Failure, FileSystem.FileSystem | Path.Path> {
+): Layer.Layer<Daemon, Failure, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
   return Layer.effect(Daemon, acquireDaemon(options, reportCleanupFailure));
 }
 
 const acquireDaemon = Effect.fn("acquireDaemon")(function* (
   options: DaemonOptions,
   reportCleanupFailure: ReportCleanupFailure,
-): Effect.fn.Return<RunningDaemon, Failure, FileSystem.FileSystem | Path.Path | Scope.Scope> {
+): Effect.fn.Return<
+  RunningDaemon,
+  Failure,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
+> {
+  const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const manager = makeProjectManagerLayer({ diagnostics: options.diagnostics }).pipe(
@@ -65,7 +80,11 @@ const acquireDaemon = Effect.fn("acquireDaemon")(function* (
   const controlPlane = ProjectOrchestratorLayer.pipe(
     Layer.provideMerge(Layer.merge(catalog, manager)),
     Layer.provide(
-      Layer.merge(Layer.succeed(FileSystem.FileSystem, fileSystem), Layer.succeed(Path.Path, path)),
+      Layer.mergeAll(
+        Layer.succeed(Crypto.Crypto, crypto),
+        Layer.succeed(FileSystem.FileSystem, fileSystem),
+        Layer.succeed(Path.Path, path),
+      ),
     ),
   );
   const runtime = yield* Effect.acquireRelease(
@@ -75,8 +94,11 @@ const acquireDaemon = Effect.fn("acquireDaemon")(function* (
   yield* runtime.contextEffect;
 
   const sockets = new Set<Bun.ServerWebSocket<ControlData>>();
-  const token = yield* Effect.sync(() =>
-    `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", ""),
+  const token = yield* Effect.all([crypto.randomUUIDv4, crypto.randomUUIDv4]).pipe(
+    Effect.map((identifiers) => identifiers.join("").replaceAll("-", "")),
+    Effect.mapError((error) =>
+      lifecycleFailure("The daemon could not create its authentication token.", error),
+    ),
   );
   const shutdownRequested = yield* Deferred.make<void>();
   let shuttingDown = false;

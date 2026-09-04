@@ -20,7 +20,7 @@ import {
   runProjectEvaluator,
 } from "@stackyard/project-loader";
 import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
-import { Effect, FileSystem, Path } from "effect";
+import { Crypto, Effect, FileSystem, Path } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
 import packageManifest from "../package.json" with { type: "json" };
@@ -68,7 +68,11 @@ function main(): Effect.Effect<number, never, BunServices.BunServices> {
   return runPublicCli();
 }
 
-function runDaemon(): Effect.Effect<number, never, FileSystem.FileSystem | Path.Path> {
+function runDaemon(): Effect.Effect<
+  number,
+  never,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
     configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
@@ -101,7 +105,12 @@ function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices> {
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
   const commands: readonly CliEntry<
-    FileSystem.FileSystem | HttpClient.HttpClient | Path.Path | ProjectClient | ProjectEvaluator
+    | Crypto.Crypto
+    | FileSystem.FileSystem
+    | HttpClient.HttpClient
+    | Path.Path
+    | ProjectClient
+    | ProjectEvaluator
   >[] = [
     createAddCommand({
       currentDirectory: process.cwd(),

@@ -1,9 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { BunRuntime } from "@effect/platform-bun";
-import { Context, Effect, Layer } from "effect";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Context, Crypto, Effect, FileSystem, Layer, Path } from "effect";
 import { createServer, type ViteDevServer } from "vite";
 
 import { Daemon, makeDaemonLayer } from "../apps/daemon/src/daemon.ts";
@@ -26,6 +24,7 @@ const diagnostics: DiagnosticSink = {
 
 BunRuntime.runMain(
   runDevelopment().pipe(
+    Effect.provide(BunServices.layer),
     Effect.tap((exitCode) =>
       Effect.sync(() => {
         process.exitCode = exitCode;
@@ -35,7 +34,11 @@ BunRuntime.runMain(
   ),
 );
 
-function runDevelopment(): Effect.Effect<number> {
+function runDevelopment(): Effect.Effect<
+  number,
+  never,
+  Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> {
   let cleanupFailed = false;
   const reportCleanupFailure = (message: string, error: unknown): Effect.Effect<void> =>
     Effect.sync(() => {
@@ -44,6 +47,8 @@ function runDevelopment(): Effect.Effect<number> {
     });
 
   return Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    const fileSystem = yield* FileSystem.FileSystem;
     const projectPath = yield* Effect.try({ try: readProjectPath, catch: (error) => error });
     const apiPort = yield* Effect.try({
       try: () => readPort("STACKYARD_API_PORT", 3000),
@@ -54,25 +59,24 @@ function runDevelopment(): Effect.Effect<number> {
       catch: (error) => error,
     });
     const dataDirectory = yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () => mkdtemp(join(tmpdir(), "stackyard-development-")),
-        catch: (error) => error,
-      }),
+      fileSystem.makeTempDirectory({ prefix: "stackyard-development-" }),
       (directory) =>
-        Effect.tryPromise({
-          try: () => rm(directory, { force: true, recursive: true }),
-          catch: (error) => error,
-        }).pipe(
-          Effect.catch((error) => reportCleanupFailure("Development state cleanup failed", error)),
-        ),
+        fileSystem
+          .remove(directory, { force: true, recursive: true })
+          .pipe(
+            Effect.catch((error) =>
+              reportCleanupFailure("Development state cleanup failed", error),
+            ),
+          ),
     );
+    const instanceId = yield* crypto.randomUUIDv4;
     const daemonContext = yield* Layer.build(
       makeDaemonLayer(
         {
           dataDirectory,
           diagnostics,
           evaluatorEntrypoint: cliEntrypoint,
-          instanceId: crypto.randomUUID(),
+          instanceId,
           port: apiPort,
         },
         (diagnostic) =>
