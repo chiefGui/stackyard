@@ -1,6 +1,6 @@
 import type { Failure } from "@stackyard/diagnostics";
 import type { ProjectSpec } from "@stackyard/protocol";
-import { Effect } from "effect";
+import { Effect, FileSystem, Path } from "effect";
 
 import { discoverProject, type ProjectLocation } from "./discovery.ts";
 import { emptyCapturedProcessOutput, type CapturedProcessOutput } from "./process-output.ts";
@@ -25,7 +25,11 @@ export interface ProjectLoadFailure extends Failure {
 
 export const loadProjectEffect = Effect.fn("loadProjectEffect")(function* (
   options: ProjectLoadInput,
-): Effect.fn.Return<LoadedProject, ProjectLoadFailure, ProjectEvaluator> {
+): Effect.fn.Return<
+  LoadedProject,
+  ProjectLoadFailure,
+  FileSystem.FileSystem | Path.Path | ProjectEvaluator
+> {
   const location = yield* discoverProject(options.path, options.currentDirectory).pipe(
     Effect.mapError((failed) =>
       Object.freeze({

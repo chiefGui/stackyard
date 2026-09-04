@@ -1,37 +1,32 @@
 import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
-import {
-  ProjectEvaluator,
-  type LoadedProject,
-  type ProjectLoadFailure,
-} from "@stackyard/project-loader";
-import { Effect } from "effect";
+import { type LoadedProject, type ProjectLoadFailure } from "@stackyard/project-loader";
+import { Effect, Option } from "effect";
+import { Argument, Flag } from "effect/unstable/cli";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
 import { writeProjectEvaluationOutput } from "./project-output.ts";
 
-export interface InspectCommandDependencies {
+export interface InspectCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  loadProject(
-    path: string | undefined,
-  ): Effect.Effect<LoadedProject, ProjectLoadFailure, ProjectEvaluator>;
+  loadProject(path: string | undefined): Effect.Effect<LoadedProject, ProjectLoadFailure, R>;
   writeError(output: string): void;
   writeOutput(output: string): void;
 }
 
-export function createInspectCommand(
-  dependencies: InspectCommandDependencies,
-): CliCommand<ProjectEvaluator> {
+export function createInspectCommand<R>(
+  dependencies: InspectCommandDependencies<R>,
+): CliCommand<R> {
   return defineCliCommand("inspect", "SYD2005", {
     args: {
-      path: {
-        description: "Project directory",
-        required: false,
-        type: "positional",
-      },
-      json: {
-        description: "Print compact JSON",
-        type: "boolean",
-      },
+      path: Argument.string("path").pipe(
+        Argument.withDescription("Project directory"),
+        Argument.optional,
+        Argument.map(Option.getOrUndefined),
+      ),
+      json: Flag.boolean("json").pipe(
+        Flag.withDescription("Print compact JSON"),
+        Flag.withDefault(false),
+      ),
     },
     meta: {
       description: "Evaluate and print a project definition",
@@ -42,11 +37,11 @@ export function createInspectCommand(
   });
 }
 
-const runInspect = Effect.fn("inspectProject")(function* (
+const runInspect = Effect.fn("inspectProject")(function* <R>(
   path: string | undefined,
   json: boolean,
-  dependencies: InspectCommandDependencies,
-): Effect.fn.Return<number, never, ProjectEvaluator> {
+  dependencies: InspectCommandDependencies<R>,
+): Effect.fn.Return<number, never, R> {
   const loaded = yield* dependencies.loadProject(path).pipe(
     Effect.match({
       onFailure: (project) => ({ loaded: false as const, project }),

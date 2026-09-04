@@ -1,5 +1,7 @@
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
-import { Effect } from "effect";
+import { CanonicalPath } from "@stackyard/project-loader";
+import { Effect, Path } from "effect";
+import { Argument } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 import { ProjectClient } from "./project-client.ts";
@@ -13,14 +15,12 @@ export interface RemoveCommandDependencies {
 
 export function createRemoveCommand(
   dependencies: RemoveCommandDependencies,
-): CliCommand<ProjectClient> {
+): CliCommand<CanonicalPath | Path.Path | ProjectClient> {
   return defineCliCommand("remove", "SYD2014", {
     args: {
-      project: {
-        description: "Project name, identifier, or directory",
-        required: true,
-        type: "positional",
-      },
+      project: Argument.string("project").pipe(
+        Argument.withDescription("Project name, identifier, or directory"),
+      ),
     },
     meta: { description: "Remove a project from Stackyard" },
     run({ args }) {
@@ -35,7 +35,7 @@ export function createRemoveCommand(
 const removeProject = Effect.fn("removeProject")(function* (
   target: string,
   dependencies: RemoveCommandDependencies,
-): Effect.fn.Return<number, Failure, ProjectClient> {
+): Effect.fn.Return<number, Failure, CanonicalPath | Path.Path | ProjectClient> {
   const client = yield* ProjectClient;
   const normalizedTarget = yield* normalizeProjectTarget(target, dependencies.currentDirectory);
   const removed = yield* client.remove(normalizedTarget);

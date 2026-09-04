@@ -7,9 +7,7 @@ import {
 import { createDiagnosticReport } from "@stackyard/diagnostics";
 import { createProjectList } from "@stackyard/protocol/projects";
 import { createResourceLogBatch, type ResourceLogBatch } from "@stackyard/protocol/resource-logs";
-import { Effect } from "effect";
-
-/* oxlint-disable eslint/no-await-in-loop -- Each pull waits for the next revision in sequence. */
+import { Effect, Stream } from "effect";
 
 const entriesPerBatch = 256;
 const encoder = new TextEncoder();
@@ -102,74 +100,57 @@ export interface ResourceLogResponseOptions {
 }
 
 export function createResourceLogResponse(options: ResourceLogResponseOptions): Response {
-  const cancellation = new AbortController();
-  let cursor = options.after;
-  let finished = false;
-  let initialized = false;
+  const stream = Stream.unfold<ResourceLogStreamState, Uint8Array, never, never>(
+    { cursor: options.after, initialized: false },
+    (state) => nextResourceLogBatch(state, options),
+  ).pipe(
+    Stream.interruptWhen(aborted(options.signal)),
+    Stream.ensuring(Effect.sync(() => options.onClose())),
+  );
 
-  const finish = (): void => {
-    if (finished) {
-      return;
-    }
-    finished = true;
-    options.signal.removeEventListener("abort", abort);
-    options.onClose();
-  };
-  const abort = (): void => {
-    cancellation.abort();
-    finish();
-  };
-  options.signal.addEventListener("abort", abort, { once: true });
-  if (options.signal.aborted) {
-    abort();
-  }
-
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        while (!cancellation.signal.aborted) {
-          const snapshot = options.source.snapshot({ after: cursor, limit: entriesPerBatch });
-          if (shouldSend(snapshot, initialized)) {
-            cursor = snapshot.nextCursor;
-            initialized = true;
-            controller.enqueue(
-              encoder.encode(
-                `${JSON.stringify(createBatch(snapshot, cursor, options.projectId, options.resourceName))}\n`,
-              ),
-            );
-
-            if (!snapshot.hasMore && snapshot.status !== "live") {
-              controller.close();
-              finish();
-            }
-            return;
-          }
-
-          await Effect.runPromise(options.source.waitForChange(snapshot.revision), {
-            signal: cancellation.signal,
-          });
-        }
-        controller.close();
-      } catch (error) {
-        if (cancellation.signal.aborted) {
-          controller.close();
-        } else {
-          controller.error(error);
-        }
-        finish();
-      }
-    },
-    cancel() {
-      cancellation.abort();
-      finish();
-    },
-  });
-
-  return new Response(body, {
+  return new Response(Stream.toReadableStream(stream), {
     headers: {
       "cache-control": "no-store",
       "content-type": "application/x-ndjson; charset=utf-8",
     },
+  });
+}
+
+type ResourceLogStreamState =
+  | "complete"
+  | { readonly cursor: number; readonly initialized: boolean };
+
+const nextResourceLogBatch = Effect.fn("nextResourceLogBatch")(function* (
+  state: ResourceLogStreamState,
+  options: ResourceLogResponseOptions,
+): Effect.fn.Return<readonly [Uint8Array, ResourceLogStreamState] | undefined> {
+  if (state === "complete") {
+    return undefined;
+  }
+
+  let snapshot = options.source.snapshot({ after: state.cursor, limit: entriesPerBatch });
+  while (!shouldSend(snapshot, state.initialized)) {
+    yield* options.source.waitForChange(snapshot.revision);
+    snapshot = options.source.snapshot({ after: state.cursor, limit: entriesPerBatch });
+  }
+
+  const cursor = snapshot.nextCursor;
+  const batch = encoder.encode(
+    `${JSON.stringify(createBatch(snapshot, cursor, options.projectId, options.resourceName))}\n`,
+  );
+  const nextState: ResourceLogStreamState =
+    !snapshot.hasMore && snapshot.status !== "live" ? "complete" : { cursor, initialized: true };
+  return [batch, nextState];
+});
+
+function aborted(signal: AbortSignal): Effect.Effect<void> {
+  return Effect.callback<void>((resume) => {
+    const onAbort = (): void => resume(Effect.void);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
   });
 }
 

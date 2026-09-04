@@ -4,17 +4,20 @@ import { Effect } from "effect";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface DaemonStopCommandDependencies {
+export interface DaemonStopCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  stop(): Effect.Effect<StopDaemonStatus, Failure>;
+  stop(): Effect.Effect<StopDaemonStatus, Failure, R>;
   writeOutput(output: string): void;
 }
 
-export function createDaemonStopCommand(dependencies: DaemonStopCommandDependencies): CliCommand {
+export function createDaemonStopCommand<R>(
+  dependencies: DaemonStopCommandDependencies<R>,
+): CliCommand<R> {
   return defineCliCommand(
     "stop",
     "SYD2017",
     {
+      args: {},
       meta: { description: "Stop the Stackyard daemon and running projects" },
       run() {
         return reportCommandFailure(

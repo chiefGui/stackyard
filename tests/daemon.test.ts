@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { BunServices } from "@effect/platform-bun";
 import { Cause, Deferred, Effect, Exit, Layer, ManagedRuntime } from "effect";
 
 import { readPort } from "../apps/daemon/src/config.ts";
@@ -41,6 +42,7 @@ import {
   type Project,
   type ProjectSpec,
 } from "../packages/protocol/src/index.ts";
+import { NodeCanonicalPathLayer } from "../packages/project-loader/src/index.ts";
 
 const diagnostics: DiagnosticSink = { report() {} };
 const discardLogs = Object.freeze({ write(_entries: readonly ProcessLogLine[]) {} });
@@ -105,7 +107,7 @@ describe("daemon lifecycle", () => {
                 Effect.sync(() => {
                   cleanupFailure = diagnostic;
                 }),
-            ),
+            ).pipe(Layer.provide(Layer.merge(BunServices.layer, NodeCanonicalPathLayer))),
           ),
         ),
       );
@@ -137,7 +139,7 @@ describe("daemon lifecycle", () => {
             controller.abort();
           },
           runtimeDirectory,
-        }),
+        }).pipe(Effect.provide(NodeCanonicalPathLayer), Effect.provide(BunServices.layer)),
         { signal: controller.signal },
       );
 
@@ -170,7 +172,7 @@ describe("daemon lifecycle", () => {
             throw new Error("Expected startup callback failure.");
           },
           runtimeDirectory,
-        }),
+        }).pipe(Effect.provide(NodeCanonicalPathLayer), Effect.provide(BunServices.layer)),
       );
 
       expect(exitCode).toBe(1);
@@ -652,7 +654,9 @@ async function expectManagedResourcesReleased(
   port: number,
 ): Promise<void> {
   expect(await readLocator(runtimeDirectory)).toBeUndefined();
-  const lock = await Effect.runPromise(acquireDaemonLock(runtimeDirectory, "after-shutdown"));
+  const lock = await Effect.runPromise(
+    acquireDaemonLock(runtimeDirectory, "after-shutdown").pipe(Effect.provide(BunServices.layer)),
+  );
   expect(lock).toBeDefined();
   if (lock) {
     await Effect.runPromise(lock.release);
@@ -852,7 +856,9 @@ function outcome<A, E>(effect: Effect.Effect<A, E>): Promise<Outcome<A, E>> {
 }
 
 function readLocator(runtimeDirectory: string) {
-  return Effect.runPromise(readLocatorEffect(runtimeDirectory));
+  return Effect.runPromise(
+    readLocatorEffect(runtimeDirectory).pipe(Effect.provide(BunServices.layer)),
+  );
 }
 
 async function waitForEndpoint(port: number): Promise<void> {

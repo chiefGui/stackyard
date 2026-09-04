@@ -1,6 +1,7 @@
 import { daemonUrl, ensureDaemon, findDaemon, type DaemonLocator } from "@stackyard/daemon/locator";
 import {
   createDiagnostic,
+  describeError,
   failure,
   isDiagnosticReport,
   type Failure,
@@ -12,7 +13,9 @@ import {
   type Project,
   type ProjectList,
 } from "@stackyard/protocol";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, FileSystem, Layer, Path } from "effect";
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 export class ProjectClient extends Context.Service<
   ProjectClient,
@@ -35,11 +38,29 @@ export interface DaemonProjectClientOptions {
 
 export function makeDaemonProjectClientLayer(
   options: DaemonProjectClientOptions,
-): Layer.Layer<ProjectClient> {
+): Layer.Layer<
+  ProjectClient,
+  never,
+  | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
+> {
   return Layer.effect(
     ProjectClient,
     Effect.gen(function* () {
-      const daemon = yield* Effect.cached(ensureDaemon(options));
+      const client = yield* HttpClient.HttpClient;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const pathService = yield* Path.Path;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const daemon = yield* Effect.cached(
+        ensureDaemon(options).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.provideService(Path.Path, pathService),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      );
 
       const send = (
         locator: DaemonLocator,
@@ -47,23 +68,12 @@ export function makeDaemonProjectClientLayer(
         method: "DELETE" | "GET" | "POST",
         body?: Readonly<Record<string, string>>,
       ): Effect.Effect<unknown, Failure> =>
-        Effect.tryPromise({
-          try: async (signal) => {
-            const response = await fetch(new URL(path, daemonUrl(locator)), {
-              ...(body ? { body: JSON.stringify(body) } : {}),
-              headers: {
-                accept: "application/json",
-                authorization: `Bearer ${locator.token}`,
-                ...(body ? { "content-type": "application/json" } : {}),
-              },
-              method,
-              signal,
-            });
-            return { response, text: await response.text() };
-          },
-          catch: (error) =>
-            connectionFailure(error instanceof Error ? error.message : String(error)),
-        }).pipe(
+        makeRequest(locator, path, method, body).pipe(
+          Effect.flatMap(client.execute),
+          Effect.flatMap((response) =>
+            response.text.pipe(Effect.map((text) => ({ response, text }))),
+          ),
+          Effect.mapError((error) => connectionFailure(describeError(error))),
           Effect.timeoutOrElse({
             duration: "15 seconds",
             orElse: () => Effect.fail(connectionFailure("The request timed out after 15 seconds.")),
@@ -95,6 +105,9 @@ export function makeDaemonProjectClientLayer(
         remove: (target) => requestProject("api/v1/projects", "DELETE", { target }),
         stop: (target) =>
           findDaemon().pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(HttpClient.HttpClient, client),
+            Effect.provideService(Path.Path, pathService),
             Effect.flatMap((locator) =>
               locator
                 ? send(locator, "api/v1/projects/stop", "POST", { target }).pipe(
@@ -111,20 +124,38 @@ export function makeDaemonProjectClientLayer(
   );
 }
 
-function parseResponse(response: Response, text: string): Effect.Effect<unknown, Failure> {
+function makeRequest(
+  locator: DaemonLocator,
+  path: string,
+  method: "DELETE" | "GET" | "POST",
+  body?: Readonly<Record<string, string>>,
+) {
+  const request = HttpClientRequest.make(method)(new URL(path, daemonUrl(locator))).pipe(
+    HttpClientRequest.setHeaders({
+      accept: "application/json",
+      authorization: `Bearer ${locator.token}`,
+    }),
+  );
+  return body ? HttpClientRequest.bodyJson(request, body) : Effect.succeed(request);
+}
+
+function parseResponse(
+  response: HttpClientResponse.HttpClientResponse,
+  text: string,
+): Effect.Effect<unknown, Failure> {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
     return Effect.fail(
       connectionFailure(
-        response.ok
+        response.status >= 200 && response.status < 300
           ? `The daemon returned HTTP ${response.status} with invalid JSON.`
           : `The daemon returned HTTP ${response.status}.`,
       ),
     );
   }
-  if (response.ok) {
+  if (response.status >= 200 && response.status < 300) {
     return Effect.succeed(value);
   }
   if (isDiagnosticReport(value) && value.diagnostics.length > 0) {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Fiber } from "effect";
+import { Clock, Effect, Fiber } from "effect";
 
 import { captureProcessLogs } from "../apps/daemon/src/process-output.ts";
 import type { ProcessLogLine } from "../packages/control-plane/src/index.ts";
@@ -42,12 +42,12 @@ describe("service output capture", () => {
         stream([]),
         { write: (entries) => lines.push(...entries) },
         { maxLineBytes: 10 },
-      ),
+      ).pipe(Effect.provideService(Clock.Clock, fixedClock(123_456))),
     );
 
     expect(lines).toEqual([
       {
-        observedAt: expect.any(Number),
+        observedAt: 123_456,
         stream: "stdout",
         text: "abcde… 6 bytes omitted …lmnop",
         truncatedBytes: 6,
@@ -128,4 +128,17 @@ function stream(chunks: readonly Uint8Array[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function fixedClock(currentTimeMillis: number): Clock.Clock {
+  const currentTimeNanos = BigInt(currentTimeMillis) * 1_000_000n;
+  return {
+    currentTimeMillis: Effect.succeed(currentTimeMillis),
+    currentTimeMillisUnsafe: () => currentTimeMillis,
+    currentTimeNanos: Effect.succeed(currentTimeNanos),
+    currentTimeNanosUnsafe: () => currentTimeNanos,
+    monotonicTimeNanos: Effect.succeed(currentTimeNanos),
+    monotonicTimeNanosUnsafe: () => currentTimeNanos,
+    sleep: () => Effect.void,
+  };
 }

@@ -1,6 +1,7 @@
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
 import type { Project } from "@stackyard/protocol";
 import { Effect } from "effect";
+import { Flag } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 import { ProjectClient } from "./project-client.ts";
@@ -15,7 +16,10 @@ export function createListCommand(
 ): CliCommand<ProjectClient> {
   return defineCliCommand("list", "SYD2015", {
     args: {
-      json: { description: "Print compact JSON", type: "boolean" },
+      json: Flag.boolean("json").pipe(
+        Flag.withDescription("Print compact JSON"),
+        Flag.withDefault(false),
+      ),
     },
     meta: { description: "List projects" },
     run({ args }) {

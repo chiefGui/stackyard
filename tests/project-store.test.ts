@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, ManagedRuntime } from "effect";
+import { BunServices } from "@effect/platform-bun";
+import { Effect, Exit, Layer, ManagedRuntime } from "effect";
 
 import {
   makeFileProjectDefinitionObserverLayer,
@@ -12,7 +13,9 @@ import { ProjectDefinitionObserver, ProjectStore } from "../packages/control-pla
 
 test("the project store persists and replaces its complete snapshot", async () => {
   const directory = await mkdtemp(join(tmpdir(), "stackyard-projects-"));
-  const runtime = ManagedRuntime.make(makeFileProjectStoreLayer(directory));
+  const runtime = ManagedRuntime.make(
+    makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+  );
   const store = await runtime.runPromise(ProjectStore);
   try {
     expect(await Effect.runPromise(store.load)).toEqual([]);
@@ -40,13 +43,36 @@ test("the project store refuses corrupt persisted state", async () => {
   try {
     await writeFile(join(directory, "projects.json"), "{", "utf8");
 
-    const runtime = ManagedRuntime.make(makeFileProjectStoreLayer(directory));
+    const runtime = ManagedRuntime.make(
+      makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+    );
     const store = await runtime.runPromise(ProjectStore);
     const failed = await Effect.runPromise(store.load.pipe(Effect.flip));
     expect(failed.diagnostics[0].code).toBe("SYD3014");
     expect(failed.diagnostics[0].help).toContain("Removing it forgets every project");
     await runtime.dispose();
   } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("failed project catalog publication removes its temporary file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "stackyard-projects-write-"));
+  await mkdir(join(directory, "projects.json"));
+  const runtime = ManagedRuntime.make(
+    makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+  );
+
+  try {
+    const store = await runtime.runPromise(ProjectStore);
+    const saved = await Effect.runPromiseExit(
+      store.save([{ id: "project", root: join(directory, "project") }]),
+    );
+
+    expect(Exit.isFailure(saved)).toBeTrue();
+    expect(await readdir(directory)).toEqual(["projects.json"]);
+  } finally {
+    await runtime.dispose();
     await rm(directory, { force: true, recursive: true });
   }
 });

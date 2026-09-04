@@ -1,55 +1,44 @@
-import { stripVTControlCharacters } from "node:util";
-
 import {
   createDiagnostic,
   reportDiagnostics,
   type DiagnosticSink,
   type Failure,
 } from "@stackyard/diagnostics";
-import {
-  defineCommand,
-  renderUsage,
-  runCommand,
-  type ArgsDef,
-  type CommandContext,
-  type CommandDef,
-  type CommandMeta,
-  type SubCommandsDef,
-} from "citty";
-import { Effect } from "effect";
+import { Console, Context, Effect, Layer, Predicate, Ref, Result } from "effect";
+import { CliConfig, CliError, Command, GlobalFlag } from "effect/unstable/cli";
 
 const cliName = "stackyard";
 
+declare const CliServicesTypeId: unique symbol;
+
 export interface CliCommand<R = never> {
+  readonly definition: Command.Command.Any;
   readonly diagnosticCode: string;
-  readonly definition: SubCommandsDef[string];
   readonly kind: "command";
   readonly name: string;
   readonly path: string;
-  execute(args: readonly string[]): Effect.Effect<number, unknown, R>;
-  renderHelp(): Effect.Effect<string>;
+  readonly [CliServicesTypeId]?: R;
 }
 
 export interface CliCommandGroup<R = never> {
   readonly commands: readonly CliEntry<R>[];
-  readonly definition: SubCommandsDef[string];
+  readonly definition: Command.Command.Any;
   readonly diagnosticCode: string;
   readonly kind: "group";
   readonly name: string;
   readonly path: string;
-  renderHelp(): Effect.Effect<string>;
+  readonly [CliServicesTypeId]?: R;
 }
 
 export type CliEntry<R = never> = CliCommand<R> | CliCommandGroup<R>;
 
-export type CliCommandDefinition<T extends ArgsDef, R = never> = Omit<
-  CommandDef<T>,
-  "args" | "meta" | "run"
-> & {
-  readonly args?: T;
-  readonly meta: Omit<CommandMeta, "name">;
-  run(context: CommandContext<T>): Effect.Effect<number, never, R>;
-};
+export interface CliCommandDefinition<Config extends Command.Command.Config, R = never> {
+  readonly args: Config;
+  readonly meta: { readonly description: string };
+  run(context: {
+    readonly args: Command.Command.Config.Infer<Config>;
+  }): Effect.Effect<number, never, R>;
+}
 
 export interface CliDependencies<R = never> {
   readonly commands: readonly CliEntry<R>[];
@@ -57,6 +46,26 @@ export interface CliDependencies<R = never> {
   readonly version: string;
   writeOutput(output: string): void;
 }
+
+class CliExecution extends Context.Service<
+  CliExecution,
+  {
+    readonly exitCode: Effect.Effect<number>;
+    readonly setExitCode: (value: number) => Effect.Effect<void>;
+  }
+>()("stackyard/apps/cli/CliExecution") {}
+
+const CliExecutionLayer = Layer.effect(
+  CliExecution,
+  Ref.make(0).pipe(
+    Effect.map((exitCode) =>
+      CliExecution.of({
+        exitCode: Ref.get(exitCode),
+        setExitCode: (value) => Ref.set(exitCode, value),
+      }),
+    ),
+  ),
+);
 
 export function reportCommandFailure<R>(
   effect: Effect.Effect<number, Failure, R>,
@@ -72,327 +81,164 @@ export function reportCommandFailure<R>(
   );
 }
 
-export function defineCliCommand<const T extends ArgsDef, R = never>(
+export function defineCliCommand<const Config extends Command.Command.Config, R = never>(
   name: string,
   diagnosticCode: string,
-  definition: CliCommandDefinition<T, R>,
+  definition: CliCommandDefinition<Config, R>,
   path = name,
 ): CliCommand<R> {
-  const command = defineCommand({
-    ...definition,
-    meta: { ...definition.meta, name: `${cliName} ${path}` },
-    run: () => 0,
-  });
+  const command = Command.make(name, definition.args, (args) =>
+    Effect.gen(function* () {
+      const execution = yield* CliExecution;
+      const exitCode = yield* definition.run({ args });
+      yield* execution.setExitCode(exitCode);
+    }),
+  ).pipe(Command.withDescription(definition.meta.description));
 
   return {
-    diagnosticCode,
     definition: command,
+    diagnosticCode,
     kind: "command",
     name,
     path,
-    execute(args) {
-      return Effect.suspend(() => {
-        const executionState: { program?: Effect.Effect<number, never, R> } = {};
-        const executableCommand = defineCommand({
-          ...command,
-          run(context) {
-            executionState.program = definition.run(context);
-            return 0;
-          },
-          async setup(context) {
-            const invalidArgument = validateParsedArguments(
-              context.args,
-              context.rawArgs,
-              definition.args ?? {},
-              path,
-            );
-            if (invalidArgument) {
-              throw new InvalidArgumentsError(invalidArgument);
-            }
-            await command.setup?.(context);
-          },
-        });
-        return Effect.tryPromise({
-          try: () => runCommand(executableCommand, { rawArgs: [...args] }),
-          catch: (error) => error,
-        }).pipe(
-          Effect.flatMap((execution) => {
-            const effect = executionState.program;
-            return effect && typeof execution.result === "number"
-              ? effect
-              : Effect.die(new TypeError("A CLI command did not return an exit code."));
-          }),
-        );
-      });
-    },
-    renderHelp() {
-      return Effect.promise(() => renderUsage(command));
-    },
   };
 }
 
 export function defineCliCommandGroup<R = never>(
   name: string,
   diagnosticCode: string,
-  meta: Omit<CommandMeta, "name">,
+  meta: { readonly description: string },
   commands: readonly CliEntry<R>[],
   path = name,
 ): CliCommandGroup<R> {
-  const command = defineCommand({
-    meta: { ...meta, name: `${cliName} ${path}` },
-    subCommands: createSubCommands(commands),
-  });
-  return {
-    commands,
-    definition: command,
-    diagnosticCode,
-    kind: "group",
-    name,
-    path,
-    renderHelp: () => Effect.promise(() => renderUsage(command)),
-  };
+  const command = Command.make(name).pipe(
+    Command.withDescription(meta.description),
+    Command.withSubcommands(commands.map(({ definition }) => definition)),
+  );
+  return { commands, definition: command, diagnosticCode, kind: "group", name, path };
 }
 
 export const runCli = Effect.fn("runCli")(function* <R>(
   args: readonly string[],
   dependencies: CliDependencies<R>,
-): Effect.fn.Return<number, never, R> {
-  const [commandName, ...commandArguments] = args;
-  if (commandName && args.length === 1 && isVersionFlag(commandName)) {
-    dependencies.writeOutput(`${dependencies.version}\n`);
-    return 0;
-  }
-  if (!commandName) {
-    yield* writeRootHelp(dependencies);
-    return 0;
-  }
-  if (commandName === "help" || isHelpFlag(commandName)) {
-    yield* writeRootHelp(dependencies);
-    return 0;
-  }
-
-  const entry = findEntry(commandName, dependencies.commands);
-  if (!entry) {
-    return reportUnknownCommand(commandName, undefined, dependencies);
-  }
-  return yield* dispatch(entry, commandArguments, dependencies);
-});
-
-const dispatch = Effect.fn("dispatchCliCommand")(function* <R>(
-  entry: CliEntry<R>,
-  args: readonly string[],
-  dependencies: CliDependencies<R>,
-): Effect.fn.Return<number, never, R> {
-  if (entry.kind === "command") {
-    if (args.some(isHelpFlag)) {
-      yield* writeEntryHelp(entry, dependencies);
-      return 0;
-    }
-    return yield* executeCommand(entry, args, dependencies);
-  }
-
-  const [childName, ...childArguments] = args;
-  if (!childName || childName === "help" || isHelpFlag(childName)) {
-    yield* writeEntryHelp(entry, dependencies);
-    return 0;
-  }
-  const child = findEntry(childName, entry.commands);
-  if (!child) {
-    return reportUnknownCommand(childName, entry, dependencies);
-  }
-  return yield* dispatch(child, childArguments, dependencies);
-});
-
-function executeCommand<R>(
-  command: CliCommand<R>,
-  args: readonly string[],
-  dependencies: CliDependencies<R>,
-): Effect.Effect<number, never, R> {
-  return command.execute(args).pipe(
-    Effect.catch((error) => {
-      if (error instanceof InvalidArgumentsError) {
-        reportInvalidArguments(error.message, command, dependencies);
-        return Effect.succeed(1);
+): Effect.fn.Return<number, never, CliExecution | Command.Environment | R> {
+  const output: string[] = [];
+  const capture: Console.Console = new Proxy(globalThis.console, {
+    get(target, property, receiver) {
+      if (property === "error" || property === "log") {
+        return (...values: readonly unknown[]) => output.push(`${formatConsoleValues(values)}\n`);
       }
-      if (isCittyArgumentError(error)) {
-        reportInvalidArguments(stripVTControlCharacters(error.message), command, dependencies);
-        return Effect.succeed(1);
-      }
-      return Effect.die(error);
-    }),
-  );
-}
-
-const writeRootHelp = Effect.fn("writeRootHelp")(function* <R>(dependencies: CliDependencies<R>) {
-  const usage = yield* Effect.promise(() =>
-    renderUsage(createRootCommand(dependencies.commands, dependencies.version)),
-  );
-  dependencies.writeOutput(`${usage}\n`);
-});
-
-const writeEntryHelp = Effect.fn("writeEntryHelp")(function* <R>(
-  entry: CliEntry<R>,
-  dependencies: CliDependencies<R>,
-) {
-  dependencies.writeOutput(`${yield* entry.renderHelp()}\n`);
-});
-
-function createRootCommand<R>(
-  commands: CliDependencies<R>["commands"],
-  version: string,
-): CommandDef {
-  return defineCommand({
-    meta: {
-      description: "Manage local development projects",
-      name: cliName,
-      version,
+      const value: unknown = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
     },
-    subCommands: createSubCommands(commands),
   });
-}
-
-function createSubCommands<R>(commands: readonly CliEntry<R>[]): SubCommandsDef {
-  const subCommands: SubCommandsDef = {};
-  for (const entry of commands) {
-    subCommands[entry.name] = entry.definition;
-  }
-  return subCommands;
-}
-
-function findEntry<R>(name: string, entries: readonly CliEntry<R>[]): CliEntry<R> | undefined {
-  for (const entry of entries) {
-    if (entry.name === name) {
-      return entry;
-    }
-  }
-  return undefined;
-}
-
-function validateParsedArguments(
-  args: Readonly<Record<string, boolean | number | string | string[]>> & { readonly _: string[] },
-  rawArguments: readonly string[],
-  definitions: ArgsDef,
-  commandName: string,
-): string | undefined {
-  const knownArguments = new Set(["_", ...Object.keys(definitions)]);
-  for (const name of Object.keys(definitions)) {
-    knownArguments.add(toCamelCase(name));
-    knownArguments.add(toKebabCase(name));
-  }
-  for (const definition of Object.values(definitions)) {
-    if (!("alias" in definition) || !definition.alias) {
-      continue;
-    }
-    if (Array.isArray(definition.alias)) {
-      for (const alias of definition.alias) {
-        knownArguments.add(alias);
-      }
-      continue;
-    }
-    knownArguments.add(definition.alias);
-  }
-
-  const unknownArgument = Object.keys(args).find((name) => !knownArguments.has(name));
-  if (unknownArgument) {
-    return `Unknown option '${findOptionSpelling(unknownArgument, rawArguments)}'.`;
-  }
-
-  const positionalLimit = Object.values(definitions).filter(isPositional).length;
-  if (args._.length > positionalLimit) {
-    return describePositionalLimit(commandName, positionalLimit);
-  }
-  return undefined;
-}
-
-function describePositionalLimit(commandName: string, limit: number): string {
-  if (limit === 0) {
-    return `Command '${commandName}' does not accept positional arguments.`;
-  }
-  if (limit === 1) {
-    return `Command '${commandName}' accepts at most one positional argument.`;
-  }
-  return `Command '${commandName}' accepts at most ${limit} positional arguments.`;
-}
-
-function toCamelCase(value: string): string {
-  return value.replace(/[-_]([a-z])/g, (_match, character: string) => character.toUpperCase());
-}
-
-function toKebabCase(value: string): string {
-  return value
-    .replace(/([a-z\d])([A-Z])/g, "$1-$2")
-    .replace(/_/g, "-")
-    .toLowerCase();
-}
-
-function findOptionSpelling(name: string, rawArguments: readonly string[]): string {
-  for (const argument of rawArguments) {
-    if (argument === "--") {
-      break;
-    }
-    if (!argument.startsWith("-")) {
-      continue;
-    }
-
-    const [spelling] = argument.split("=", 1);
-    if (spelling?.replace(/^--no-/, "").replace(/^-+/, "") === name) {
-      return spelling;
-    }
-  }
-
-  if (name.length === 1) {
-    return `-${name}`;
-  }
-  return `--${name}`;
-}
-
-function isPositional(definition: ArgsDef[string]): boolean {
-  return definition.type === "positional";
-}
-
-function isHelpFlag(argument: string): boolean {
-  return argument === "--help" || argument === "-h";
-}
-
-function isVersionFlag(argument: string): boolean {
-  return argument === "--version" || argument === "-v";
-}
-
-function isCittyArgumentError(error: unknown): error is Error & { readonly code: "EARG" } {
-  return (
-    error instanceof Error && error.name === "CLIError" && "code" in error && error.code === "EARG"
-  );
-}
-
-function reportUnknownCommand(
-  commandName: string,
-  parent: CliCommandGroup<unknown> | undefined,
-  dependencies: CliDependencies<unknown>,
-): number {
-  dependencies.diagnostics.report(
-    createDiagnostic({
-      code: parent?.diagnosticCode ?? "SYD2004",
-      help: parent
-        ? `Run '${cliName} ${parent.path} --help' to list the available commands.`
-        : "Run 'stackyard help' to list the available commands.",
-      message: `Unknown command '${commandName}'.`,
+  const root = createRootCommand(dependencies.commands);
+  const execution = yield* CliExecution;
+  // Command.Any intentionally erases heterogeneous handler requirements; CliEntry retains R.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  const program = Command.runWith(root, {
+    renderErrors: false,
+    version: dependencies.version,
+  })(normalizeArguments(args, dependencies.commands)) as Effect.Effect<
+    void,
+    CliError.CliError,
+    R | Command.Environment | CliExecution
+  >;
+  const result = yield* program.pipe(
+    Effect.provideService(Console.Console, capture),
+    Effect.provideService(CliConfig.CliConfig, {
+      builtIns: [GlobalFlag.Help, GlobalFlag.Version],
     }),
+    Effect.result,
   );
-  return 1;
+
+  if (Result.isFailure(result)) {
+    reportCliError(result.failure, dependencies);
+    return 1;
+  }
+  for (const value of output) {
+    dependencies.writeOutput(value);
+  }
+  return yield* execution.exitCode;
+}, Effect.provide(CliExecutionLayer));
+
+function createRootCommand<R>(commands: readonly CliEntry<R>[]): Command.Command.Any {
+  return Command.make(cliName).pipe(
+    Command.withDescription("Manage local development projects"),
+    Command.withSubcommands(commands.map(({ definition }) => definition)),
+  );
 }
 
-function reportInvalidArguments(
-  message: string,
-  command: CliCommand<unknown>,
-  dependencies: CliDependencies<unknown>,
-): void {
+function normalizeArguments<R>(
+  args: readonly string[],
+  commands: readonly CliEntry<R>[],
+): readonly string[] {
+  if (args.length === 0 || args[0] === "help") {
+    return ["--help"];
+  }
+  if (args.at(-1) === "help") {
+    return [...args.slice(0, -1), "--help"];
+  }
+  const entry = resolveEntry(args, commands);
+  if (entry?.kind === "group") {
+    return [...args, "--help"];
+  }
+  return args;
+}
+
+function reportCliError<R>(error: CliError.CliError, dependencies: CliDependencies<R>): void {
+  const issue = Predicate.isTagged("ShowHelp")(error) ? error.errors[0] : error;
+  if (!issue) {
+    return;
+  }
+  const path = Predicate.isTagged("ShowHelp")(error) ? error.commandPath.slice(1) : [];
+  const parent = resolveEntry(path, dependencies.commands);
+  const target = parent?.kind === "command" ? parent : undefined;
+  const group = parent?.kind === "group" ? parent : undefined;
+  const diagnosticCode = target?.diagnosticCode ?? group?.diagnosticCode ?? "SYD2004";
+  const commandPath = target?.path ?? group?.path;
+  const help = Predicate.isTagged("UnknownSubcommand")(issue)
+    ? group
+      ? `Run '${cliName} ${group.path} --help' to list the available commands.`
+      : "Run 'stackyard help' to list the available commands."
+    : commandPath
+      ? `Run '${cliName} ${commandPath} --help' to see the accepted arguments.`
+      : "Run 'stackyard help' to list the available commands.";
   dependencies.diagnostics.report(
     createDiagnostic({
-      code: command.diagnosticCode,
-      help: `Run '${cliName} ${command.path} --help' to see the accepted arguments.`,
-      message,
+      code: diagnosticCode,
+      help,
+      message: cliErrorMessage(issue),
     }),
   );
 }
 
-class InvalidArgumentsError extends Error {}
+function resolveEntry<R>(
+  path: readonly string[],
+  entries: readonly CliEntry<R>[],
+): CliEntry<R> | undefined {
+  let candidates = entries;
+  let current: CliEntry<R> | undefined;
+  for (const name of path) {
+    current = candidates.find((entry) => entry.name === name);
+    if (!current) {
+      return undefined;
+    }
+    candidates = current.kind === "group" ? current.commands : [];
+  }
+  return current;
+}
+
+function cliErrorMessage(error: CliError.NonShowHelpErrors): string {
+  if (Predicate.isTagged("UnrecognizedOption")(error)) {
+    return `Unknown option '${error.option}'.`;
+  }
+  if (Predicate.isTagged("UnknownSubcommand")(error)) {
+    return `Unknown command '${error.subcommand}'.`;
+  }
+  return error.message;
+}
+
+function formatConsoleValues(values: readonly unknown[]): string {
+  return values.map(String).join(" ");
+}

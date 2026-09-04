@@ -13,14 +13,18 @@ import {
 import { runManagedDaemon } from "@stackyard/daemon/managed";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
+  CanonicalPath,
   loadProjectEffect,
   makeBunProjectEvaluatorLayer,
+  NodeCanonicalPathLayer,
   type ProjectEvaluator,
   projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
-import { BunRuntime } from "@effect/platform-bun";
-import { Effect } from "effect";
+import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
+import { Crypto, Effect, FileSystem, Path } from "effect";
+import { HttpClient } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import packageManifest from "../package.json" with { type: "json" };
 import { runCli, type CliEntry } from "./cli.ts";
@@ -36,6 +40,15 @@ import { createRunCommand } from "./run.ts";
 import { createStartCommand } from "./start.ts";
 import { createStopCommand } from "./stop.ts";
 
+type DaemonCommandServices =
+  | CanonicalPath
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path;
+type PublicCliServices = DaemonCommandServices | ProjectClient | ProjectEvaluator;
+
 const cliEntrypoint = fileURLToPath(import.meta.url);
 const cliArguments = Bun.argv.slice(2);
 const [command, ...commandArguments] = cliArguments;
@@ -47,6 +60,8 @@ const diagnostics = createDiagnosticSink(diagnosticsPath);
 
 BunRuntime.runMain(
   main().pipe(
+    Effect.provide(NodeCanonicalPathLayer),
+    Effect.provide(BunServices.layer),
     Effect.tap((exitCode) =>
       Effect.sync(() => {
         process.exitCode = exitCode;
@@ -56,7 +71,7 @@ BunRuntime.runMain(
   ),
 );
 
-function main(): Effect.Effect<number> {
+function main(): Effect.Effect<number, never, BunServices.BunServices | CanonicalPath> {
   if (command === internalDaemonCommand) {
     return runDaemon();
   }
@@ -66,7 +81,11 @@ function main(): Effect.Effect<number> {
   return runPublicCli();
 }
 
-function runDaemon(): Effect.Effect<number> {
+function runDaemon(): Effect.Effect<
+  number,
+  never,
+  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
     configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
@@ -77,10 +96,10 @@ function runDaemon(): Effect.Effect<number> {
   });
 }
 
-function runPublicCli(): Effect.Effect<number> {
+function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices | CanonicalPath> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
   const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
-  const startCommand = createStartCommand({
+  const startCommand = createStartCommand<DaemonCommandServices>({
     diagnostics,
     find: findDaemon,
     runForeground: (onStarted) =>
@@ -98,7 +117,7 @@ function runPublicCli(): Effect.Effect<number> {
     createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
-  const commands: readonly CliEntry<ProjectClient | ProjectEvaluator>[] = [
+  const commands: readonly CliEntry<PublicCliServices>[] = [
     createAddCommand({
       currentDirectory: process.cwd(),
       diagnostics,
@@ -142,6 +161,7 @@ function runPublicCli(): Effect.Effect<number> {
     writeOutput,
   }).pipe(
     Effect.provide(makeDaemonProjectClientLayer(daemonOptions)),
+    Effect.provide(BunHttpClient.layer),
     Effect.provide(makeBunProjectEvaluatorLayer(cliEntrypoint)),
   );
 }

@@ -4,19 +4,20 @@ import { Effect } from "effect";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface DaemonStatusCommandDependencies {
+export interface DaemonStatusCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  find(): Effect.Effect<DaemonLocator | undefined, Failure>;
+  find(): Effect.Effect<DaemonLocator | undefined, Failure, R>;
   writeOutput(output: string): void;
 }
 
-export function createDaemonStatusCommand(
-  dependencies: DaemonStatusCommandDependencies,
-): CliCommand {
+export function createDaemonStatusCommand<R>(
+  dependencies: DaemonStatusCommandDependencies<R>,
+): CliCommand<R> {
   return defineCliCommand(
     "status",
     "SYD2018",
     {
+      args: {},
       meta: { description: "Show whether the Stackyard daemon is running" },
       run() {
         return reportCommandFailure(
