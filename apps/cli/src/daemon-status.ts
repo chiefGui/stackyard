@@ -17,6 +17,7 @@ export function createDaemonStatusCommand(
     "status",
     "SYD2018",
     {
+      args: {},
       meta: { description: "Show whether the Stackyard daemon is running" },
       run() {
         return reportCommandFailure(

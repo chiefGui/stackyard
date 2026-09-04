@@ -19,7 +19,7 @@ import {
   projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
-import { BunRuntime } from "@effect/platform-bun";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect } from "effect";
 
 import packageManifest from "../package.json" with { type: "json" };
@@ -141,6 +141,7 @@ function runPublicCli(): Effect.Effect<number> {
     version: packageManifest.version,
     writeOutput,
   }).pipe(
+    Effect.provide(BunServices.layer),
     Effect.provide(makeDaemonProjectClientLayer(daemonOptions)),
     Effect.provide(makeBunProjectEvaluatorLayer(cliEntrypoint)),
   );

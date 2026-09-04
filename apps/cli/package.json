@@ -52,7 +52,6 @@
     "@stackyard/protocol": "0.0.0",
     "@stackyard/sdk": "0.0.0",
     "@types/bun": "catalog:",
-    "citty": "0.2.2",
     "effect": "catalog:",
     "tsdown": "0.22.14",
     "typescript": "catalog:"

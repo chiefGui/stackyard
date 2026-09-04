@@ -15,6 +15,7 @@ export function createDaemonStopCommand(dependencies: DaemonStopCommandDependenc
     "stop",
     "SYD2017",
     {
+      args: {},
       meta: { description: "Stop the Stackyard daemon and running projects" },
       run() {
         return reportCommandFailure(

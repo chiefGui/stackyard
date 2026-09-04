@@ -1,6 +1,7 @@
 import { daemonUrl, type DaemonLocator } from "@stackyard/daemon/locator";
 import { createDiagnostic, type DiagnosticSink, type Failure } from "@stackyard/diagnostics";
 import { Effect } from "effect";
+import { Flag } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
@@ -18,10 +19,10 @@ export function createStartCommand(dependencies: StartCommandDependencies): CliC
     "SYD2016",
     {
       args: {
-        foreground: {
-          description: "Keep Stackyard attached to this terminal",
-          type: "boolean",
-        },
+        foreground: Flag.boolean("foreground").pipe(
+          Flag.withDescription("Keep Stackyard attached to this terminal"),
+          Flag.withDefault(false),
+        ),
       },
       meta: { description: "Start the Stackyard daemon" },
       run({ args }) {

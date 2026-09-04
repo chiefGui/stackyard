@@ -15,7 +15,8 @@ import {
   createStopProjectMessage,
   parseDaemonServerMessage,
 } from "@stackyard/protocol";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
+import { Argument } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 export interface RunCommandDependencies {
@@ -29,15 +30,16 @@ export interface RunCommandDependencies {
 export function createRunCommand(dependencies: RunCommandDependencies): CliCommand {
   return defineCliCommand("run", "SYD2009", {
     args: {
-      path: {
-        description: "Project directory",
-        required: false,
-        type: "positional",
-      },
+      path: Argument.string("path").pipe(
+        Argument.withDescription("Project directory"),
+        Argument.optional,
+        Argument.map(Option.getOrUndefined),
+      ),
     },
     meta: {
       description: "Start a project and its dashboard",
     },
+    positionalLimit: 1,
     run({ args }) {
       return reportCommandFailure(runProject(args.path, dependencies), dependencies.diagnostics);
     },

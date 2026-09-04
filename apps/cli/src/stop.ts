@@ -1,6 +1,7 @@
 import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
 import { discoverProject } from "@stackyard/project-loader";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
+import { Argument } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 import { ProjectClient } from "./project-client.ts";
@@ -17,13 +18,14 @@ export function createStopCommand(
 ): CliCommand<ProjectClient> {
   return defineCliCommand("stop", "SYD2020", {
     args: {
-      project: {
-        description: "Project name, identifier, or directory",
-        required: false,
-        type: "positional",
-      },
+      project: Argument.string("project").pipe(
+        Argument.withDescription("Project name, identifier, or directory"),
+        Argument.optional,
+        Argument.map(Option.getOrUndefined),
+      ),
     },
     meta: { description: "Stop a project" },
+    positionalLimit: 1,
     run({ args }) {
       return reportCommandFailure(
         stopProject(args.project, dependencies),

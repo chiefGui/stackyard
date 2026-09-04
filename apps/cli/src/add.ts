@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
 
 import { reportDiagnostics, type DiagnosticSink, type Failure } from "@stackyard/diagnostics";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
+import { Argument } from "effect/unstable/cli";
 
 import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 import { ProjectClient } from "./project-client.ts";
@@ -15,13 +16,14 @@ export interface AddCommandDependencies {
 export function createAddCommand(dependencies: AddCommandDependencies): CliCommand<ProjectClient> {
   return defineCliCommand("add", "SYD2013", {
     args: {
-      path: {
-        description: "Project directory (default: current directory)",
-        required: false,
-        type: "positional",
-      },
+      path: Argument.string("path").pipe(
+        Argument.withDescription("Project directory (default: current directory)"),
+        Argument.optional,
+        Argument.map(Option.getOrUndefined),
+      ),
     },
     meta: { description: "Add a project to Stackyard" },
+    positionalLimit: 1,
     run({ args }) {
       return reportCommandFailure(addProject(args.path, dependencies), dependencies.diagnostics);
     },

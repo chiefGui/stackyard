@@ -4,7 +4,8 @@ import {
   type LoadedProject,
   type ProjectLoadFailure,
 } from "@stackyard/project-loader";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
+import { Argument, Flag } from "effect/unstable/cli";
 
 import { defineCliCommand, type CliCommand } from "./cli.ts";
 import { writeProjectEvaluationOutput } from "./project-output.ts";
@@ -23,19 +24,20 @@ export function createInspectCommand(
 ): CliCommand<ProjectEvaluator> {
   return defineCliCommand("inspect", "SYD2005", {
     args: {
-      path: {
-        description: "Project directory",
-        required: false,
-        type: "positional",
-      },
-      json: {
-        description: "Print compact JSON",
-        type: "boolean",
-      },
+      path: Argument.string("path").pipe(
+        Argument.withDescription("Project directory"),
+        Argument.optional,
+        Argument.map(Option.getOrUndefined),
+      ),
+      json: Flag.boolean("json").pipe(
+        Flag.withDescription("Print compact JSON"),
+        Flag.withDefault(false),
+      ),
     },
     meta: {
       description: "Evaluate and print a project definition",
     },
+    positionalLimit: 1,
     run({ args }) {
       return runInspect(args.path, args.json ?? false, dependencies);
     },

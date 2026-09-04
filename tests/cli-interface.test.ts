@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { BunServices } from "@effect/platform-bun";
+import { Argument } from "effect/unstable/cli";
 import { createAddCommand } from "../apps/cli/src/add.ts";
 import {
   defineCliCommand,
@@ -34,7 +36,7 @@ test("the CLI dispatches injected commands without knowing their implementation"
   const output: string[] = [];
   const command = defineCliCommand("custom", "SYD9000", {
     args: {
-      value: { required: true, type: "positional" },
+      value: Argument.string("value"),
     },
     meta: { description: "A test command" },
     run({ args }) {
@@ -68,7 +70,10 @@ test("the CLI generates help from the command definitions", async () => {
   const output: string[] = [];
   const command = defineCliCommand("custom", "SYD9000", {
     args: {
-      value: { description: "Input value", required: false, type: "positional" },
+      value: Argument.string("value").pipe(
+        Argument.withDescription("Input value"),
+        Argument.optional,
+      ),
     },
     meta: { description: "A test command" },
     run() {
@@ -86,7 +91,7 @@ test("the CLI generates help from the command definitions", async () => {
   });
 
   expect(exitCode).toBe(0);
-  expect(output.join("\n")).toContain("USAGE stackyard custom");
+  expect(output.join("\n")).toContain("USAGE\n  stackyard custom");
   expect(output.join("\n")).toContain("Input value");
 });
 
@@ -107,10 +112,10 @@ test("the CLI reports its version through either root flag", async () => {
 
   expect(await runCli(["--version"], dependencies)).toBe(0);
   expect(await runCli(["-v"], dependencies)).toBe(0);
-  expect(output).toEqual([`${cliVersion}\n`, `${cliVersion}\n`]);
+  expect(output).toEqual([`stackyard v${cliVersion}\n`, `stackyard v${cliVersion}\n`]);
 });
 
-test("root help identifies the running CLI version", async () => {
+test("root help identifies the running CLI", async () => {
   const output: string[] = [];
   const exitCode = await runCli(["help"], {
     commands: [],
@@ -122,13 +127,14 @@ test("root help identifies the running CLI version", async () => {
   });
 
   expect(exitCode).toBe(0);
-  expect(output.join("\n")).toContain(`stackyard v${cliVersion}`);
+  expect(output.join("\n")).toContain("Manage local development projects");
 });
 
 test("the CLI prints help without running a command when invoked without arguments", async () => {
   let executions = 0;
   const output: string[] = [];
   const command = defineCliCommand("default", "SYD9000", {
+    args: {},
     meta: { description: "Default command" },
     run() {
       return Effect.sync(() => {
@@ -149,7 +155,7 @@ test("the CLI prints help without running a command when invoked without argumen
     }),
   ).toBe(0);
   expect(executions).toBe(0);
-  expect(output.join("")).toContain("USAGE stackyard");
+  expect(output.join("")).toContain("USAGE\n  stackyard");
   expect(output.join("")).toContain("default");
 });
 
@@ -161,6 +167,7 @@ test("the CLI dispatches nested daemon commands and renders contextual help", as
     "start",
     "SYD9000",
     {
+      args: {},
       meta: { description: "Start test daemon" },
       run() {
         return Effect.sync(() => {
@@ -182,7 +189,7 @@ test("the CLI dispatches nested daemon commands and renders contextual help", as
   expect(await runCli(["daemon", "start"], dependencies)).toBe(0);
   expect(executions).toBe(1);
   expect(await runCli(["daemon"], dependencies)).toBe(0);
-  expect(output.join("")).toContain("USAGE stackyard daemon");
+  expect(output.join("")).toContain("USAGE\n  stackyard daemon");
   expect(await runCli(["daemon", "unknown"], dependencies)).toBe(1);
   expect(diagnostics).toMatchObject([
     {
@@ -539,6 +546,7 @@ test("stop does not start Stackyard when the daemon is not running", async () =>
 function runCli(args: readonly string[], dependencies: TestCliDependencies): Promise<number> {
   return Effect.runPromise(
     runCliEffect(args, dependencies).pipe(
+      Effect.provide(BunServices.layer),
       Effect.provide(
         Layer.merge(
           Layer.succeed(ProjectClient, projectClient()),
@@ -555,7 +563,14 @@ function runCli(args: readonly string[], dependencies: TestCliDependencies): Pro
 }
 
 function executePlainCommand(command: CliCommand, args: readonly string[] = []): Promise<number> {
-  return Effect.runPromise(command.execute(args));
+  return Effect.runPromise(
+    runCliEffect([command.name, ...args], {
+      commands: [command],
+      diagnostics: { report() {} },
+      version: cliVersion,
+      writeOutput() {},
+    }).pipe(Effect.provide(BunServices.layer)),
+  );
 }
 
 function executeProjectCommand(
@@ -564,7 +579,12 @@ function executeProjectCommand(
   client: ProjectClient["Service"],
 ): Promise<number> {
   return Effect.runPromise(
-    command.execute(args).pipe(Effect.provideService(ProjectClient, client)),
+    runCliEffect([command.name, ...args], {
+      commands: [command],
+      diagnostics: { report() {} },
+      version: cliVersion,
+      writeOutput() {},
+    }).pipe(Effect.provide(BunServices.layer), Effect.provideService(ProjectClient, client)),
   );
 }
 
