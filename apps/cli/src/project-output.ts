@@ -1,5 +1,5 @@
 import { createDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
-import type { CapturedProcessOutput, ProjectLoadOutcome } from "@stackyard/project-loader";
+import type { CapturedProcessOutput } from "@stackyard/project-loader";
 
 export interface ProjectOutputDependencies {
   readonly diagnostics: DiagnosticSink;
@@ -7,7 +7,7 @@ export interface ProjectOutputDependencies {
 }
 
 export function writeProjectEvaluationOutput(
-  project: Pick<ProjectLoadOutcome, "stderr" | "stdout">,
+  project: { readonly stderr: CapturedProcessOutput; readonly stdout: CapturedProcessOutput },
   dependencies: ProjectOutputDependencies,
 ): void {
   writeCapturedOutput(project.stdout, "stdout", dependencies);

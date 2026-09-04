@@ -1,44 +1,39 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BunServices } from "@effect/platform-bun";
+import { Effect, Exit, Layer, ManagedRuntime } from "effect";
 
-import { FileProjectDefinitionObserver, FileProjectStore } from "../apps/daemon/src/projects.ts";
+import {
+  makeFileProjectDefinitionObserverLayer,
+  makeFileProjectStoreLayer,
+} from "../apps/daemon/src/projects.ts";
+import { ProjectDefinitionObserver, ProjectStore } from "../packages/control-plane/src/index.ts";
 
 test("the project store persists and replaces its complete snapshot", async () => {
   const directory = await mkdtemp(join(tmpdir(), "stackyard-projects-"));
-  const store = new FileProjectStore(directory);
+  const runtime = ManagedRuntime.make(
+    makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+  );
+  const store = await runtime.runPromise(ProjectStore);
   try {
-    const empty = await store.load();
-    expect(empty.success).toBeTrue();
-    if (!empty.success) {
-      throw new Error("Expected an empty project store.");
-    }
-    expect(empty.output).toEqual([]);
-    expect(
-      (
-        await store.save([
-          { id: "two", root: "/zeta" },
-          { id: "one", root: "/alpha" },
-        ])
-      ).success,
-    ).toBeTrue();
-    const firstLoad = await store.load();
-    if (!firstLoad.success) {
-      throw new Error("Expected persisted projects.");
-    }
-    expect(firstLoad.output).toEqual([
+    expect(await Effect.runPromise(store.load)).toEqual([]);
+    await Effect.runPromise(
+      store.save([
+        { id: "two", root: "/zeta" },
+        { id: "one", root: "/alpha" },
+      ]),
+    );
+    expect(await Effect.runPromise(store.load)).toEqual([
       { id: "one", root: "/alpha" },
       { id: "two", root: "/zeta" },
     ]);
 
-    expect((await store.save([{ id: "two", root: "/zeta" }])).success).toBeTrue();
-    const secondLoad = await store.load();
-    if (!secondLoad.success) {
-      throw new Error("Expected the replaced project snapshot.");
-    }
-    expect(secondLoad.output).toEqual([{ id: "two", root: "/zeta" }]);
+    await Effect.runPromise(store.save([{ id: "two", root: "/zeta" }]));
+    expect(await Effect.runPromise(store.load)).toEqual([{ id: "two", root: "/zeta" }]);
   } finally {
+    await runtime.dispose();
     await rm(directory, { force: true, recursive: true });
   }
 });
@@ -48,14 +43,36 @@ test("the project store refuses corrupt persisted state", async () => {
   try {
     await writeFile(join(directory, "projects.json"), "{", "utf8");
 
-    const loaded = await new FileProjectStore(directory).load();
-
-    expect(loaded.success).toBeFalse();
-    if (!loaded.success) {
-      expect(loaded.diagnostics[0].code).toBe("SYD3014");
-      expect(loaded.diagnostics[0].help).toContain("Removing it forgets every project");
-    }
+    const runtime = ManagedRuntime.make(
+      makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+    );
+    const store = await runtime.runPromise(ProjectStore);
+    const failed = await Effect.runPromise(store.load.pipe(Effect.flip));
+    expect(failed.diagnostics[0].code).toBe("SYD3014");
+    expect(failed.diagnostics[0].help).toContain("Removing it forgets every project");
+    await runtime.dispose();
   } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("failed project catalog publication removes its temporary file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "stackyard-projects-write-"));
+  await mkdir(join(directory, "projects.json"));
+  const runtime = ManagedRuntime.make(
+    makeFileProjectStoreLayer(directory).pipe(Layer.provide(BunServices.layer)),
+  );
+
+  try {
+    const store = await runtime.runPromise(ProjectStore);
+    const saved = await Effect.runPromiseExit(
+      store.save([{ id: "project", root: join(directory, "project") }]),
+    );
+
+    expect(Exit.isFailure(saved)).toBeTrue();
+    expect(await readdir(directory)).toEqual(["projects.json"]);
+  } finally {
+    await runtime.dispose();
     await rm(directory, { force: true, recursive: true });
   }
 });
@@ -70,19 +87,22 @@ test("the project definition observer coalesces definition changes", async () =>
   const observedChange = new Promise<void>((resolveChange) => {
     changed = resolveChange;
   });
-  const observer = new FileProjectDefinitionObserver({ report() {} });
-  const observed = observer.observe(root, () => {
-    changes += 1;
-    changed();
-  });
-  if (!observed.success) {
-    throw new Error("Expected the definition observer to start.");
-  }
+  const runtime = ManagedRuntime.make(makeFileProjectDefinitionObserverLayer({ report() {} }));
+  const observer = await runtime.runPromise(ProjectDefinitionObserver);
+  const observing = Effect.runPromise(
+    Effect.gen(function* () {
+      yield* observer.observe(root, () => {
+        changes += 1;
+        changed();
+      });
+      yield* Effect.promise(() => observedChange);
+    }).pipe(Effect.scoped),
+  );
 
   try {
     await writeFile(join(definitionDirectory, "main.ts"), "export const changed = true;\n", "utf8");
     await Promise.race([
-      observedChange,
+      observing,
       Bun.sleep(2_000).then(() => {
         throw new Error("Timed out waiting for a definition change.");
       }),
@@ -90,7 +110,7 @@ test("the project definition observer coalesces definition changes", async () =>
     await Bun.sleep(150);
     expect(changes).toBe(1);
   } finally {
-    observed.output.close();
+    await runtime.dispose();
     await rm(root, { force: true, recursive: true });
   }
 });

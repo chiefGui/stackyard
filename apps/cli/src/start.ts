@@ -1,61 +1,59 @@
 import { daemonUrl, type DaemonLocator } from "@stackyard/daemon/locator";
-import {
-  createDiagnostic,
-  reportDiagnostics,
-  type DiagnosticSink,
-  type Result,
-} from "@stackyard/diagnostics";
+import { createDiagnostic, type DiagnosticSink, type Failure } from "@stackyard/diagnostics";
+import { Effect } from "effect";
+import { Flag } from "effect/unstable/cli";
 
-import { defineCliCommand, type CliCommand } from "./cli.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface StartCommandDependencies {
+export interface StartCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  find(): Promise<Result<DaemonLocator | undefined>>;
-  runForeground(onStarted: (locator: DaemonLocator) => void): Promise<number>;
-  start(): Promise<Result<DaemonLocator>>;
+  find(): Effect.Effect<DaemonLocator | undefined, Failure, R>;
+  runForeground(onStarted: (locator: DaemonLocator) => void): Effect.Effect<number, never, R>;
+  start(): Effect.Effect<DaemonLocator, Failure, R>;
   writeOutput(output: string): void;
 }
 
-export function createStartCommand(dependencies: StartCommandDependencies): CliCommand {
+export function createStartCommand<R>(dependencies: StartCommandDependencies<R>): CliCommand<R> {
   return defineCliCommand(
     "start",
     "SYD2016",
     {
       args: {
-        foreground: {
-          description: "Keep Stackyard attached to this terminal",
-          type: "boolean",
-        },
+        foreground: Flag.boolean("foreground").pipe(
+          Flag.withDescription("Keep Stackyard attached to this terminal"),
+          Flag.withDefault(false),
+        ),
       },
       meta: { description: "Start the Stackyard daemon" },
       run({ args }) {
-        return args.foreground ? startForeground(dependencies) : startDetached(dependencies);
+        return reportCommandFailure(
+          args.foreground ? startForeground(dependencies) : startDetached(dependencies),
+          dependencies.diagnostics,
+        );
       },
     },
     "daemon start",
   );
 }
 
-async function startForeground(dependencies: StartCommandDependencies): Promise<number> {
-  const active = await dependencies.find();
-  if (!active.success) {
-    reportDiagnostics(dependencies.diagnostics, active.diagnostics);
-    return 1;
-  }
-  if (active.output) {
+const startForeground = Effect.fn("startForeground")(function* <R>(
+  dependencies: StartCommandDependencies<R>,
+): Effect.fn.Return<number, Failure, R> {
+  const active = yield* dependencies.find();
+  if (active) {
     dependencies.diagnostics.report(
       createDiagnostic({
         code: "SYD2016",
         help: "Run 'stackyard daemon stop', then start Stackyard in the foreground.",
         message: "Stackyard is already running.",
-        notes: [`Dashboard: ${daemonUrl(active.output)}`],
+        notes: [`Dashboard: ${daemonUrl(active)}`],
       }),
     );
     return 1;
   }
 
   let announced = false;
-  const exitCode = await dependencies.runForeground((locator) => {
+  const exitCode = yield* dependencies.runForeground((locator) => {
     announced = true;
     writeStarted(locator, true, dependencies);
   });
@@ -71,22 +69,20 @@ async function startForeground(dependencies: StartCommandDependencies): Promise<
     }),
   );
   return 1;
-}
+});
 
-async function startDetached(dependencies: StartCommandDependencies): Promise<number> {
-  const started = await dependencies.start();
-  if (!started.success) {
-    reportDiagnostics(dependencies.diagnostics, started.diagnostics);
-    return 1;
-  }
-  writeStarted(started.output, false, dependencies);
+const startDetached = Effect.fn("startDetached")(function* <R>(
+  dependencies: StartCommandDependencies<R>,
+): Effect.fn.Return<number, Failure, R> {
+  const started = yield* dependencies.start();
+  writeStarted(started, false, dependencies);
   return 0;
-}
+});
 
-function writeStarted(
+function writeStarted<R>(
   locator: DaemonLocator,
   foreground: boolean,
-  dependencies: StartCommandDependencies,
+  dependencies: StartCommandDependencies<R>,
 ): void {
   dependencies.writeOutput(`Stackyard is running at ${daemonUrl(locator)}\n`);
   if (foreground) {

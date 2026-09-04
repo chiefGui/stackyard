@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { BunServices } from "@effect/platform-bun";
 
-import { readLocator } from "../apps/daemon/src/locator.ts";
+import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
+import { Effect } from "effect";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const cliEntrypoint = join(repositoryRoot, "apps/cli/src/main.ts");
@@ -26,7 +28,7 @@ test("daemon and project lifecycles stay explicit and idempotent", async () => {
     const bare = await runCli([], temporaryRoot, environment);
     expect(bare.exitCode).toBe(0);
     expect(bare.stderr).toBe("");
-    expect(bare.stdout).toContain("USAGE stackyard");
+    expect(bare.stdout).toContain("USAGE\n  stackyard");
     expect(await readLocator(runtimeDirectory)).toBeUndefined();
 
     const initiallyStopped = await runCli(["daemon", "status"], temporaryRoot, environment);
@@ -247,4 +249,10 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function readLocator(runtimeDirectory: string) {
+  return Effect.runPromise(
+    readLocatorEffect(runtimeDirectory).pipe(Effect.provide(BunServices.layer)),
+  );
 }

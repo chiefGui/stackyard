@@ -1,36 +1,39 @@
 import { daemonUrl, type DaemonLocator } from "@stackyard/daemon/locator";
-import { reportDiagnostics, type DiagnosticSink, type Result } from "@stackyard/diagnostics";
+import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
+import { Effect } from "effect";
 
-import { defineCliCommand, type CliCommand } from "./cli.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface DaemonStatusCommandDependencies {
+export interface DaemonStatusCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  find(): Promise<Result<DaemonLocator | undefined>>;
+  find(): Effect.Effect<DaemonLocator | undefined, Failure, R>;
   writeOutput(output: string): void;
 }
 
-export function createDaemonStatusCommand(
-  dependencies: DaemonStatusCommandDependencies,
-): CliCommand {
+export function createDaemonStatusCommand<R>(
+  dependencies: DaemonStatusCommandDependencies<R>,
+): CliCommand<R> {
   return defineCliCommand(
     "status",
     "SYD2018",
     {
+      args: {},
       meta: { description: "Show whether the Stackyard daemon is running" },
-      async run() {
-        const found = await dependencies.find();
-        if (!found.success) {
-          reportDiagnostics(dependencies.diagnostics, found.diagnostics);
-          return 1;
-        }
-        if (!found.output) {
-          dependencies.writeOutput("Stackyard is not running.\n");
-          return 0;
-        }
-        dependencies.writeOutput(
-          `Stackyard is running at ${daemonUrl(found.output)}\nPID: ${found.output.pid}\n`,
+      run() {
+        return reportCommandFailure(
+          Effect.gen(function* () {
+            const found = yield* dependencies.find();
+            if (!found) {
+              dependencies.writeOutput("Stackyard is not running.\n");
+              return 0;
+            }
+            dependencies.writeOutput(
+              `Stackyard is running at ${daemonUrl(found)}\nPID: ${found.pid}\n`,
+            );
+            return 0;
+          }),
+          dependencies.diagnostics,
         );
-        return 0;
       },
     },
     "daemon status",

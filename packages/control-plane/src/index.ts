@@ -1,11 +1,8 @@
 export type {
-  CancellationSignal,
   ManagedProject,
-  PortAllocator,
   PortLease,
   ProjectCleanup,
   ProcessHandle,
-  ProcessHost,
   ProcessExit,
   ProcessLogLine,
   ProcessLogSink,
@@ -14,22 +11,34 @@ export type {
   ProjectManagerOptions,
   StartProjectFailure,
   StartProjectInput,
-  StartProjectResult,
 } from "./project-manager.ts";
-export { ProjectManager } from "./project-manager.ts";
+export {
+  makeProjectManager,
+  makeProjectManagerLayer,
+  PortAllocator,
+  ProcessHost,
+  ProjectManager,
+} from "./project-manager.ts";
 export type {
   CatalogProject,
   ProjectDefinitionLoad,
-  ProjectDefinitionObservation,
-  ProjectDefinitionObserver,
   ProjectDefinitionState,
   ProjectCatalogOptions,
   ProjectRecord,
+} from "./project-catalog.ts";
+export {
+  definitionSpec,
+  makeProjectCatalog,
+  makeProjectCatalogLayer,
+  ProjectCatalog,
+  ProjectDefinitionLoader,
+  ProjectDefinitionObserver,
+  ProjectIdGenerator,
+  ProjectRootResolver,
   ProjectStore,
 } from "./project-catalog.ts";
-export { definitionSpec, ProjectCatalog } from "./project-catalog.ts";
 export type { StartCatalogProjectInput } from "./project-orchestrator.ts";
-export { ProjectOrchestrator } from "./project-orchestrator.ts";
+export { ProjectOrchestrator, ProjectOrchestratorLayer } from "./project-orchestrator.ts";
 export {
   ResourceLogStore,
   type ResourceLogEntry,
@@ -41,7 +50,6 @@ export {
   type ResourceLogStatus,
   type ResourceLogStoreOptions,
   type ResourceLogStream,
-  type ResourceLogWaitSignal,
 } from "./resource-logs.ts";
 export type {
   Project,

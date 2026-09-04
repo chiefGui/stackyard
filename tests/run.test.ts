@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { BunServices } from "@effect/platform-bun";
 
-import { readLocator } from "../apps/daemon/src/locator.ts";
+import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
+import { Effect } from "effect";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const projectRoot = join(repositoryRoot, "tests/fixtures/run-project");
@@ -163,7 +165,7 @@ test("run starts durable projects through the global daemon", async () => {
     ).toEqual({ processStart: null, runtimeDirectory: null, value: "second-run" });
 
     cli.kill("SIGINT");
-    expect(await cli.exited).toBe(process.platform === "win32" ? 130 : 0);
+    expect(await cli.exited).toBe(130);
     expect(await stderr).toBe("");
     expect(await stdout).toContain("run-fixture is running. Dashboard:");
 
@@ -195,7 +197,7 @@ test("run starts durable projects through the global daemon", async () => {
     );
 
     secondCli.kill("SIGINT");
-    expect(await secondCli.exited).toBe(process.platform === "win32" ? 130 : 0);
+    expect(await secondCli.exited).toBe(130);
     expect(await secondStderr).toBe("");
     expect(await secondStdout).toContain("run-fixture-two is running. Dashboard:");
     await waitFor(async () => {
@@ -258,5 +260,11 @@ function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, strin
     Object.entries(environment).filter(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
+  );
+}
+
+function readLocator(runtimeDirectory: string) {
+  return Effect.runPromise(
+    readLocatorEffect(runtimeDirectory).pipe(Effect.provide(BunServices.layer)),
   );
 }

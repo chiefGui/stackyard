@@ -1,29 +1,27 @@
-import { realpath } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
+import { CanonicalPath } from "@stackyard/project-loader";
+import { Effect, Path } from "effect";
 
-export async function normalizeProjectTarget(
+export const normalizeProjectTarget = Effect.fn("normalizeProjectTarget")(function* (
   target: string,
   currentDirectory: string,
-): Promise<string> {
-  if (!isPathTarget(target)) {
+): Effect.fn.Return<string, never, CanonicalPath | Path.Path> {
+  const canonicalPath = yield* CanonicalPath;
+  const path = yield* Path.Path;
+  if (!isPathTarget(target, path)) {
     return target;
   }
 
-  const absolute = resolve(currentDirectory, target);
-  try {
-    return await realpath(absolute);
-  } catch {
-    return absolute;
-  }
-}
+  const absolute = path.resolve(currentDirectory, target);
+  return yield* canonicalPath.resolve(absolute).pipe(Effect.orElseSucceed(() => absolute));
+});
 
-function isPathTarget(target: string): boolean {
+function isPathTarget(target: string, path: Path.Path): boolean {
   return (
-    isAbsolute(target) ||
+    path.isAbsolute(target) ||
     target === "." ||
     target === ".." ||
-    target.startsWith(`.${sep}`) ||
-    target.startsWith(`..${sep}`) ||
+    target.startsWith(`.${path.sep}`) ||
+    target.startsWith(`..${path.sep}`) ||
     target.includes("/") ||
     target.includes("\\")
   );

@@ -1,99 +1,86 @@
-import type { Stats } from "node:fs";
-import { stat } from "node:fs/promises";
-import { dirname, join, parse, resolve } from "node:path";
-
-import { createDiagnostic, failure, success, type Result } from "@stackyard/diagnostics";
+import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
+import { Effect, FileSystem, Path, Predicate, type PlatformError } from "effect";
 
 export interface ProjectLocation {
   readonly entrypoint: string;
   readonly root: string;
 }
 
-export async function discoverProject(
+export const discoverProject = Effect.fn("discoverProject")(function* (
   input: string | undefined,
   currentDirectory: string,
-): Promise<Result<ProjectLocation>> {
-  try {
-    if (input) {
-      return await discoverExplicitProject(resolve(currentDirectory, input));
-    }
+): Effect.fn.Return<ProjectLocation, Failure, FileSystem.FileSystem | Path.Path> {
+  const path = yield* Path.Path;
+  return yield* input
+    ? discoverExplicitProject(path.resolve(currentDirectory, input))
+    : discoverFromAncestors(path.resolve(currentDirectory));
+});
 
-    const startingDirectory = resolve(currentDirectory);
-    let directory = startingDirectory;
-
-    while (true) {
-      const location = await locationFromDirectory(directory);
-      if (location) {
-        return success(location);
-      }
-
-      const parent = dirname(directory);
-      if (parent === directory || directory === parse(directory).root) {
-        break;
-      }
-
-      directory = parent;
-    }
-
-    return notFound(startingDirectory);
-  } catch (error) {
-    return failure(
-      createDiagnostic({
-        code: "SYD2006",
-        help: "Verify that the project path exists and is readable, then retry.",
-        message: "Project discovery failed.",
-        ...(error instanceof Error && error.message.trim().length > 0
-          ? { notes: [error.message] }
-          : {}),
-      }),
-    );
-  }
-}
-
-async function discoverExplicitProject(path: string): Promise<Result<ProjectLocation>> {
-  const pathStat = await statIfExists(path);
-
-  if (pathStat?.isFile()) {
-    return success({
-      entrypoint: path,
-      root: dirname(dirname(path)),
-    });
-  }
-
-  if (pathStat?.isDirectory()) {
-    const location = await locationFromDirectory(path);
+const discoverFromAncestors = Effect.fn("discoverFromAncestors")(function* (
+  startingDirectory: string,
+) {
+  const path = yield* Path.Path;
+  let directory = startingDirectory;
+  while (true) {
+    const location = yield* locationFromDirectory(directory);
     if (location) {
-      return success(location);
+      return location;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory || directory === path.parse(directory).root) {
+      return yield* Effect.fail(notFound(startingDirectory));
+    }
+    directory = parent;
+  }
+});
+
+const discoverExplicitProject = Effect.fn("discoverExplicitProject")(function* (path: string) {
+  const paths = yield* Path.Path;
+  const pathStat = yield* statIfExists(path);
+  if (pathStat?.type === "File") {
+    return { entrypoint: path, root: paths.dirname(paths.dirname(path)) };
+  }
+  if (pathStat?.type === "Directory") {
+    const location = yield* locationFromDirectory(path);
+    if (location) {
+      return location;
     }
   }
+  return yield* Effect.fail(notFound(path));
+});
 
-  return notFound(path);
+const locationFromDirectory = Effect.fn("locationFromDirectory")(function* (root: string) {
+  const path = yield* Path.Path;
+  const entrypoint = path.join(root, "stackyard", "main.ts");
+  const entrypointStat = yield* statIfExists(entrypoint);
+  return entrypointStat?.type === "File" ? { entrypoint, root } : undefined;
+});
+
+const statIfExists = Effect.fn("statIfExists")(
+  (path: string): Effect.Effect<FileSystem.File.Info | undefined, Failure, FileSystem.FileSystem> =>
+    FileSystem.FileSystem.use((fileSystem) => fileSystem.stat(path)).pipe(
+      Effect.catch((error) =>
+        isMissing(error)
+          ? Effect.succeed(undefined)
+          : Effect.fail(
+              failure(
+                createDiagnostic({
+                  code: "SYD2006",
+                  help: "Verify that the project path exists and is readable, then retry.",
+                  message: "Project discovery failed.",
+                  notes: [describeError(error)],
+                }),
+              ),
+            ),
+      ),
+    ),
+);
+
+function isMissing(error: PlatformError.PlatformError): boolean {
+  return Predicate.isTagged(error.reason, "NotFound");
 }
 
-async function locationFromDirectory(root: string): Promise<ProjectLocation | undefined> {
-  const entrypoint = join(root, "stackyard", "main.ts");
-  const entrypointStat = await statIfExists(entrypoint);
-
-  return entrypointStat?.isFile() ? { entrypoint, root } : undefined;
-}
-
-async function statIfExists(path: string): Promise<Stats | undefined> {
-  try {
-    return await stat(path);
-  } catch (error) {
-    if (isFileSystemError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
-      return undefined;
-    }
-
-    throw error;
-  }
-}
-
-function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
-}
-
-function notFound(path: string): Result<ProjectLocation> {
+function notFound(path: string): Failure {
   return failure(
     createDiagnostic({
       code: "SYD2000",

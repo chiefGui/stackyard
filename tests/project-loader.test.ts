@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { join, resolve } from "node:path";
+import { BunServices } from "@effect/platform-bun";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -22,15 +23,17 @@ const repositoryRoot = resolve(import.meta.dir, "..");
 
 test("process output is drained while retained output stays bounded", async () => {
   const encoder = new TextEncoder();
-  const output = await captureProcessOutput(
-    new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode("abc"));
-        controller.enqueue(encoder.encode("def"));
-        controller.close();
-      },
-    }),
-    5,
+  const output = await Effect.runPromise(
+    captureProcessOutput(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode("abc"));
+          controller.enqueue(encoder.encode("def"));
+          controller.close();
+        },
+      }),
+      5,
+    ),
   );
 
   expect(output).toEqual({ text: "abcde", truncated: true });
@@ -43,8 +46,8 @@ test("project loading is independent of the evaluator implementation", async () 
     ProjectEvaluator,
     ProjectEvaluator.of({
       evaluate: () =>
-        Effect.succeed({
-          result: failure(
+        Effect.fail({
+          ...failure(
             createDiagnostic({
               code: "SYD2007",
               message: "The supplied project evaluator was used.",
@@ -59,13 +62,10 @@ test("project loading is independent of the evaluator implementation", async () 
     loadProjectEffect({
       currentDirectory: projectRoot,
       path: projectRoot,
-    }).pipe(Effect.provide(evaluator)),
+    }).pipe(Effect.provide(BunServices.layer), Effect.provide(evaluator), Effect.flip),
   );
 
-  expect(output.result.success).toBeFalse();
-  if (!output.result.success) {
-    expect(output.result.diagnostics[0]?.message).toBe("The supplied project evaluator was used.");
-  }
+  expect(output.diagnostics[0]?.message).toBe("The supplied project evaluator was used.");
 });
 
 test("evaluator infrastructure failures become diagnostics", async () => {
@@ -74,14 +74,14 @@ test("evaluator infrastructure failures become diagnostics", async () => {
     projectRoot: join(repositoryRoot, "tests/fixtures/project-that-does-not-exist"),
   });
 
-  expect(output.result.success).toBeFalse();
-  if (!output.result.success) {
-    expect(output.result.diagnostics[0]?.code).toBe("SYD2007");
-    expect(output.result.diagnostics[0]?.help).toContain("Retry");
-    expect(output.result.diagnostics[0]?.notes).not.toEqual([]);
+  expect(output.success).toBeFalse();
+  if (!output.success) {
+    expect(output.failure.diagnostics[0]?.code).toBe("SYD2007");
+    expect(output.failure.diagnostics[0]?.help).toContain("Retry");
+    expect(output.failure.diagnostics[0]?.notes).not.toEqual([]);
+    expect(output.failure.stderr).toEqual({ text: "", truncated: false });
+    expect(output.failure.stdout).toEqual({ text: "", truncated: false });
   }
-  expect(output.stderr).toEqual({ text: "", truncated: false });
-  expect(output.stdout).toEqual({ text: "", truncated: false });
 });
 
 test("evaluator failures are normalized at the IPC boundary", async () => {
@@ -91,12 +91,12 @@ test("evaluator failures are normalized at the IPC boundary", async () => {
     projectRoot,
   });
 
-  expect(output.result.success).toBeFalse();
-  if (!output.result.success) {
-    expect(output.result.diagnostics[0]?.code).toBe("SYD1005");
-    expect(Object.isFrozen(output.result)).toBeTrue();
-    expect(Object.isFrozen(output.result.diagnostics)).toBeTrue();
-    expect(Object.isFrozen(output.result.diagnostics[0])).toBeTrue();
+  expect(output.success).toBeFalse();
+  if (!output.success) {
+    expect(output.failure.diagnostics[0]?.code).toBe("SYD1005");
+    expect(Object.isFrozen(output.failure)).toBeTrue();
+    expect(Object.isFrozen(output.failure.diagnostics)).toBeTrue();
+    expect(Object.isFrozen(output.failure.diagnostics[0])).toBeTrue();
   }
 });
 
@@ -110,9 +110,9 @@ test("evaluation timeouts stop the evaluator and become diagnostics", async () =
     0,
   );
 
-  expect(output.result.success).toBeFalse();
-  if (!output.result.success) {
-    expect(output.result.diagnostics[0]?.code).toBe("SYD2001");
+  expect(output.success).toBeFalse();
+  if (!output.success) {
+    expect(output.failure.diagnostics[0]?.code).toBe("SYD2001");
   }
 });
 
@@ -126,12 +126,16 @@ test("evaluator waits until the parent receives its IPC result", async () => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000);
 
   const output = await evaluated;
-  expect(output.result.success).toBeTrue();
+  expect(output.success).toBeTrue();
 });
 
 function runEvaluation(input: Parameters<typeof evaluateProject>[0], timeoutMilliseconds?: number) {
   const evaluation = evaluateProject(input).pipe(
     Effect.provide(makeBunProjectEvaluatorLayer(join(repositoryRoot, "apps/cli/src/main.ts"))),
+    Effect.match({
+      onFailure: (failed) => ({ failure: failed, success: false as const }),
+      onSuccess: (output) => ({ output, success: true as const }),
+    }),
   );
   return Effect.runPromise(
     timeoutMilliseconds === undefined

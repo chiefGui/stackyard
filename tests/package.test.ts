@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { BunServices } from "@effect/platform-bun";
 
-import { readLocator } from "../apps/daemon/src/locator.ts";
+import { readLocator as readLocatorEffect } from "../apps/daemon/src/locator.ts";
 import { parseProjectList } from "../packages/protocol/src/index.ts";
+import { Effect } from "effect";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const packageRoot = join(repositoryRoot, "apps/cli");
@@ -69,7 +71,11 @@ test("the packed package works in an external Bun project", async () => {
       [process.execPath, "x", "stackyard", "--version"],
       consumerDirectory,
     );
-    expect(version).toEqual({ exitCode: 0, stderr: "", stdout: `${manifest.version}\n` });
+    expect(version).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: `stackyard v${manifest.version}\n`,
+    });
 
     const typecheck = await runCommand(
       [process.execPath, "x", "tsc", "--noEmit"],
@@ -184,7 +190,7 @@ test("the packed package works in an external Bun project", async () => {
     ).toContain('<div id="root"></div>');
 
     runProcess.kill("SIGINT");
-    expect(await runProcess.exited).toBe(process.platform === "win32" ? 130 : 0);
+    expect(await runProcess.exited).toBe(130);
     expect(await runError).toBe("");
     expect(await runOutput).toContain("packed-run is running. Dashboard:");
     await waitFor(async () => {
@@ -335,4 +341,10 @@ async function runCommand(
   const [stderr, stdout] = await Promise.all([stderrPromise, stdoutPromise]);
 
   return { exitCode, stderr, stdout };
+}
+
+function readLocator(runtimeDirectory: string) {
+  return Effect.runPromise(
+    readLocatorEffect(runtimeDirectory).pipe(Effect.provide(BunServices.layer)),
+  );
 }

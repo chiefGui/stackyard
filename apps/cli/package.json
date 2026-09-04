@@ -45,13 +45,14 @@
     "typecheck": "tsc -p ./tsconfig.json"
   },
   "devDependencies": {
+    "@effect/platform-bun": "catalog:",
     "@stackyard/daemon": "0.0.0",
     "@stackyard/diagnostics": "0.0.0",
     "@stackyard/project-loader": "0.0.0",
     "@stackyard/protocol": "0.0.0",
     "@stackyard/sdk": "0.0.0",
     "@types/bun": "catalog:",
-    "citty": "0.2.2",
+    "effect": "catalog:",
     "tsdown": "0.22.14",
     "typescript": "catalog:"
   },

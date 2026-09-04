@@ -1,45 +1,54 @@
-import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
+import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
 import type { Project } from "@stackyard/protocol";
+import { Effect } from "effect";
+import { Flag } from "effect/unstable/cli";
 
-import { defineCliCommand, type CliCommand } from "./cli.ts";
-import type { ProjectClient } from "./project-client.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
+import { ProjectClient } from "./project-client.ts";
 
 export interface ListCommandDependencies {
-  readonly client: ProjectClient;
   readonly diagnostics: DiagnosticSink;
   writeOutput(output: string): void;
 }
 
-export function createListCommand(dependencies: ListCommandDependencies): CliCommand {
+export function createListCommand(
+  dependencies: ListCommandDependencies,
+): CliCommand<ProjectClient> {
   return defineCliCommand("list", "SYD2015", {
     args: {
-      json: { description: "Print compact JSON", type: "boolean" },
+      json: Flag.boolean("json").pipe(
+        Flag.withDescription("Print compact JSON"),
+        Flag.withDefault(false),
+      ),
     },
     meta: { description: "List projects" },
     run({ args }) {
-      return listProjects(args.json ?? false, dependencies);
+      return reportCommandFailure(
+        listProjects(args.json ?? false, dependencies),
+        dependencies.diagnostics,
+      );
     },
   });
 }
 
-async function listProjects(json: boolean, dependencies: ListCommandDependencies): Promise<number> {
-  const listed = await dependencies.client.list();
-  if (!listed.success) {
-    reportDiagnostics(dependencies.diagnostics, listed.diagnostics);
-    return 1;
-  }
+const listProjects = Effect.fn("listProjects")(function* (
+  json: boolean,
+  dependencies: ListCommandDependencies,
+): Effect.fn.Return<number, Failure, ProjectClient> {
+  const client = yield* ProjectClient;
+  const listed = yield* client.list;
   if (json) {
-    dependencies.writeOutput(`${JSON.stringify(listed.output)}\n`);
+    dependencies.writeOutput(`${JSON.stringify(listed)}\n`);
     return 0;
   }
-  if (listed.output.projects.length === 0) {
+  if (listed.projects.length === 0) {
     dependencies.writeOutput("No projects yet. Run 'stackyard add .' from a project.\n");
     return 0;
   }
 
-  dependencies.writeOutput(`${listed.output.projects.map(formatProject).join("\n\n")}\n`);
+  dependencies.writeOutput(`${listed.projects.map(formatProject).join("\n\n")}\n`);
   return 0;
-}
+});
 
 function formatProject(project: Project): string {
   const lines = [project.name, `  State: ${formatState(project.state)}`];

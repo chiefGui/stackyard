@@ -1,118 +1,225 @@
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 
 import {
-  ProjectCatalog,
+  makeProjectCatalogLayer as makeControlPlaneProjectCatalogLayer,
+  ProjectDefinitionLoader,
+  ProjectDefinitionObserver,
+  ProjectIdGenerator,
+  ProjectRootResolver,
+  ProjectStore,
   type ProjectDefinitionLoad,
-  type ProjectDefinitionObservation,
-  type ProjectDefinitionObserver,
   type ProjectRecord,
-  type ProjectStore,
 } from "@stackyard/control-plane";
 import {
   createDiagnostic,
   describeError,
   failure,
-  success,
+  type Diagnostic,
   type DiagnosticSink,
+  type Failure,
   type Result,
 } from "@stackyard/diagnostics";
-import { discoverProject, loadProject } from "@stackyard/project-loader";
+import {
+  CanonicalPath,
+  discoverProject,
+  loadProjectEffect,
+  makeBunProjectEvaluatorLayer,
+  ProjectEvaluator,
+} from "@stackyard/project-loader";
+import {
+  Crypto,
+  Effect,
+  FileSystem,
+  Layer,
+  Path,
+  PlatformError,
+  Predicate,
+  Result as EffectResult,
+  Schema,
+  Scope,
+} from "effect";
 
 const projectStoreSchemaVersion = 1;
 const projectStoreFileName = "projects.json";
 const watchDebounceMilliseconds = 100;
+const ProjectIdentifierSchema = Schema.Trimmed.check(Schema.isNonEmpty());
+const AbsoluteProjectRootSchema = ProjectIdentifierSchema.check(
+  Schema.makeFilter((root) =>
+    isAbsolute(root) ? undefined : { issue: "Expected an absolute project root", path: [] },
+  ),
+);
+const ProjectRecordSchema = Schema.Struct({
+  id: ProjectIdentifierSchema,
+  root: AbsoluteProjectRootSchema,
+});
+const ProjectFileSchema = Schema.Struct({
+  projects: Schema.Array(ProjectRecordSchema),
+  schemaVersion: Schema.Literal(projectStoreSchemaVersion),
+}).check(
+  Schema.makeFilter(({ projects }) => {
+    const identifiers = new Set(projects.map(({ id }) => id));
+    if (identifiers.size !== projects.length) {
+      return { issue: "Expected unique project identifiers", path: ["projects"] };
+    }
+    const roots = new Set(projects.map(({ root }) => root));
+    return roots.size === projects.length
+      ? undefined
+      : { issue: "Expected unique project roots", path: ["projects"] };
+  }),
+);
 
-export interface OpenProjectCatalogOptions {
+export interface ProjectCatalogLayerOptions {
   readonly dataDirectory: string;
   readonly diagnostics: DiagnosticSink;
   readonly evaluatorEntrypoint: string;
 }
 
-export function openProjectCatalog(
-  options: OpenProjectCatalogOptions,
-): Promise<Result<ProjectCatalog>> {
-  return ProjectCatalog.open({
-    canonicalize: (path) => canonicalProjectRoot(path),
-    createId: () => crypto.randomUUID(),
-    diagnostics: options.diagnostics,
-    loadDefinition: (root) => loadProjectDefinition(root, options.evaluatorEntrypoint),
-    observer: new FileProjectDefinitionObserver(options.diagnostics),
-    store: new FileProjectStore(options.dataDirectory),
-  });
+export function makeProjectCatalogLayer(options: ProjectCatalogLayerOptions) {
+  const platform = Layer.mergeAll(
+    makeFileProjectStoreLayer(options.dataDirectory),
+    makeFileProjectDefinitionObserverLayer(options.diagnostics),
+    ProjectIdGeneratorLayer,
+    ProjectRootResolverLayer,
+    ProjectDefinitionLoaderLayer.pipe(
+      Layer.provide(makeBunProjectEvaluatorLayer(options.evaluatorEntrypoint)),
+    ),
+  );
+  return makeControlPlaneProjectCatalogLayer({ diagnostics: options.diagnostics }).pipe(
+    Layer.provide(platform),
+  );
 }
 
-export class FileProjectStore implements ProjectStore {
-  readonly #directory: string;
-  readonly #path: string;
-
-  constructor(directory: string) {
-    this.#directory = resolve(directory);
-    this.#path = join(this.#directory, projectStoreFileName);
-  }
-
-  async load(): Promise<Result<readonly ProjectRecord[]>> {
-    let text: string;
-    try {
-      text = await readFile(this.#path, "utf8");
-    } catch (error) {
-      return isMissing(error) ? success([]) : projectStorageFailure("read", this.#path, error);
-    }
-
-    try {
-      const parsed: unknown = JSON.parse(text);
-      const records = parseProjectFile(parsed);
-      return records
-        ? success(records)
-        : projectStorageFailure("parse", this.#path, new Error("The file has an invalid schema."));
-    } catch (error) {
-      return projectStorageFailure("parse", this.#path, error);
-    }
-  }
-
-  async save(projects: readonly ProjectRecord[]): Promise<Result<void>> {
-    const temporaryPath = join(
-      this.#directory,
-      `${projectStoreFileName}.${process.pid}.${crypto.randomUUID()}.tmp`,
-    );
-    const value = {
-      projects: projects
-        .map(({ id, root }) => ({ id, root }))
-        .toSorted((left, right) => left.root.localeCompare(right.root, "en")),
-      schemaVersion: projectStoreSchemaVersion,
-    };
-
-    try {
-      await mkdir(this.#directory, { mode: 0o700, recursive: true });
-      await writeFile(temporaryPath, `${JSON.stringify(value, undefined, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
+export function makeFileProjectStoreLayer(
+  directory: string,
+): Layer.Layer<ProjectStore, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
+  return Layer.effect(
+    ProjectStore,
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const storageDirectory = path.resolve(directory);
+      const storagePath = path.join(storageDirectory, projectStoreFileName);
+      return ProjectStore.of({
+        load: loadProjectRecords(storagePath, fileSystem),
+        save: (projects) =>
+          saveProjectRecords(storageDirectory, storagePath, projects, crypto, fileSystem, path),
       });
-      await rename(temporaryPath, this.#path);
-      return success(undefined);
-    } catch (error) {
-      try {
-        await rm(temporaryPath, { force: true });
-      } catch {
-        // The original storage failure is more useful than temporary-file cleanup failure.
-      }
-      return projectStorageFailure("write", this.#path, error);
+    }),
+  );
+}
+
+const loadProjectRecords = Effect.fn("FileProjectStore.load")(function* (
+  path: string,
+  fileSystem: FileSystem.FileSystem,
+): Effect.fn.Return<readonly ProjectRecord[], Failure> {
+  const read = yield* fileSystem.readFileString(path).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: (text) => ({ success: true as const, text }),
+    }),
+  );
+  if (!read.success) {
+    if (isMissing(read.error)) {
+      return Object.freeze([]);
     }
+    return yield* Effect.fail(projectStorageFailure("read", path, read.error));
   }
+
+  return yield* Effect.try({
+    try: () => {
+      const records = parseProjectFile(JSON.parse(read.text));
+      if (!records) {
+        throw new Error("The file has an invalid schema.");
+      }
+      return records;
+    },
+    catch: (error) => projectStorageFailure("parse", path, error),
+  });
+});
+
+const saveProjectRecords = Effect.fn("FileProjectStore.save")(function* (
+  directory: string,
+  path: string,
+  projects: readonly ProjectRecord[],
+  crypto: Crypto.Crypto,
+  fileSystem: FileSystem.FileSystem,
+  paths: Path.Path,
+): Effect.fn.Return<void, Failure> {
+  const identifier = yield* crypto.randomUUIDv4.pipe(
+    Effect.mapError((error) => projectStorageFailure("write", path, error)),
+  );
+  const temporaryPath = paths.join(
+    directory,
+    `${projectStoreFileName}.${process.pid}.${identifier}.tmp`,
+  );
+  const value = {
+    projects: projects
+      .map(({ id, root }) => ({ id, root }))
+      .toSorted((left, right) => left.root.localeCompare(right.root, "en")),
+    schemaVersion: projectStoreSchemaVersion,
+  };
+  const written = yield* Effect.gen(function* () {
+    yield* fileSystem.makeDirectory(directory, { mode: 0o700, recursive: true });
+    yield* fileSystem.writeFileString(temporaryPath, `${JSON.stringify(value, undefined, 2)}\n`, {
+      mode: 0o600,
+    });
+    yield* fileSystem.rename(temporaryPath, path);
+  }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
+  );
+  if (written.success) {
+    return undefined;
+  }
+  const removed = yield* fileSystem.remove(temporaryPath, { force: true }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: () => ({ success: true as const }),
+    }),
+  );
+  const error = removed.success
+    ? written.error
+    : new AggregateError(
+        [written.error, removed.error],
+        "The project catalog and its temporary file could not be written.",
+      );
+  return yield* Effect.fail(projectStorageFailure("write", path, error));
+});
+
+export function makeFileProjectDefinitionObserverLayer(
+  diagnostics: DiagnosticSink,
+): Layer.Layer<ProjectDefinitionObserver> {
+  return Layer.succeed(
+    ProjectDefinitionObserver,
+    ProjectDefinitionObserver.of({
+      observe: (root, onChange) => observeProjectDefinition(root, onChange, diagnostics),
+    }),
+  );
 }
 
-export class FileProjectDefinitionObserver implements ProjectDefinitionObserver {
-  constructor(private readonly diagnostics: DiagnosticSink) {}
+const observeProjectDefinition = Effect.fn("FileProjectDefinitionObserver.observe")(function* (
+  root: string,
+  onChange: () => void,
+  diagnostics: DiagnosticSink,
+): Effect.fn.Return<void, Failure, Scope.Scope> {
+  yield* Effect.acquireRelease(
+    Effect.gen(function* () {
+      const observation = new FileObservation(root, onChange, diagnostics);
+      const started = observation.start();
+      if (!started.success) {
+        return yield* Effect.fail(started);
+      }
+      return observation;
+    }),
+    (observation) => Effect.sync(() => observation.close()),
+  );
+});
 
-  observe(root: string, onChange: () => void): Result<ProjectDefinitionObservation> {
-    const observation = new FileObservation(root, onChange, this.diagnostics);
-    const started = observation.start();
-    return started.success ? success(observation) : started;
-  }
-}
-
-class FileObservation implements ProjectDefinitionObservation {
+class FileObservation {
   readonly #diagnostics: DiagnosticSink;
   readonly #onChange: () => void;
   readonly #root: string;
@@ -129,7 +236,7 @@ class FileObservation implements ProjectDefinitionObservation {
   start(): Result<void> {
     this.#arm();
     return this.#watchers.size > 0
-      ? success(undefined)
+      ? { output: undefined, success: true }
       : failure(
           createDiagnostic({
             code: "SYD3015",
@@ -187,11 +294,10 @@ class FileObservation implements ProjectDefinitionObservation {
     }
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
-      if (this.#closed) {
-        return;
+      if (!this.#closed) {
+        this.#arm();
+        this.#onChange();
       }
-      this.#arm();
-      this.#onChange();
     }, watchDebounceMilliseconds);
   }
 
@@ -203,78 +309,103 @@ class FileObservation implements ProjectDefinitionObservation {
   }
 }
 
-async function canonicalProjectRoot(path: string): Promise<Result<string>> {
-  const discovered = await discoverProject(path, process.cwd());
-  if (!discovered.success) {
-    return discovered;
-  }
+const ProjectIdGeneratorLayer: Layer.Layer<ProjectIdGenerator, never, Crypto.Crypto> = Layer.effect(
+  ProjectIdGenerator,
+  Crypto.Crypto.use((crypto) =>
+    Effect.succeed(ProjectIdGenerator.of({ next: crypto.randomUUIDv4.pipe(Effect.orDie) })),
+  ),
+);
 
-  try {
-    return success(await realpath(discovered.output.root));
-  } catch (error) {
-    return failure(
-      createDiagnostic({
-        code: "SYD2006",
-        help: "Verify that the project path exists and is readable, then retry.",
-        message: "The project root could not be resolved.",
-        notes: [describeError(error)],
+const ProjectRootResolverLayer: Layer.Layer<
+  ProjectRootResolver,
+  never,
+  CanonicalPath | FileSystem.FileSystem | Path.Path
+> = Layer.effect(
+  ProjectRootResolver,
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    const canonicalPath = yield* CanonicalPath;
+    return ProjectRootResolver.of({
+      canonicalize: Effect.fn("ProjectRootResolver.canonicalize")(function* (path: string) {
+        const discovered = yield* discoverProject(path, process.cwd()).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, paths),
+        );
+        return yield* canonicalPath.resolve(discovered.root).pipe(
+          Effect.mapError((error) =>
+            failure(
+              createDiagnostic({
+                code: "SYD2006",
+                help: "Verify that the project path exists and is readable, then retry.",
+                message: "The project root could not be resolved.",
+                notes: [describeError(error)],
+              }),
+            ),
+          ),
+        );
       }),
-    );
-  }
-}
+    });
+  }),
+);
 
-async function loadProjectDefinition(
+const ProjectDefinitionLoaderLayer: Layer.Layer<
+  ProjectDefinitionLoader,
+  never,
+  FileSystem.FileSystem | Path.Path | ProjectEvaluator
+> = Layer.effect(
+  ProjectDefinitionLoader,
+  Effect.gen(function* () {
+    const evaluator = yield* ProjectEvaluator;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return ProjectDefinitionLoader.of({
+      load: (root) =>
+        loadProjectDefinition(root).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ProjectEvaluator, evaluator),
+        ),
+    });
+  }),
+);
+
+const loadProjectDefinition = Effect.fn("ProjectDefinitionLoader.load")(function* (
   root: string,
-  evaluatorEntrypoint: string,
-): Promise<ProjectDefinitionLoad> {
-  const loaded = await loadProject({ currentDirectory: root, evaluatorEntrypoint, path: root });
-  if (loaded.result.success) {
-    return { kind: "valid", spec: loaded.result.output.spec };
+): Effect.fn.Return<
+  ProjectDefinitionLoad,
+  never,
+  FileSystem.FileSystem | Path.Path | ProjectEvaluator
+> {
+  const loaded = yield* loadProjectEffect({ currentDirectory: root, path: root }).pipe(
+    Effect.match({
+      onFailure: (error) => ({ error, success: false as const }),
+      onSuccess: (project) => ({ project, success: true as const }),
+    }),
+  );
+  if (loaded.success) {
+    return { kind: "valid", spec: loaded.project.spec };
   }
-
   return {
-    diagnostics: loaded.result.diagnostics,
-    kind: loaded.result.diagnostics.some(({ code }) => code === "SYD2000") ? "missing" : "invalid",
+    diagnostics: loaded.error.diagnostics,
+    kind: loaded.error.diagnostics.some(({ code }) => code === "SYD2000") ? "missing" : "invalid",
   };
-}
+});
 
 function parseProjectFile(input: unknown): readonly ProjectRecord[] | undefined {
-  if (
-    !isPlainObject(input) ||
-    !hasExactKeys(input, ["projects", "schemaVersion"]) ||
-    input.schemaVersion !== projectStoreSchemaVersion ||
-    !Array.isArray(input.projects)
-  ) {
-    return undefined;
-  }
-
-  const identifiers = new Set<string>();
-  const roots = new Set<string>();
-  const records: ProjectRecord[] = [];
-  for (const value of input.projects) {
-    if (
-      !isPlainObject(value) ||
-      !hasExactKeys(value, ["id", "root"]) ||
-      !isNonEmptyString(value.id) ||
-      !isNonEmptyString(value.root) ||
-      !isAbsolute(value.root) ||
-      identifiers.has(value.id) ||
-      roots.has(value.root)
-    ) {
-      return undefined;
-    }
-    identifiers.add(value.id);
-    roots.add(value.root);
-    records.push(Object.freeze({ id: value.id, root: value.root }));
-  }
-  return Object.freeze(records);
+  const parsed = Schema.decodeUnknownResult(ProjectFileSchema, {
+    onExcessProperty: "error",
+  })(input);
+  return EffectResult.isSuccess(parsed)
+    ? Object.freeze(parsed.success.projects.map(({ id, root }) => Object.freeze({ id, root })))
+    : undefined;
 }
 
-function projectStorageFailure<T>(
+function projectStorageFailure(
   operation: "parse" | "read" | "write",
   path: string,
   error: unknown,
-): Result<T> {
+): Failure {
   const action = operation === "parse" ? "is invalid" : `could not be ${operation}`;
   return failure(
     createDiagnostic({
@@ -289,7 +420,7 @@ function projectStorageFailure<T>(
   );
 }
 
-function watchFailure(root: string, error: unknown) {
+function watchFailure(root: string, error: unknown): Diagnostic {
   return createDiagnostic({
     code: "SYD3015",
     help: "Verify that the project is readable. Stackyard will retry when its directory changes.",
@@ -299,20 +430,10 @@ function watchFailure(root: string, error: unknown) {
   });
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, required: readonly string[]): boolean {
-  const keys = Object.keys(value);
-  return required.every((key) => Object.hasOwn(value, key)) && keys.length === required.length;
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function isMissing(error: unknown): boolean {
+  if (error instanceof PlatformError.PlatformError) {
+    return Predicate.isTagged(error.reason, "NotFound");
+  }
   return (
     error instanceof Error &&
     "code" in error &&

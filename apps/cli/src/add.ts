@@ -1,44 +1,41 @@
-import { resolve } from "node:path";
+import { reportDiagnostics, type DiagnosticSink, type Failure } from "@stackyard/diagnostics";
+import { Effect, Option, Path } from "effect";
+import { Argument } from "effect/unstable/cli";
 
-import { reportDiagnostics, type DiagnosticSink } from "@stackyard/diagnostics";
-
-import { defineCliCommand, type CliCommand } from "./cli.ts";
-import type { ProjectClient } from "./project-client.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
+import { ProjectClient } from "./project-client.ts";
 
 export interface AddCommandDependencies {
-  readonly client: ProjectClient;
   readonly diagnostics: DiagnosticSink;
   readonly currentDirectory: string;
   writeOutput(output: string): void;
 }
 
-export function createAddCommand(dependencies: AddCommandDependencies): CliCommand {
+export function createAddCommand(
+  dependencies: AddCommandDependencies,
+): CliCommand<Path.Path | ProjectClient> {
   return defineCliCommand("add", "SYD2013", {
     args: {
-      path: {
-        description: "Project directory (default: current directory)",
-        required: false,
-        type: "positional",
-      },
+      path: Argument.string("path").pipe(
+        Argument.withDescription("Project directory (default: current directory)"),
+        Argument.optional,
+        Argument.map(Option.getOrUndefined),
+      ),
     },
     meta: { description: "Add a project to Stackyard" },
     run({ args }) {
-      return addProject(args.path, dependencies);
+      return reportCommandFailure(addProject(args.path, dependencies), dependencies.diagnostics);
     },
   });
 }
 
-async function addProject(
+const addProject = Effect.fn("addProject")(function* (
   path: string | undefined,
   dependencies: AddCommandDependencies,
-): Promise<number> {
-  const added = await dependencies.client.add(resolve(dependencies.currentDirectory, path ?? "."));
-  if (!added.success) {
-    reportDiagnostics(dependencies.diagnostics, added.diagnostics);
-    return 1;
-  }
-
-  const project = added.output;
+): Effect.fn.Return<number, Failure, Path.Path | ProjectClient> {
+  const paths = yield* Path.Path;
+  const client = yield* ProjectClient;
+  const project = yield* client.add(paths.resolve(dependencies.currentDirectory, path ?? "."));
   dependencies.writeOutput(`Added '${project.name}' to Stackyard.\nRoot: ${project.root}\n`);
   if (project.issue) {
     dependencies.writeOutput("The project needs attention before it can run.\n");
@@ -46,4 +43,4 @@ async function addProject(
     return 1;
   }
   return 0;
-}
+});

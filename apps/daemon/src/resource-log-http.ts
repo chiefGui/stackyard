@@ -1,5 +1,5 @@
 import {
-  type ProjectManager,
+  ProjectManager,
   type RuntimeProject,
   type ResourceLogSnapshot,
   type ResourceLogSource,
@@ -7,24 +7,23 @@ import {
 import { createDiagnosticReport } from "@stackyard/diagnostics";
 import { createProjectList } from "@stackyard/protocol/projects";
 import { createResourceLogBatch, type ResourceLogBatch } from "@stackyard/protocol/resource-logs";
-
-/* oxlint-disable eslint/no-await-in-loop -- Each pull waits for the next revision in sequence. */
+import { Effect, Stream } from "effect";
 
 const entriesPerBatch = 256;
 const encoder = new TextEncoder();
 
 export interface ResourceLogHttpOptions {
-  readonly manager: ProjectManager;
   readonly token: string;
   disableRequestTimeout(): void;
   isShuttingDown(): boolean;
 }
 
-export function handleResourceLogHttpRequest(
+export const handleResourceLogHttpRequest = Effect.fn("handleResourceLogHttpRequest")(function* (
   request: Request,
   url: URL,
   options: ResourceLogHttpOptions,
-): Response | undefined {
+): Effect.fn.Return<Response | undefined, never, ProjectManager> {
+  const manager = yield* ProjectManager;
   if (url.pathname === "/api/v1/projects/recent") {
     if (!isAuthorized(request, options.token)) {
       return unauthorizedResponse();
@@ -37,7 +36,7 @@ export function handleResourceLogHttpRequest(
     }
     return Response.json(
       createProjectList({
-        projects: options.manager.listRecentProjects().projects.map(recentProject),
+        projects: (yield* manager.listRecentProjects).projects.map(recentProject),
       }),
       {
         headers: { "cache-control": "no-store" },
@@ -59,7 +58,7 @@ export function handleResourceLogHttpRequest(
     return new Response("Resource log request is invalid.", { status: 400 });
   }
 
-  const source = options.manager.getResourceLogs(target.projectId, target.resourceName);
+  const source = yield* manager.getResourceLogs(target.projectId, target.resourceName);
   if (!source) {
     return new Response("Resource log feed not found.", { status: 404 });
   }
@@ -76,7 +75,7 @@ export function handleResourceLogHttpRequest(
     signal: request.signal,
     source,
   });
-}
+});
 
 function recentProject(project: RuntimeProject) {
   return {
@@ -101,72 +100,57 @@ export interface ResourceLogResponseOptions {
 }
 
 export function createResourceLogResponse(options: ResourceLogResponseOptions): Response {
-  const cancellation = new AbortController();
-  let cursor = options.after;
-  let finished = false;
-  let initialized = false;
+  const stream = Stream.unfold<ResourceLogStreamState, Uint8Array, never, never>(
+    { cursor: options.after, initialized: false },
+    (state) => nextResourceLogBatch(state, options),
+  ).pipe(
+    Stream.interruptWhen(aborted(options.signal)),
+    Stream.ensuring(Effect.sync(() => options.onClose())),
+  );
 
-  const finish = (): void => {
-    if (finished) {
-      return;
-    }
-    finished = true;
-    options.signal.removeEventListener("abort", abort);
-    options.onClose();
-  };
-  const abort = (): void => {
-    cancellation.abort();
-    finish();
-  };
-  options.signal.addEventListener("abort", abort, { once: true });
-  if (options.signal.aborted) {
-    abort();
-  }
-
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        while (!cancellation.signal.aborted) {
-          const snapshot = options.source.snapshot({ after: cursor, limit: entriesPerBatch });
-          if (shouldSend(snapshot, initialized)) {
-            cursor = snapshot.nextCursor;
-            initialized = true;
-            controller.enqueue(
-              encoder.encode(
-                `${JSON.stringify(createBatch(snapshot, cursor, options.projectId, options.resourceName))}\n`,
-              ),
-            );
-
-            if (!snapshot.hasMore && snapshot.status !== "live") {
-              controller.close();
-              finish();
-            }
-            return;
-          }
-
-          await options.source.waitForChange(snapshot.revision, cancellation.signal);
-        }
-        controller.close();
-      } catch (error) {
-        if (cancellation.signal.aborted) {
-          controller.close();
-        } else {
-          controller.error(error);
-        }
-        finish();
-      }
-    },
-    cancel() {
-      cancellation.abort();
-      finish();
-    },
-  });
-
-  return new Response(body, {
+  return new Response(Stream.toReadableStream(stream), {
     headers: {
       "cache-control": "no-store",
       "content-type": "application/x-ndjson; charset=utf-8",
     },
+  });
+}
+
+type ResourceLogStreamState =
+  | "complete"
+  | { readonly cursor: number; readonly initialized: boolean };
+
+const nextResourceLogBatch = Effect.fn("nextResourceLogBatch")(function* (
+  state: ResourceLogStreamState,
+  options: ResourceLogResponseOptions,
+): Effect.fn.Return<readonly [Uint8Array, ResourceLogStreamState] | undefined> {
+  if (state === "complete") {
+    return undefined;
+  }
+
+  let snapshot = options.source.snapshot({ after: state.cursor, limit: entriesPerBatch });
+  while (!shouldSend(snapshot, state.initialized)) {
+    yield* options.source.waitForChange(snapshot.revision);
+    snapshot = options.source.snapshot({ after: state.cursor, limit: entriesPerBatch });
+  }
+
+  const cursor = snapshot.nextCursor;
+  const batch = encoder.encode(
+    `${JSON.stringify(createBatch(snapshot, cursor, options.projectId, options.resourceName))}\n`,
+  );
+  const nextState: ResourceLogStreamState =
+    !snapshot.hasMore && snapshot.status !== "live" ? "complete" : { cursor, initialized: true };
+  return [batch, nextState];
+});
+
+function aborted(signal: AbortSignal): Effect.Effect<void> {
+  return Effect.callback<void>((resume) => {
+    const onAbort = (): void => resume(Effect.void);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
   });
 }
 

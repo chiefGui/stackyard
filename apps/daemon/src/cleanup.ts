@@ -1,15 +1,21 @@
-import { reportDiagnostics, type DiagnosticSink, type Result } from "@stackyard/diagnostics";
+import {
+  reportDiagnostics,
+  success,
+  type DiagnosticSink,
+  type Failure,
+} from "@stackyard/diagnostics";
+import { Effect } from "effect";
 
-/* oxlint-disable eslint/no-await-in-loop -- Cleanup retries are deliberately sequential and back off between attempts. */
-
-export async function superviseCleanup(
-  cleanup: () => Promise<Result<void>>,
+export const superviseCleanup = Effect.fn("superviseCleanup")(function* (
+  cleanup: Effect.Effect<void, Failure>,
   diagnostics: DiagnosticSink,
-): Promise<void> {
+) {
   let delay = 100;
   let reported = false;
   while (true) {
-    const result = await cleanup();
+    const result = yield* cleanup.pipe(
+      Effect.match({ onFailure: (value) => value, onSuccess: success }),
+    );
     if (result.success) {
       return;
     }
@@ -17,7 +23,7 @@ export async function superviseCleanup(
       reportDiagnostics(diagnostics, result.diagnostics);
       reported = true;
     }
-    await Bun.sleep(delay);
+    yield* Effect.sleep(`${delay} millis`);
     delay = Math.min(delay * 2, 2_000);
   }
-}
+});

@@ -1,30 +1,35 @@
-import { reportDiagnostics, type DiagnosticSink, type Result } from "@stackyard/diagnostics";
 import type { StopDaemonStatus } from "@stackyard/daemon/locator";
+import type { DiagnosticSink, Failure } from "@stackyard/diagnostics";
+import { Effect } from "effect";
 
-import { defineCliCommand, type CliCommand } from "./cli.ts";
+import { defineCliCommand, reportCommandFailure, type CliCommand } from "./cli.ts";
 
-export interface DaemonStopCommandDependencies {
+export interface DaemonStopCommandDependencies<R = never> {
   readonly diagnostics: DiagnosticSink;
-  stop(): Promise<Result<StopDaemonStatus>>;
+  stop(): Effect.Effect<StopDaemonStatus, Failure, R>;
   writeOutput(output: string): void;
 }
 
-export function createDaemonStopCommand(dependencies: DaemonStopCommandDependencies): CliCommand {
+export function createDaemonStopCommand<R>(
+  dependencies: DaemonStopCommandDependencies<R>,
+): CliCommand<R> {
   return defineCliCommand(
     "stop",
     "SYD2017",
     {
+      args: {},
       meta: { description: "Stop the Stackyard daemon and running projects" },
-      async run() {
-        const stopped = await dependencies.stop();
-        if (!stopped.success) {
-          reportDiagnostics(dependencies.diagnostics, stopped.diagnostics);
-          return 1;
-        }
-        dependencies.writeOutput(
-          stopped.output === "stopped" ? "Stackyard stopped.\n" : "Stackyard is not running.\n",
+      run() {
+        return reportCommandFailure(
+          Effect.gen(function* () {
+            const stopped = yield* dependencies.stop();
+            dependencies.writeOutput(
+              stopped === "stopped" ? "Stackyard stopped.\n" : "Stackyard is not running.\n",
+            );
+            return 0;
+          }),
+          dependencies.diagnostics,
         );
-        return 0;
       },
     },
     "daemon stop",

@@ -3,10 +3,12 @@ import {
   failure,
   success,
   type DiagnosticSink,
+  type Failure,
   type NonEmptyDiagnostics,
   type Result,
 } from "@stackyard/diagnostics";
 import type { ProjectSpec } from "@stackyard/protocol";
+import { Context, Effect, Exit, Layer, Queue, Scope, Semaphore } from "effect";
 
 export interface ProjectRecord {
   readonly id: string;
@@ -33,212 +35,267 @@ export interface CatalogProject {
   readonly root: string;
 }
 
-export interface ProjectStore {
-  load(): Promise<Result<readonly ProjectRecord[]>>;
-  save(projects: readonly ProjectRecord[]): Promise<Result<void>>;
-}
+export class ProjectStore extends Context.Service<
+  ProjectStore,
+  {
+    readonly load: Effect.Effect<readonly ProjectRecord[], Failure>;
+    readonly save: (projects: readonly ProjectRecord[]) => Effect.Effect<void, Failure>;
+  }
+>()("stackyard/control-plane/ProjectStore") {}
 
-export interface ProjectDefinitionObservation {
-  close(): void;
-}
+export class ProjectDefinitionLoader extends Context.Service<
+  ProjectDefinitionLoader,
+  {
+    readonly load: (root: string) => Effect.Effect<ProjectDefinitionLoad>;
+  }
+>()("stackyard/control-plane/ProjectDefinitionLoader") {}
 
-export interface ProjectDefinitionObserver {
-  observe(root: string, onChange: () => void): Result<ProjectDefinitionObservation>;
-}
+export class ProjectDefinitionObserver extends Context.Service<
+  ProjectDefinitionObserver,
+  {
+    readonly observe: (
+      root: string,
+      onChange: () => void,
+    ) => Effect.Effect<void, Failure, Scope.Scope>;
+  }
+>()("stackyard/control-plane/ProjectDefinitionObserver") {}
+
+export class ProjectRootResolver extends Context.Service<
+  ProjectRootResolver,
+  {
+    readonly canonicalize: (path: string) => Effect.Effect<string, Failure>;
+  }
+>()("stackyard/control-plane/ProjectRootResolver") {}
+
+export class ProjectIdGenerator extends Context.Service<
+  ProjectIdGenerator,
+  {
+    readonly next: Effect.Effect<string>;
+  }
+>()("stackyard/control-plane/ProjectIdGenerator") {}
 
 export interface ProjectCatalogOptions {
   readonly diagnostics: DiagnosticSink;
-  readonly observer: ProjectDefinitionObserver;
-  readonly store: ProjectStore;
   readonly evaluationConcurrency?: number;
-  readonly canonicalize: (path: string) => Promise<Result<string>>;
-  readonly createId: () => string;
-  readonly loadDefinition: (root: string) => Promise<ProjectDefinitionLoad>;
 }
 
 interface CatalogEntry extends ProjectRecord {
+  readonly changes: Queue.Queue<void>;
+  readonly refresh: Semaphore.Semaphore;
+  readonly scope: Scope.Closeable;
   definition: ProjectDefinitionState;
-  observation?: ProjectDefinitionObservation;
-  refreshAgain: boolean;
-  refreshTask?: Promise<void>;
   revision: number;
 }
 
 const defaultEvaluationConcurrency = 4;
 
-export class ProjectCatalog {
-  readonly #canonicalize: ProjectCatalogOptions["canonicalize"];
-  readonly #createId: ProjectCatalogOptions["createId"];
+export class ProjectCatalog extends Context.Service<
+  ProjectCatalog,
+  {
+    readonly add: (path: string) => Effect.Effect<CatalogProject, Failure>;
+    readonly list: Effect.Effect<readonly CatalogProject[]>;
+    readonly refreshByRoot: (root: string) => Effect.Effect<CatalogProject, Failure>;
+    readonly remove: (target: string) => Effect.Effect<CatalogProject, Failure>;
+    readonly resolve: (target: string) => Effect.Effect<CatalogProject, Failure>;
+  }
+>()("stackyard/control-plane/ProjectCatalog") {}
+
+type ProjectCatalogDependencies =
+  | ProjectDefinitionLoader
+  | ProjectDefinitionObserver
+  | ProjectIdGenerator
+  | ProjectRootResolver
+  | ProjectStore;
+
+export function makeProjectCatalogLayer(
+  options: ProjectCatalogOptions,
+): Layer.Layer<ProjectCatalog, Failure, ProjectCatalogDependencies> {
+  return Layer.effect(ProjectCatalog, makeProjectCatalog(options));
+}
+
+export const makeProjectCatalog = Effect.fn("makeProjectCatalog")(function* (
+  options: ProjectCatalogOptions,
+): Effect.fn.Return<ProjectCatalog["Service"], Failure, ProjectCatalogDependencies | Scope.Scope> {
+  const concurrency = positiveInteger(
+    options.evaluationConcurrency,
+    defaultEvaluationConcurrency,
+    "evaluationConcurrency",
+  );
+  const loader = yield* ProjectDefinitionLoader;
+  const observer = yield* ProjectDefinitionObserver;
+  const identifiers = yield* ProjectIdGenerator;
+  const roots = yield* ProjectRootResolver;
+  const store = yield* ProjectStore;
+  const evaluation = yield* Semaphore.make(concurrency);
+  const mutation = yield* Semaphore.make(1);
+  const records = yield* store.load;
+  const live = new ProjectCatalogLive(
+    options.diagnostics,
+    evaluation,
+    identifiers,
+    loader,
+    mutation,
+    observer,
+    roots,
+    store,
+  );
+  yield* live.initialize(records);
+  yield* Effect.addFinalizer(() => live.close);
+  return ProjectCatalog.of({
+    add: live.add,
+    list: live.list,
+    refreshByRoot: live.refreshByRoot,
+    remove: live.remove,
+    resolve: live.resolve,
+  });
+});
+
+class ProjectCatalogLive {
   readonly #diagnostics: DiagnosticSink;
   readonly #entries = new Map<string, CatalogEntry>();
-  readonly #evaluationConcurrency: number;
-  readonly #loadDefinition: ProjectCatalogOptions["loadDefinition"];
-  readonly #observer: ProjectDefinitionObserver;
+  readonly #evaluation: Semaphore.Semaphore;
+  readonly #identifiers: ProjectIdGenerator["Service"];
+  readonly #loader: ProjectDefinitionLoader["Service"];
+  readonly #mutation: Semaphore.Semaphore;
+  readonly #observer: ProjectDefinitionObserver["Service"];
   readonly #roots = new Map<string, CatalogEntry>();
-  readonly #store: ProjectStore;
-  readonly #waitingForEvaluation: (() => void)[] = [];
-  #activeEvaluations = 0;
-  #closed = false;
-  #mutationQueue: Promise<void> = Promise.resolve();
+  readonly #rootResolver: ProjectRootResolver["Service"];
+  readonly #store: ProjectStore["Service"];
 
-  private constructor(options: ProjectCatalogOptions) {
-    this.#canonicalize = options.canonicalize;
-    this.#createId = options.createId;
-    this.#diagnostics = options.diagnostics;
-    this.#evaluationConcurrency = options.evaluationConcurrency ?? defaultEvaluationConcurrency;
-    this.#loadDefinition = options.loadDefinition;
-    this.#observer = options.observer;
-    this.#store = options.store;
-
-    if (!Number.isSafeInteger(this.#evaluationConcurrency) || this.#evaluationConcurrency < 1) {
-      throw new TypeError("Project definition evaluation concurrency must be a positive integer.");
-    }
+  constructor(
+    diagnostics: DiagnosticSink,
+    evaluation: Semaphore.Semaphore,
+    identifiers: ProjectIdGenerator["Service"],
+    loader: ProjectDefinitionLoader["Service"],
+    mutation: Semaphore.Semaphore,
+    observer: ProjectDefinitionObserver["Service"],
+    rootResolver: ProjectRootResolver["Service"],
+    store: ProjectStore["Service"],
+  ) {
+    this.#diagnostics = diagnostics;
+    this.#evaluation = evaluation;
+    this.#identifiers = identifiers;
+    this.#loader = loader;
+    this.#mutation = mutation;
+    this.#observer = observer;
+    this.#rootResolver = rootResolver;
+    this.#store = store;
   }
 
-  static async open(options: ProjectCatalogOptions): Promise<Result<ProjectCatalog>> {
-    const stored = await options.store.load();
-    if (!stored.success) {
-      return stored;
-    }
+  readonly initialize = Effect.fn("ProjectCatalog.initialize")(
+    function* (this: ProjectCatalogLive, records: readonly ProjectRecord[]) {
+      for (const record of records) {
+        const entry = yield* this.#createEntry(record);
+        this.#entries.set(entry.id, entry);
+        this.#roots.set(entry.root, entry);
+        yield* this.#activate(entry);
+        Queue.offerUnsafe(entry.changes, undefined);
+      }
+    }.bind(this),
+  );
 
-    const catalog = new ProjectCatalog(options);
-    for (const project of stored.output) {
-      const entry: CatalogEntry = {
-        ...project,
-        definition: { kind: "loading" },
-        refreshAgain: false,
-        revision: 0,
-      };
-      catalog.#entries.set(entry.id, entry);
-      catalog.#roots.set(entry.root, entry);
-      catalog.#observe(entry);
-      void catalog.#refresh(entry).catch((error: unknown) => catalog.#reportRefreshError(error));
-    }
-    return success(catalog);
-  }
-
-  list(): readonly CatalogProject[] {
-    return Object.freeze(
+  readonly list: Effect.Effect<readonly CatalogProject[]> = Effect.sync(() =>
+    Object.freeze(
       [...this.#entries.values()]
         .map((entry) => snapshot(entry))
         .toSorted((left, right) => compareProjects(left, right)),
-    );
-  }
+    ),
+  );
 
-  async refreshByRoot(root: string): Promise<Result<CatalogProject>> {
-    const entry = this.#roots.get(root);
-    if (!entry) {
-      return failure(
-        createDiagnostic({
-          code: "SYD4100",
-          help: "Run 'stackyard add .' from this project, then retry.",
-          message: "This project has not been added to Stackyard.",
-          notes: [root],
-        }),
-      );
-    }
-    await this.#refresh(entry);
-    return success(snapshot(entry));
-  }
-
-  resolve(target: string): Result<CatalogProject> {
-    const resolved = this.#resolve(target);
-    return resolved.success ? success(snapshot(resolved.output)) : resolved;
-  }
-
-  add(path: string): Promise<Result<CatalogProject>> {
-    return this.#mutate(async () => {
-      const canonical = await this.#canonicalize(path);
-      if (!canonical.success) {
-        return canonical;
-      }
-
-      const existing = this.#roots.get(canonical.output);
-      if (existing) {
-        await this.#refresh(existing);
-        return success(snapshot(existing));
-      }
-
-      const id = this.#createId();
-      if (this.#entries.has(id)) {
-        return failure(
-          createDiagnostic({
-            code: "SYD4103",
-            help: "Retry the command to generate another project identifier.",
-            message: "The generated project identifier already belongs to another project.",
-          }),
+  readonly refreshByRoot = Effect.fn("ProjectCatalog.refreshByRoot")(
+    function* (this: ProjectCatalogLive, root: string): Effect.fn.Return<CatalogProject, Failure> {
+      const entry = this.#roots.get(root);
+      if (!entry) {
+        return yield* Effect.fail(
+          failure(
+            createDiagnostic({
+              code: "SYD4100",
+              help: "Run 'stackyard add .' from this project, then retry.",
+              message: "This project has not been added to Stackyard.",
+              notes: [root],
+            }),
+          ),
         );
       }
+      yield* this.#refresh(entry);
+      return snapshot(entry);
+    }.bind(this),
+  );
 
-      const record = Object.freeze({ id, root: canonical.output });
-      const saved = await this.#store.save([...this.#records(), record]);
-      if (!saved.success) {
-        return saved;
-      }
+  readonly resolve = Effect.fn("ProjectCatalog.resolve")((target: string) =>
+    Effect.sync(() => this.#resolve(target)).pipe(
+      Effect.flatMap((result) =>
+        result.success ? Effect.succeed(snapshot(result.output)) : Effect.fail(result),
+      ),
+    ),
+  );
 
-      const entry: CatalogEntry = {
-        ...record,
-        definition: { kind: "loading" },
-        refreshAgain: false,
-        revision: 0,
-      };
-      this.#entries.set(entry.id, entry);
-      this.#roots.set(entry.root, entry);
-      this.#observe(entry);
-      await this.#refresh(entry);
-      return success(snapshot(entry));
-    });
-  }
+  readonly add = Effect.fn("ProjectCatalog.add")((path: string) =>
+    this.#mutation.withPermits(1)(
+      Effect.gen(
+        function* (this: ProjectCatalogLive) {
+          const root = yield* this.#rootResolver.canonicalize(path);
+          const existing = this.#roots.get(root);
+          if (existing) {
+            yield* this.#refresh(existing);
+            return snapshot(existing);
+          }
 
-  remove(target: string): Promise<Result<CatalogProject>> {
-    return this.#mutate(async () => {
-      const resolved = this.#resolve(target);
-      if (!resolved.success) {
-        return resolved;
-      }
-      const entry = resolved.output;
-      const remaining = this.#records().filter(({ id }) => id !== entry.id);
-      const saved = await this.#store.save(remaining);
-      if (!saved.success) {
-        return saved;
-      }
+          const id = yield* this.#identifiers.next;
+          if (this.#entries.has(id)) {
+            return yield* Effect.fail(
+              failure(
+                createDiagnostic({
+                  code: "SYD4103",
+                  help: "Retry the command to generate another project identifier.",
+                  message: "The generated project identifier already belongs to another project.",
+                }),
+              ),
+            );
+          }
 
-      this.#forget(entry);
-      return success(snapshot(entry));
-    });
-  }
+          const record = Object.freeze({ id, root });
+          yield* this.#store.save([...this.#records(), record]);
+          const entry = yield* this.#createEntry(record);
+          this.#entries.set(entry.id, entry);
+          this.#roots.set(entry.root, entry);
+          yield* this.#activate(entry);
+          yield* this.#refresh(entry);
+          return snapshot(entry);
+        }.bind(this),
+      ),
+    ),
+  );
 
-  async close(): Promise<void> {
-    this.#closed = true;
-    await this.#mutationQueue.catch(() => undefined);
-    const refreshes: Promise<void>[] = [];
-    for (const entry of this.#entries.values()) {
-      entry.observation?.close();
-      delete entry.observation;
-      if (entry.refreshTask) {
-        refreshes.push(entry.refreshTask);
-      }
-    }
-    await Promise.allSettled(refreshes);
-  }
+  readonly remove = Effect.fn("ProjectCatalog.remove")((target: string) =>
+    this.#mutation.withPermits(1)(
+      Effect.gen(
+        function* (this: ProjectCatalogLive) {
+          const resolved = this.#resolve(target);
+          if (!resolved.success) {
+            return yield* Effect.fail(resolved);
+          }
+          const entry = resolved.output;
+          yield* this.#store.save(this.#records().filter(({ id }) => id !== entry.id));
+          this.#entries.delete(entry.id);
+          if (this.#roots.get(entry.root) === entry) {
+            this.#roots.delete(entry.root);
+          }
+          yield* Scope.close(entry.scope, Exit.void);
+          return snapshot(entry);
+        }.bind(this),
+      ),
+    ),
+  );
 
-  #mutate<T>(operation: () => Promise<Result<T>>): Promise<Result<T>> {
-    if (this.#closed) {
-      return Promise.resolve(
-        failure(
-          createDiagnostic({
-            code: "SYD4105",
-            help: "Open the project catalog again before changing projects.",
-            message: "The project catalog is closed.",
-          }),
-        ),
-      );
-    }
-
-    const result = this.#mutationQueue.then(operation, operation);
-    this.#mutationQueue = result.then(noop, noop);
-    return result;
-  }
+  readonly close: Effect.Effect<void> = Effect.gen(
+    function* (this: ProjectCatalogLive) {
+      const entries = [...this.#entries.values()];
+      yield* Effect.forEach(entries, (entry) => Scope.close(entry.scope, Exit.void), {
+        concurrency: "unbounded",
+      });
+    }.bind(this),
+  );
 
   #records(): ProjectRecord[] {
     return [...this.#entries.values()]
@@ -249,19 +306,17 @@ export class ProjectCatalog {
   #resolve(target: string): Result<CatalogEntry> {
     const byId = this.#entries.get(target);
     if (byId) {
-      return success(byId);
+      return resolvedEntry(byId);
     }
-
     const byRoot = this.#roots.get(target);
     if (byRoot) {
-      return success(byRoot);
+      return resolvedEntry(byRoot);
     }
-
     const byName = [...this.#entries.values()].filter(
       (entry) => definitionName(entry.definition) === target,
     );
     if (byName.length === 1 && byName[0]) {
-      return success(byName[0]);
+      return resolvedEntry(byName[0]);
     }
     if (byName.length > 1) {
       return failure(
@@ -273,7 +328,6 @@ export class ProjectCatalog {
         }),
       );
     }
-
     return failure(
       createDiagnostic({
         code: "SYD4100",
@@ -283,105 +337,73 @@ export class ProjectCatalog {
     );
   }
 
-  #observe(entry: CatalogEntry): void {
-    const observed = this.#observer.observe(entry.root, () => {
-      if (this.#entries.get(entry.id) === entry) {
-        void this.#refresh(entry).catch((error: unknown) => this.#reportRefreshError(error));
-      }
-    });
-    if (!observed.success) {
-      for (const diagnostic of observed.diagnostics) {
-        this.#diagnostics.report(diagnostic);
-      }
-      return;
-    }
-    entry.observation = observed.output;
-  }
+  #createEntry = Effect.fn("ProjectCatalog.createEntry")(function* (
+    record: ProjectRecord,
+  ): Effect.fn.Return<CatalogEntry> {
+    return {
+      ...record,
+      changes: yield* Queue.sliding<void>(1),
+      definition: { kind: "loading" },
+      refresh: yield* Semaphore.make(1),
+      revision: 0,
+      scope: yield* Scope.make(),
+    };
+  });
 
-  async #refresh(entry: CatalogEntry): Promise<void> {
-    if (this.#closed || this.#entries.get(entry.id) !== entry) {
-      return;
-    }
-    if (entry.refreshTask) {
-      entry.refreshAgain = true;
-      await entry.refreshTask;
-      return;
-    }
-
-    entry.refreshTask = this.#refreshLoop(entry).finally(() => {
-      delete entry.refreshTask;
-    });
-    await entry.refreshTask;
-  }
-
-  async #refreshLoop(entry: CatalogEntry): Promise<void> {
-    do {
-      entry.refreshAgain = false;
-      /* oxlint-disable-next-line eslint/no-await-in-loop -- Refreshes for one project must publish in order. */
-      const loaded = await this.#evaluate(entry.root);
-      if (this.#closed || this.#entries.get(entry.id) !== entry) {
-        return;
-      }
-
-      if (loaded.kind === "valid") {
-        const previous = lastValidDefinition(entry.definition);
-        if (!previous || !sameProjectSpec(previous, loaded.spec)) {
-          entry.revision += 1;
+  #activate = Effect.fn("ProjectCatalog.activate")(
+    function* (this: ProjectCatalogLive, entry: CatalogEntry) {
+      const observed = yield* Scope.provide(
+        this.#observer.observe(entry.root, () => {
+          Queue.offerUnsafe(entry.changes, undefined);
+        }),
+        entry.scope,
+      ).pipe(Effect.match({ onFailure: (value) => value, onSuccess: () => undefined }));
+      if (observed) {
+        for (const diagnostic of observed.diagnostics) {
+          this.#diagnostics.report(diagnostic);
         }
-        entry.definition = Object.freeze({ kind: "valid", spec: loaded.spec });
-        continue;
       }
+      yield* Effect.forkIn(
+        Effect.forever(Queue.take(entry.changes).pipe(Effect.andThen(this.#refresh(entry)))),
+        entry.scope,
+      );
+    }.bind(this),
+  );
 
-      const lastValidSpec = lastValidDefinition(entry.definition);
-      entry.definition = Object.freeze({
-        diagnostics: loaded.diagnostics,
-        kind: loaded.kind,
-        ...(lastValidSpec ? { lastValidSpec } : {}),
-      });
-    } while (entry.refreshAgain);
-  }
-
-  async #evaluate(root: string): Promise<ProjectDefinitionLoad> {
-    await this.#acquireEvaluationSlot();
-    try {
-      return await this.#loadDefinition(root);
-    } finally {
-      this.#releaseEvaluationSlot();
-    }
-  }
-
-  async #acquireEvaluationSlot(): Promise<void> {
-    if (this.#activeEvaluations < this.#evaluationConcurrency) {
-      this.#activeEvaluations += 1;
-      return;
-    }
-    await new Promise<void>((resolve) => this.#waitingForEvaluation.push(resolve));
-    this.#activeEvaluations += 1;
-  }
-
-  #releaseEvaluationSlot(): void {
-    this.#activeEvaluations -= 1;
-    this.#waitingForEvaluation.shift()?.();
-  }
-
-  #forget(entry: CatalogEntry): void {
-    entry.observation?.close();
-    this.#entries.delete(entry.id);
-    if (this.#roots.get(entry.root) === entry) {
-      this.#roots.delete(entry.root);
-    }
-  }
-
-  #reportRefreshError(error: unknown): void {
-    this.#diagnostics.report(
-      createDiagnostic({
-        code: "SYD4104",
-        help: "Retry the project change. If the problem persists, restart Stackyard.",
-        message: "A project could not be refreshed.",
-        notes: [error instanceof Error ? error.message : String(error)],
-      }),
+  #refresh(entry: CatalogEntry): Effect.Effect<void> {
+    return entry.refresh.withPermits(1)(
+      this.#evaluation
+        .withPermits(1)(this.#loader.load(entry.root))
+        .pipe(
+          Effect.tap((loaded) =>
+            Effect.sync(() => {
+              if (this.#entries.get(entry.id) !== entry) {
+                return;
+              }
+              if (loaded.kind === "valid") {
+                const previous = lastValidDefinition(entry.definition);
+                if (!previous || !sameProjectSpec(previous, loaded.spec)) {
+                  entry.revision += 1;
+                }
+                entry.definition = Object.freeze({ kind: "valid", spec: loaded.spec });
+                return;
+              }
+              const lastValidSpec = lastValidDefinition(entry.definition);
+              entry.definition = Object.freeze({
+                diagnostics: loaded.diagnostics,
+                kind: loaded.kind,
+                ...(lastValidSpec ? { lastValidSpec } : {}),
+              });
+            }),
+          ),
+          Effect.asVoid,
+        ),
     );
   }
+}
+
+function resolvedEntry(entry: CatalogEntry) {
+  return success(entry);
 }
 
 function snapshot(entry: CatalogEntry): CatalogProject {
@@ -439,4 +461,10 @@ function sortJson(value: unknown): unknown {
   );
 }
 
-function noop(): void {}
+function positiveInteger(value: number | undefined, fallback: number, name: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 1) {
+    throw new TypeError(`Project definition ${name} must be a positive integer.`);
+  }
+  return resolved;
+}

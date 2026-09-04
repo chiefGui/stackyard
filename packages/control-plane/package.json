@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@stackyard/diagnostics": "workspace:*",
-    "@stackyard/protocol": "workspace:*"
+    "@stackyard/protocol": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:"

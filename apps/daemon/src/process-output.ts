@@ -1,17 +1,11 @@
-import {
-  createDiagnostic,
-  describeError,
-  failure,
-  success,
-  type Result,
-} from "@stackyard/diagnostics";
+import { createDiagnostic, describeError, failure, type Failure } from "@stackyard/diagnostics";
 import type { ProcessLogLine, ProcessLogSink } from "@stackyard/control-plane";
+import { Clock, Effect, Result as EffectResult, Stream } from "effect";
 
 export const maxProcessLogLineBytes = 256 * 1024;
 
 export interface ProcessLogCaptureOptions {
   readonly maxLineBytes?: number;
-  readonly signal?: AbortSignal;
 }
 
 interface FramedLine {
@@ -27,77 +21,86 @@ interface DecodedBytes {
 const decoder = new TextDecoder();
 const publishBatchSize = 256;
 
-export async function captureProcessLogs(
+export const captureProcessLogs = Effect.fn("captureProcessLogs")(function* (
   stdout: ReadableStream<Uint8Array>,
   stderr: ReadableStream<Uint8Array>,
   sink: ProcessLogSink,
   options: ProcessLogCaptureOptions = {},
-): Promise<Result<void>> {
+): Effect.fn.Return<void, Failure> {
+  const clock = yield* Clock.Clock;
   const maxLineBytes = options.maxLineBytes ?? maxProcessLogLineBytes;
-  const captured = await Promise.allSettled([
-    captureStream(stdout, "stdout", sink, maxLineBytes, options.signal),
-    captureStream(stderr, "stderr", sink, maxLineBytes, options.signal),
-  ]);
-  const errors = captured.flatMap((result) =>
-    result.status === "rejected" ? [describeError(result.reason)] : [],
-  );
-  return errors.length === 0
-    ? success(undefined)
-    : failure(
-        createDiagnostic({
-          code: "SYD4008",
-          help: "Restart the service. If the problem persists, check its output streams.",
-          message: "Service output could not be captured.",
-          notes: errors,
-        }),
+  const capture = (
+    stream: ReadableStream<Uint8Array>,
+    name: "stderr" | "stdout",
+  ): Effect.Effect<void, string> => captureStream(stream, name, sink, maxLineBytes, clock);
+  return yield* Effect.all([capture(stdout, "stdout"), capture(stderr, "stderr")], {
+    concurrency: "unbounded",
+    mode: "result",
+  }).pipe(
+    Effect.flatMap((captured) => {
+      const errors = captured.flatMap((result) =>
+        EffectResult.isFailure(result) ? [result.failure] : [],
       );
-}
+      return errors.length === 0
+        ? Effect.void
+        : Effect.fail(
+            failure(
+              createDiagnostic({
+                code: "SYD4008",
+                help: "Restart the service. If the problem persists, check its output streams.",
+                message: "Service output could not be captured.",
+                notes: errors,
+              }),
+            ),
+          );
+    }),
+  );
+});
 
-async function captureStream(
+function captureStream(
   stream: ReadableStream<Uint8Array>,
   name: "stderr" | "stdout",
   sink: ProcessLogSink,
   maxLineBytes: number,
-  signal: AbortSignal | undefined,
-): Promise<void> {
-  const reader = stream.getReader();
+  clock: Clock.Clock,
+): Effect.Effect<void, string> {
   const framer = new BoundedLineFramer(maxLineBytes);
-  const cancel = (): void => {
-    void reader.cancel().catch(() => undefined);
-  };
-  if (signal?.aborted) {
-    cancel();
-  } else {
-    signal?.addEventListener("abort", cancel, { once: true });
-  }
-  try {
-    while (true) {
-      /* oxlint-disable-next-line eslint/no-await-in-loop -- A single stream must be drained in order. */
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
+  const finish = Effect.try({
+    try: () => {
+      const finalLine = framer.finish();
+      if (finalLine) {
+        publish([finalLine], name, sink, clock);
       }
-      framer.push(chunk.value, (lines) => publish(lines, name, sink));
-    }
-    const finalLine = framer.finish();
-    if (finalLine) {
-      publish([finalLine], name, sink);
-    }
-  } finally {
-    signal?.removeEventListener("abort", cancel);
-    reader.releaseLock();
-  }
+    },
+    catch: describeError,
+  });
+  return Stream.fromReadableStream({
+    evaluate: () => stream,
+    onError: describeError,
+  }).pipe(
+    Stream.runForEach((chunk) =>
+      Effect.try({
+        try: () => {
+          framer.push(chunk, (lines) => publish(lines, name, sink, clock));
+        },
+        catch: describeError,
+      }),
+    ),
+    Effect.tap(() => finish),
+    Effect.onInterrupt(() => finish),
+  );
 }
 
 function publish(
   lines: readonly FramedLine[],
   stream: "stderr" | "stdout",
   sink: ProcessLogSink,
+  clock: Clock.Clock,
 ): void {
   if (lines.length === 0) {
     return;
   }
-  const observedAt = Date.now();
+  const observedAt = clock.currentTimeMillisUnsafe();
   sink.write(
     lines.map((line): ProcessLogLine =>
       Object.freeze({

@@ -1,4 +1,5 @@
 import { success, type Result } from "@stackyard/diagnostics";
+import { Effect } from "effect";
 
 export type ResourceLogStream = "stderr" | "stdout" | "system";
 export type ResourceLogStatus = "complete" | "failed" | "live" | "removed";
@@ -33,7 +34,7 @@ export interface ResourceLogSnapshot {
 
 export interface ResourceLogSource {
   snapshot(options?: ResourceLogReadOptions): ResourceLogSnapshot;
-  waitForChange(revision: number, signal?: ResourceLogWaitSignal): Promise<void>;
+  waitForChange(revision: number): Effect.Effect<void>;
 }
 
 export interface ResourceLogSink {
@@ -44,16 +45,6 @@ export interface ResourceLogFeed extends ResourceLogSink, ResourceLogSource {
   complete(result?: Result<void>): void;
   hasObservedEntries(): boolean;
   remove(): void;
-}
-
-export interface ResourceLogWaitSignal {
-  readonly aborted: boolean;
-  addEventListener(
-    type: "abort",
-    listener: () => void,
-    options?: { readonly once?: boolean },
-  ): void;
-  removeEventListener(type: "abort", listener: () => void): void;
 }
 
 export interface ResourceLogStoreOptions {
@@ -76,12 +67,6 @@ interface GlobalEntry {
 interface ResourceLogAccounting {
   add(feed: BoundedResourceLogFeed, stored: StoredEntry): void;
   release(stored: StoredEntry): void;
-}
-
-interface Waiter {
-  readonly abort: (() => void) | undefined;
-  readonly resolve: () => void;
-  readonly signal: ResourceLogWaitSignal | undefined;
 }
 
 const defaultMaxBytesPerResource = 4 * 1024 * 1024;
@@ -184,7 +169,7 @@ class BoundedResourceLogFeed implements ResourceLogFeed {
   readonly #maxBytes: number;
   readonly #maxEntries: number;
   readonly #accounting: ResourceLogAccounting;
-  readonly #waiters = new Set<Waiter>();
+  readonly #waiters = new Set<() => void>();
   #bytes = 0;
   #completion: Result<void> | undefined;
   #head = 0;
@@ -296,31 +281,29 @@ class BoundedResourceLogFeed implements ResourceLogFeed {
     });
   }
 
-  waitForChange(revision: number, signal?: ResourceLogWaitSignal): Promise<void> {
-    if (revision !== this.#revision) {
-      return Promise.resolve();
-    }
-    if (signal?.aborted) {
-      return Promise.reject(abortError());
-    }
-    return new Promise<void>((resolve, reject) => {
-      const waiter: Waiter = {
-        abort: signal
-          ? () => {
-              this.#waiters.delete(waiter);
-              reject(abortError());
-            }
-          : undefined,
-        resolve,
-        signal,
+  waitForChange(revision: number): Effect.Effect<void> {
+    return Effect.callback<void>((resume) => {
+      if (revision !== this.#revision) {
+        resume(Effect.void);
+        return Effect.void;
+      }
+      let active = true;
+      const waiter = (): void => {
+        if (!active) {
+          return;
+        }
+        active = false;
+        this.#waiters.delete(waiter);
+        resume(Effect.void);
       };
       this.#waiters.add(waiter);
-      if (waiter.abort) {
-        signal?.addEventListener("abort", waiter.abort, { once: true });
-      }
       if (revision !== this.#revision) {
-        this.#settle(waiter);
+        waiter();
       }
+      return Effect.sync(() => {
+        active = false;
+        this.#waiters.delete(waiter);
+      });
     });
   }
 
@@ -339,7 +322,7 @@ class BoundedResourceLogFeed implements ResourceLogFeed {
   #changed(): void {
     this.#revision += 1;
     for (const waiter of this.#waiters) {
-      this.#settle(waiter);
+      waiter();
     }
   }
 
@@ -367,16 +350,6 @@ class BoundedResourceLogFeed implements ResourceLogFeed {
     }
     this.#entries = entries;
     this.#head = 0;
-  }
-
-  #settle(waiter: Waiter): void {
-    if (!this.#waiters.delete(waiter)) {
-      return;
-    }
-    if (waiter.abort) {
-      waiter.signal?.removeEventListener("abort", waiter.abort);
-    }
-    waiter.resolve();
   }
 }
 
@@ -427,10 +400,4 @@ function nonNegativeInteger(value: number | undefined, fallback: number, name: s
     throw new RangeError(`${name} must be a non-negative safe integer.`);
   }
   return resolved;
-}
-
-function abortError(): Error {
-  const error = new Error("The resource log wait was aborted.");
-  error.name = "AbortError";
-  return error;
 }

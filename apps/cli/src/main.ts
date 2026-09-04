@@ -13,24 +13,41 @@ import {
 import { runManagedDaemon } from "@stackyard/daemon/managed";
 import { formatDiagnostic, type DiagnosticSink } from "@stackyard/diagnostics";
 import {
-  loadProject as loadProjectDefinition,
+  CanonicalPath,
+  loadProjectEffect,
+  makeBunProjectEvaluatorLayer,
+  NodeCanonicalPathLayer,
+  type ProjectEvaluator,
   projectEvaluatorCommand,
   runProjectEvaluator,
 } from "@stackyard/project-loader";
+import { BunHttpClient, BunRuntime, BunServices } from "@effect/platform-bun";
+import { Crypto, Effect, FileSystem, Path } from "effect";
+import { HttpClient } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import packageManifest from "../package.json" with { type: "json" };
-import { runCli } from "./cli.ts";
+import { runCli, type CliEntry } from "./cli.ts";
 import { createAddCommand } from "./add.ts";
 import { createDaemonStatusCommand } from "./daemon-status.ts";
 import { createDaemonStopCommand } from "./daemon-stop.ts";
 import { createDaemonCommand } from "./daemon.ts";
 import { createInspectCommand } from "./inspect.ts";
 import { createListCommand } from "./list.ts";
-import { DaemonProjectClient } from "./project-client.ts";
+import { makeDaemonProjectClientLayer, ProjectClient } from "./project-client.ts";
 import { createRemoveCommand } from "./remove.ts";
 import { createRunCommand } from "./run.ts";
 import { createStartCommand } from "./start.ts";
 import { createStopCommand } from "./stop.ts";
+
+type DaemonCommandServices =
+  | CanonicalPath
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path;
+type PublicCliServices = DaemonCommandServices | ProjectClient | ProjectEvaluator;
 
 const cliEntrypoint = fileURLToPath(import.meta.url);
 const cliArguments = Bun.argv.slice(2);
@@ -41,9 +58,20 @@ if (command === internalDaemonCommand) {
 }
 const diagnostics = createDiagnosticSink(diagnosticsPath);
 
-process.exitCode = await main();
+BunRuntime.runMain(
+  main().pipe(
+    Effect.provide(NodeCanonicalPathLayer),
+    Effect.provide(BunServices.layer),
+    Effect.tap((exitCode) =>
+      Effect.sync(() => {
+        process.exitCode = exitCode;
+      }),
+    ),
+    Effect.asVoid,
+  ),
+);
 
-function main(): Promise<number> {
+function main(): Effect.Effect<number, never, BunServices.BunServices | CanonicalPath> {
   if (command === internalDaemonCommand) {
     return runDaemon();
   }
@@ -53,7 +81,11 @@ function main(): Promise<number> {
   return runPublicCli();
 }
 
-function runDaemon(): Promise<number> {
+function runDaemon(): Effect.Effect<
+  number,
+  never,
+  CanonicalPath | Crypto.Crypto | FileSystem.FileSystem | Path.Path
+> {
   const configuredDashboardDirectory = Bun.env.STACKYARD_DASHBOARD_WEB_DIR;
   const dashboardWebDirectory =
     configuredDashboardDirectory ?? resolveDashboardWebDirectory(cliEntrypoint);
@@ -64,13 +96,12 @@ function runDaemon(): Promise<number> {
   });
 }
 
-function runPublicCli(): Promise<number> {
+function runPublicCli(): Effect.Effect<number, never, BunServices.BunServices | CanonicalPath> {
   const dashboardWebDirectory = resolveDashboardWebDirectory(cliEntrypoint);
   const daemonOptions = { daemonEntrypoint: cliEntrypoint, dashboardWebDirectory };
-  const projectClient = new DaemonProjectClient(daemonOptions);
-  const startCommand = createStartCommand({
+  const startCommand = createStartCommand<DaemonCommandServices>({
     diagnostics,
-    find: () => findDaemon(),
+    find: findDaemon,
     runForeground: (onStarted) =>
       runManagedDaemon({
         dashboardWebDirectory,
@@ -86,63 +117,61 @@ function runPublicCli(): Promise<number> {
     createDaemonStatusCommand({ diagnostics, find: () => findDaemon(), writeOutput }),
     createDaemonStopCommand({ diagnostics, stop: () => stopDaemon(), writeOutput }),
   ]);
+  const commands: readonly CliEntry<PublicCliServices>[] = [
+    createAddCommand({
+      currentDirectory: process.cwd(),
+      diagnostics,
+      writeOutput,
+    }),
+    daemonCommand,
+    createInspectCommand({
+      diagnostics,
+      loadProject,
+      writeError(output) {
+        process.stderr.write(output);
+      },
+      writeOutput,
+    }),
+    createListCommand({
+      diagnostics,
+      writeOutput,
+    }),
+    createRemoveCommand({
+      currentDirectory: process.cwd(),
+      diagnostics,
+      writeOutput,
+    }),
+    createRunCommand({
+      currentDirectory: process.cwd(),
+      daemonEntrypoint: cliEntrypoint,
+      dashboardWebDirectory,
+      diagnostics,
+      writeOutput,
+    }),
+    createStopCommand({
+      currentDirectory: process.cwd(),
+      diagnostics,
+      writeOutput,
+    }),
+  ];
   return runCli(cliArguments, {
-    commands: [
-      createAddCommand({
-        client: projectClient,
-        currentDirectory: process.cwd(),
-        diagnostics,
-        writeOutput,
-      }),
-      daemonCommand,
-      createInspectCommand({
-        diagnostics,
-        loadProject,
-        writeError(output) {
-          process.stderr.write(output);
-        },
-        writeOutput,
-      }),
-      createListCommand({
-        client: projectClient,
-        diagnostics,
-        writeOutput,
-      }),
-      createRemoveCommand({
-        client: projectClient,
-        currentDirectory: process.cwd(),
-        diagnostics,
-        writeOutput,
-      }),
-      createRunCommand({
-        currentDirectory: process.cwd(),
-        daemonEntrypoint: cliEntrypoint,
-        dashboardWebDirectory,
-        diagnostics,
-        writeOutput,
-      }),
-      createStopCommand({
-        client: projectClient,
-        currentDirectory: process.cwd(),
-        diagnostics,
-        writeOutput,
-      }),
-    ],
+    commands,
     diagnostics,
     version: packageManifest.version,
     writeOutput,
-  });
+  }).pipe(
+    Effect.provide(makeDaemonProjectClientLayer(daemonOptions)),
+    Effect.provide(BunHttpClient.layer),
+    Effect.provide(makeBunProjectEvaluatorLayer(cliEntrypoint)),
+  );
 }
 
 function loadProject(path: string | undefined) {
-  const options = {
-    currentDirectory: process.cwd(),
-    evaluatorEntrypoint: cliEntrypoint,
-  };
+  const options = { currentDirectory: process.cwd() };
   if (path) {
-    return loadProjectDefinition({ ...options, path });
+    return loadProjectEffect({ ...options, path });
   }
-  return loadProjectDefinition(options);
+  return loadProjectEffect(options);
 }
 
 function resolveDashboardWebDirectory(entrypoint: string): string {
