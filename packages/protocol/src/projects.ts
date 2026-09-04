@@ -10,7 +10,6 @@ import {
 import { deepFreeze } from "./freeze.ts";
 import { isLoopbackHttpUrl } from "./loopback-url.ts";
 import { protocolVersion } from "./version.ts";
-import { isServiceStartup, type ServiceStartup } from "./project.ts";
 
 export type ProjectState =
   | "loading"
@@ -31,8 +30,8 @@ export interface Service {
   readonly endpoints: readonly ServiceEndpoint[];
   readonly exitCode?: number | undefined;
   readonly name: string;
+  readonly startWithProject: boolean;
   readonly state: ServiceState;
-  readonly startup: ServiceStartup;
 }
 
 export interface Project {
@@ -134,10 +133,10 @@ function readProject(input: unknown): Project | undefined {
 function readService(input: unknown): Service | undefined {
   if (
     !isPlainObject(input) ||
-    !hasExactKeys(input, ["endpoints", "name", "startup", "state"], ["exitCode"]) ||
+    !hasExactKeys(input, ["endpoints", "name", "startWithProject", "state"], ["exitCode"]) ||
     !Array.isArray(input.endpoints) ||
     !isNonEmptyString(input.name) ||
-    !isServiceStartup(input.startup) ||
+    typeof input.startWithProject !== "boolean" ||
     !isServiceState(input.state) ||
     (input.exitCode !== undefined &&
       (typeof input.exitCode !== "number" || !Number.isSafeInteger(input.exitCode)))
@@ -165,8 +164,8 @@ function readService(input: unknown): Service | undefined {
     endpoints,
     ...(typeof input.exitCode === "number" ? { exitCode: input.exitCode } : {}),
     name: input.name,
+    startWithProject: input.startWithProject,
     state: input.state,
-    startup: input.startup,
   };
 }
 

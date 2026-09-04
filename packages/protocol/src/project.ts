@@ -17,9 +17,6 @@ const version = 1;
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ServiceStartupSchema: z.ZodType<ServiceStartup> = z.enum(["automatic", "manual"], {
-  error: "Service startup must be 'automatic' or 'manual'.",
-});
 
 type ProjectIssueContext = "record-key" | "value";
 
@@ -40,8 +37,6 @@ export interface EndpointValueExpression {
 
 export type EnvironmentValueSpec = string | EndpointValueExpression;
 
-export type ServiceStartup = "automatic" | "manual";
-
 export interface ProcessResourceSpec {
   readonly command: {
     readonly args: readonly string[];
@@ -51,7 +46,7 @@ export interface ProcessResourceSpec {
   readonly endpoints: Readonly<Record<string, EndpointSpec>>;
   readonly env: Readonly<Record<string, EnvironmentValueSpec>>;
   readonly kind: "process";
-  readonly startup: ServiceStartup;
+  readonly startWithProject: boolean;
 }
 
 export interface ProjectSpec {
@@ -135,7 +130,9 @@ const ProcessResourceSchema = z.strictObject({
   endpoints: z.record(ResourceNameSchema, HttpEndpointSchema),
   env: z.record(EnvironmentNameSchema, EnvironmentValueSchema),
   kind: z.literal("process"),
-  startup: ServiceStartupSchema,
+  startWithProject: z.boolean({
+    error: "Service property 'startWithProject' must be true or false.",
+  }),
 });
 
 const ResourcesSchema = z
@@ -178,10 +175,6 @@ export function parseProjectSpec(input: unknown): Result<ProjectSpec> {
   }
 
   return parseFailure;
-}
-
-export function isServiceStartup(input: unknown): input is ServiceStartup {
-  return ServiceStartupSchema.safeParse(input).success;
 }
 
 function validateProject(project: ProjectSpec): Failure | undefined {
@@ -264,7 +257,7 @@ function validateStartupDependencies(project: ProjectSpec, diagnostics: Diagnost
   for (const [resourceName, resource] of Object.entries(project.resources).toSorted(
     ([left], [right]) => left.localeCompare(right, "en"),
   )) {
-    if (resource.startup !== "automatic") {
+    if (!resource.startWithProject) {
       continue;
     }
     for (const [name, value] of Object.entries(resource.env).toSorted(([left], [right]) =>
@@ -274,14 +267,14 @@ function validateStartupDependencies(project: ProjectSpec, diagnostics: Diagnost
         continue;
       }
       const dependency = project.resources[value.resource];
-      if (dependency?.startup !== "manual") {
+      if (dependency?.startWithProject !== false) {
         continue;
       }
       diagnostics.report(
         createDiagnostic({
           code: "SYD1014",
-          help: `Set '${value.resource}' to automatic startup, or remove this endpoint reference.`,
-          message: `Automatically started service '${resourceName}' depends on manual service '${value.resource}'.`,
+          help: `Let '${value.resource}' start with the project, or remove this endpoint reference.`,
+          message: `Service '${resourceName}' starts with the project but depends on service '${value.resource}', which does not.`,
           path: ["resources", resourceName, "env", name],
         }),
       );
@@ -434,10 +427,10 @@ function classifyProjectIssue(
     };
   }
 
-  if (field === "startup") {
+  if (field === "startWithProject") {
     return {
       code: "SYD1013",
-      help: "Use 'automatic' to include the service in stackyard run, or 'manual' to leave it stopped.",
+      help: "Use true to start the service with its project, or false to leave it stopped.",
     };
   }
 

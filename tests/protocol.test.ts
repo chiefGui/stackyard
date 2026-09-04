@@ -17,7 +17,7 @@ const validSpec = {
       },
       env: {},
       kind: "process",
-      startup: "automatic",
+      startWithProject: true,
     },
   },
   schemaVersion: 1,
@@ -126,28 +126,28 @@ describe("ProjectSpec", () => {
     expect(diagnostics[0]?.help).toContain("apps/api");
   });
 
-  test("rejects unsupported startup policies", () => {
+  test("rejects invalid project-start behavior", () => {
     const diagnostics = parseDiagnostics({
       ...validSpec,
       resources: {
-        api: { ...validSpec.resources.api, startup: "sometimes" },
+        api: { ...validSpec.resources.api, startWithProject: "sometimes" },
       },
     });
 
     expect(diagnostics).toMatchObject([
       {
         code: "SYD1013",
-        message: "Service startup must be 'automatic' or 'manual'.",
-        path: ["resources", "api", "startup"],
+        message: "Service property 'startWithProject' must be true or false.",
+        path: ["resources", "api", "startWithProject"],
       },
     ]);
   });
 
-  test("rejects automatic services that depend on manual services", () => {
+  test("rejects project-start services that depend on opted-out services", () => {
     const diagnostics = parseDiagnostics({
       ...validSpec,
       resources: {
-        api: { ...validSpec.resources.api, startup: "manual" },
+        api: { ...validSpec.resources.api, startWithProject: false },
         web: {
           command: { args: [], executable: "bun" },
           cwd: "apps/web",
@@ -156,7 +156,7 @@ describe("ProjectSpec", () => {
             API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
           },
           kind: "process",
-          startup: "automatic",
+          startWithProject: true,
         },
       },
     });
@@ -164,7 +164,8 @@ describe("ProjectSpec", () => {
     expect(diagnostics).toMatchObject([
       {
         code: "SYD1014",
-        message: "Automatically started service 'web' depends on manual service 'api'.",
+        message:
+          "Service 'web' starts with the project but depends on service 'api', which does not.",
         path: ["resources", "web", "env", "API_URL"],
       },
     ]);

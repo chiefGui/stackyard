@@ -39,26 +39,26 @@ describe("project definitions", () => {
         kind: "endpoint-url",
         resource: "api",
       });
-      expect(result.output.resources.api?.startup).toBe("automatic");
+      expect(result.output.resources.api?.startWithProject).toBeTrue();
       expect(Object.isFrozen(result.output)).toBeTrue();
       expect(Object.isFrozen(result.output.resources.web?.env)).toBeTrue();
     }
   });
 
-  test("compiles manual startup explicitly", () => {
+  test("lets a service opt out of starting with its project", () => {
     const definition = defineProject({
       name: "example",
       resources: {
         worker: service({
           command: ["bun", "worker.ts"],
-          startup: "manual",
+          startWithProject: false,
         }),
       },
     });
 
     const result = readProjectDefinition(definition);
     expect(result).toMatchObject({
-      output: { resources: { worker: { startup: "manual" } } },
+      output: { resources: { worker: { startWithProject: false } } },
       success: true,
     });
   });
@@ -84,11 +84,11 @@ describe("project definitions", () => {
     );
   });
 
-  test("rejects automatic services that depend on manual services", () => {
+  test("rejects project-start services that depend on opted-out services", () => {
     const api = service({
       command: ["bun", "api.ts"],
       endpoints: { http: endpoint.http({ env: "PORT" }) },
-      startup: "manual",
+      startWithProject: false,
     });
 
     expectProjectError(

@@ -302,14 +302,14 @@ class ProjectManagerLive {
                 ),
               );
             }
-            const services = automaticServices(input.spec);
+            const services = servicesStartingWithProject(input.spec);
             if (services.length === 0) {
               return yield* Effect.fail(
                 failure(
                   createDiagnostic({
                     code: "SYD4009",
-                    help: "Set startup to 'automatic' on at least one service, then run the project again.",
-                    message: `Project '${input.spec.name}' has no services configured to start automatically.`,
+                    help: "Set 'startWithProject' to true for at least one service, then run the project again.",
+                    message: `No services are configured to start with project '${input.spec.name}'.`,
                   }),
                 ),
               );
@@ -378,8 +378,8 @@ class ProjectManagerLive {
             ),
             ...(resource.exitCode === undefined ? {} : { exitCode: resource.exitCode }),
             name: resource.name,
+            startWithProject: resource.spec.startWithProject,
             state: resource.state,
-            startup: resource.spec.startup,
           }),
         ),
       ),
@@ -941,11 +941,11 @@ const createProject = Effect.fn("createProject")(function* (
   };
 });
 
-function automaticServices(
+function servicesStartingWithProject(
   spec: ProjectSpec,
 ): readonly (readonly [name: string, spec: ProcessResourceSpec])[] {
   return Object.entries(spec.resources)
-    .filter(([, resource]) => resource.startup === "automatic")
+    .filter(([, resource]) => resource.startWithProject)
     .toSorted(([left], [right]) => compareNames(left, right));
 }
 

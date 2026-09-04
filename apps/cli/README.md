@@ -51,10 +51,10 @@ are loaded again whenever the machine-global daemon starts. The dashboard and `s
 show every project, including projects whose services are stopped or whose definitions need
 attention.
 
-`stackyard run` starts the services from Stackyard's current project definition, starts the daemon
-when needed, and stays attached until the project stops. Pass a project directory to run another
-project, and add it to Stackyard before running it. Services start automatically by default. Set
-`startup: "manual"` in a service definition when `stackyard run` should leave it stopped.
+`stackyard run` starts a project, starts the daemon when needed, and stays attached until the
+project stops. Pass a project directory to run another project, and add it to Stackyard before
+running it. Services start with their project by default. Set `startWithProject: false` in a service
+definition when `stackyard run` should leave it stopped.
 
 `stackyard stop` stops the project containing the current directory. It also accepts a project
 name, identifier, or directory. It neither starts nor stops the daemon. `stackyard remove` forgets

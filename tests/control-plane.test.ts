@@ -97,30 +97,30 @@ describe("project manager", () => {
     });
   });
 
-  test("starts only services configured for automatic startup", async () => {
+  test("starts only services configured to start with the project", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses();
     const manager = await createManager(ports, processes);
 
     const started = await expectStarted(
-      startProject(manager, "/project", projectSpecWithManualWeb()),
+      startProject(manager, "/project", projectSpecWithWebOptedOut()),
     );
 
     expect(processes.starts.map(({ executable }) => executable)).toEqual(["api-command"]);
     expect(ports.preferredPorts).toEqual([4100]);
     expect(
       (await Effect.runPromise(manager.listActiveProjects)).projects[0]?.services,
-    ).toMatchObject([{ name: "api", startup: "automatic", state: "running" }]);
+    ).toMatchObject([{ name: "api", startWithProject: true, state: "running" }]);
     await Effect.runPromise(started.stop);
   });
 
-  test("explains when a project has no automatically started services", async () => {
+  test("explains when no services start with the project", async () => {
     const ports = new FakePorts();
     const processes = new FakeProcesses();
     const manager = await createManager(ports, processes);
 
     const started = await outcome(
-      startProject(manager, "/project", projectSpecWithOnlyManualServices()),
+      startProject(manager, "/project", projectSpecWithNoServicesStarting()),
     );
 
     expect(started).toMatchObject({
@@ -363,7 +363,7 @@ describe("project catalog and orchestration", () => {
 
   test("keeps one durable project while definition and runtime state change", async () => {
     const state = createCatalogState();
-    state.definition = { kind: "valid", spec: projectSpecWithManualWeb() };
+    state.definition = { kind: "valid", spec: projectSpecWithWebOptedOut() };
     const ports = new FakePorts();
     const processes = new FakeProcesses();
     const runtime = createControlPlaneRuntime(state, ports, processes);
@@ -382,8 +382,8 @@ describe("project catalog and orchestration", () => {
     expect(added).toMatchObject({
       id: "project-one",
       services: [
-        { name: "api", startup: "automatic", state: "stopped" },
-        { name: "web", startup: "manual", state: "stopped" },
+        { name: "api", startWithProject: true, state: "stopped" },
+        { name: "web", startWithProject: false, state: "stopped" },
       ],
       state: "stopped",
     });
@@ -398,8 +398,8 @@ describe("project catalog and orchestration", () => {
     expect((await Effect.runPromise(projects.list))[0]).toMatchObject({
       id: "project-one",
       services: [
-        { name: "api", startup: "automatic", state: "running" },
-        { name: "web", startup: "manual", state: "stopped" },
+        { name: "api", startWithProject: true, state: "running" },
+        { name: "web", startWithProject: false, state: "stopped" },
       ],
       state: "running",
     });
@@ -412,9 +412,9 @@ describe("project catalog and orchestration", () => {
       id: "project-one",
       restartRequired: true,
       services: [
-        { name: "api", startup: "automatic", state: "running" },
-        { name: "web", startup: "automatic", state: "stopped" },
-        { name: "worker", startup: "automatic", state: "stopped" },
+        { name: "api", startWithProject: true, state: "running" },
+        { name: "web", startWithProject: true, state: "stopped" },
+        { name: "worker", startWithProject: true, state: "stopped" },
       ],
     });
 
@@ -628,7 +628,7 @@ function projectSpec(): ProjectSpec {
         },
         env: { PATH: "new" },
         kind: "process",
-        startup: "automatic",
+        startWithProject: true,
       },
       web: {
         command: { args: [], executable: "web-command" },
@@ -642,7 +642,7 @@ function projectSpec(): ProjectSpec {
           API_URL: { endpoint: "http", kind: "endpoint-url", resource: "api" },
         },
         kind: "process",
-        startup: "automatic",
+        startWithProject: true,
       },
     },
   });
@@ -664,7 +664,7 @@ function projectSpecWithWorker(): ProjectSpec {
         endpoints: {},
         env: {},
         kind: "process",
-        startup: "automatic",
+        startWithProject: true,
       },
     },
   });
@@ -674,7 +674,7 @@ function projectSpecWithWorker(): ProjectSpec {
   return result.output;
 }
 
-function projectSpecWithManualWeb(): ProjectSpec {
+function projectSpecWithWebOptedOut(): ProjectSpec {
   const current = projectSpec();
   const web = current.resources.web;
   if (!web) {
@@ -684,7 +684,7 @@ function projectSpecWithManualWeb(): ProjectSpec {
     name: current.name,
     resources: {
       ...current.resources,
-      web: { ...web, startup: "manual" },
+      web: { ...web, startWithProject: false },
     },
   });
   if (!result.success) {
@@ -693,14 +693,14 @@ function projectSpecWithManualWeb(): ProjectSpec {
   return result.output;
 }
 
-function projectSpecWithOnlyManualServices(): ProjectSpec {
+function projectSpecWithNoServicesStarting(): ProjectSpec {
   const current = projectSpec();
   const result = createProjectSpec({
     name: current.name,
     resources: Object.fromEntries(
       Object.entries(current.resources).map(([name, resource]) => [
         name,
-        { ...resource, startup: "manual" },
+        { ...resource, startWithProject: false },
       ]),
     ),
   });

@@ -4,7 +4,6 @@ export type {
   EnvironmentValueSpec,
   ProcessResourceSpec,
   ProjectSpec,
-  ServiceStartup,
 } from "./project.ts";
 export { createProjectSpec, parseProjectSpec } from "./project.ts";
 export { environmentKey } from "./environment.ts";

@@ -97,10 +97,14 @@ test("daemon and project lifecycles stay explicit and idempotent", async () => {
       }
     });
     expect(
-      runningProject.services.map(({ name, startup, state }) => ({ name, startup, state })),
+      runningProject.services.map(({ name, startWithProject, state }) => ({
+        name,
+        startWithProject,
+        state,
+      })),
     ).toEqual([
-      { name: "api", startup: "automatic", state: "running" },
-      { name: "worker", startup: "manual", state: "stopped" },
+      { name: "api", startWithProject: true, state: "running" },
+      { name: "worker", startWithProject: false, state: "stopped" },
     ]);
 
     const stopped = await runCli(["stop", projectRoot], temporaryRoot, environment);

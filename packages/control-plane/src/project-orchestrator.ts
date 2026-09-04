@@ -159,14 +159,20 @@ function mergeServices(
       .toSorted((left, right) => left.localeCompare(right, "en"))
       .map((name) => {
         const active = runtimeServices.get(name);
-        const startup = definedServices?.[name]?.startup ?? active?.startup;
-        if (!startup) {
-          throw new Error("A service is missing its startup policy.");
+        const startWithProject =
+          definedServices?.[name]?.startWithProject ?? active?.startWithProject;
+        if (startWithProject === undefined) {
+          throw new Error("A service is missing its project startup policy.");
         }
         return Object.freeze(
           active
-            ? { ...active, startup }
-            : { endpoints: Object.freeze([]), name, startup, state: "stopped" as const },
+            ? { ...active, startWithProject }
+            : {
+                endpoints: Object.freeze([]),
+                name,
+                startWithProject,
+                state: "stopped" as const,
+              },
         );
       }),
   );

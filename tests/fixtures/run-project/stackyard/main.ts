@@ -13,7 +13,7 @@ export default defineProject({
     worker: service({
       command: ["bun", "worker.ts"],
       cwd: ".",
-      startup: "manual",
+      startWithProject: false,
     }),
   },
 });
