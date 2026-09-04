@@ -10,7 +10,7 @@ import {
 } from "@stackyard/diagnostics";
 import { CanonicalPath, discoverProject } from "@stackyard/project-loader";
 import { createStartProjectMessage, parseDaemonServerMessage } from "@stackyard/protocol";
-import { Deferred, Effect, FileSystem, Option, Path, Predicate, Ref, Scope } from "effect";
+import { Deferred, Effect, FileSystem, Option, Path, Predicate, Scope } from "effect";
 import { Argument } from "effect/unstable/cli";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -126,9 +126,7 @@ const runSessionWithClient = Effect.fn("runSessionWithClient")(function* (
   );
   const write = yield* socket.writer;
   const completed = yield* Deferred.make<SessionOutcome>();
-  const projectId = yield* Ref.make<string | undefined>(undefined);
-  const started = yield* Deferred.make<void>();
-  const wasStarted = yield* Ref.make(false);
+  const started = yield* Deferred.make<string>();
   const complete = (outcome: SessionOutcome) => Deferred.succeed(completed, outcome);
   const failConnection = (note: string) =>
     complete({ diagnostics: [connectionDiagnostic(note)], exitCode: 1 });
@@ -151,9 +149,7 @@ const runSessionWithClient = Effect.fn("runSessionWithClient")(function* (
 
     if (message.output.kind === "started") {
       const projectName = message.output.projectName;
-      yield* Ref.set(projectId, message.output.projectId);
-      yield* Ref.set(wasStarted, true);
-      yield* Deferred.succeed(started, undefined);
+      yield* Deferred.succeed(started, message.output.projectId);
       yield* Effect.sync(() =>
         dependencies.writeOutput(`${projectName} is running. Dashboard: ${daemonUrl(locator)}\n`),
       );
@@ -181,7 +177,7 @@ const runSessionWithClient = Effect.fn("runSessionWithClient")(function* (
     })
     .pipe(
       Effect.catch((error) =>
-        Ref.get(wasStarted).pipe(
+        Deferred.isDone(started).pipe(
           Effect.flatMap((active) => failConnection(socketFailureNote(error, active))),
         ),
       ),
@@ -213,17 +209,20 @@ const runSessionWithClient = Effect.fn("runSessionWithClient")(function* (
       state.kind === "completed" ? Effect.succeed(state.outcome) : Deferred.await(completed),
   }).pipe(
     Effect.onInterrupt(() =>
-      Ref.get(projectId).pipe(
-        Effect.flatMap((id) =>
-          id
-            ? stopAttachedProject(client, locator, id).pipe(
+      Deferred.poll(started).pipe(
+        Effect.flatMap(Effect.transposeOption),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (projectId) =>
+              stopAttachedProject(client, locator, projectId).pipe(
                 Effect.catch((failed) =>
                   Effect.sync(() =>
                     reportDiagnostics(dependencies.diagnostics, failed.diagnostics),
                   ),
                 ),
-              )
-            : Effect.void,
+              ),
+          }),
         ),
       ),
     ),
