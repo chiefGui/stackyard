@@ -196,7 +196,7 @@ test("run starts durable projects through the global daemon", async () => {
     );
 
     secondCli.kill("SIGINT");
-    expect(await secondCli.exited).toBe(process.platform === "win32" ? 130 : 0);
+    expect(await secondCli.exited).toBe(130);
     expect(await secondStderr).toBe("");
     expect(await secondStdout).toContain("run-fixture-two is running. Dashboard:");
     await waitFor(async () => {

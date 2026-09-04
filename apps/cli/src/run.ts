@@ -87,6 +87,7 @@ function runSession(
       resume(Effect.succeed(1));
       return Effect.void;
     }
+    let projectId: string | undefined;
     let settled = false;
     let started = false;
     const timeout = setTimeout(() => {
@@ -138,6 +139,7 @@ function runSession(
       }
 
       if (message.output.kind === "started") {
+        projectId = message.output.projectId;
         started = true;
         clearTimeout(timeout);
         dependencies.writeOutput(
@@ -168,15 +170,62 @@ function runSession(
         finish(1);
       }
     });
-    return Effect.sync(() => {
+    return Effect.gen(function* () {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(timeout);
-      if (socket.readyState === WebSocket.OPEN) {
+      if (projectId) {
+        yield* stopAttachedProject(locator, projectId).pipe(
+          Effect.catch((failed) =>
+            Effect.sync(() => reportDiagnostics(dependencies.diagnostics, failed.diagnostics)),
+          ),
+        );
+      } else if (socket.readyState === WebSocket.OPEN) {
         sendSocketMessage(socket, createStopProjectMessage());
       }
       closeSocket(socket);
     });
   });
 }
+
+const stopAttachedProject = Effect.fn("stopAttachedProject")(
+  (locator: DaemonLocator, projectId: string): Effect.Effect<void, Failure> =>
+    Effect.tryPromise({
+      try: (signal) =>
+        fetch(new URL("api/v1/projects/stop", daemonUrl(locator)), {
+          body: JSON.stringify({ target: projectId }),
+          headers: {
+            authorization: `Bearer ${locator.token}`,
+            "content-type": "application/json",
+          },
+          method: "POST",
+          signal,
+        }),
+      catch: (error) =>
+        failure(
+          connectionDiagnostic(
+            `The project stop request failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        ),
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "10 seconds",
+        orElse: () =>
+          Effect.fail(failure(connectionDiagnostic("The project stop request timed out."))),
+      }),
+      Effect.flatMap((response) =>
+        response.ok
+          ? Effect.void
+          : Effect.fail(
+              failure(
+                connectionDiagnostic(`The project stop request returned HTTP ${response.status}.`),
+              ),
+            ),
+      ),
+    ),
+);
 
 function sendSocketMessage(socket: WebSocket, message: unknown): boolean {
   try {
