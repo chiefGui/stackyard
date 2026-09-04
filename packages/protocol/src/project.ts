@@ -17,7 +17,7 @@ const version = 1;
 const projectNamePattern = /^[a-z][a-z0-9-]*$/;
 const resourceNamePattern = /^[a-z][A-Za-z0-9-]*$/;
 const environmentNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ServiceStartupSchema = z.enum(["automatic", "manual"], {
+const ServiceStartupSchema: z.ZodType<ServiceStartup> = z.enum(["automatic", "manual"], {
   error: "Service startup must be 'automatic' or 'manual'.",
 });
 
@@ -40,7 +40,7 @@ export interface EndpointValueExpression {
 
 export type EnvironmentValueSpec = string | EndpointValueExpression;
 
-export type ServiceStartup = z.infer<typeof ServiceStartupSchema>;
+export type ServiceStartup = "automatic" | "manual";
 
 export interface ProcessResourceSpec {
   readonly command: {
